@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+
+name="jukem"
+description="Jukebox appliance"
+command="/usr/bin/jukem"
+command_args="serve --config ${JUKEM_CONFIG:-/etc/jukem/config.yaml}"
+command_user="jukem:jukem"
+capabilities="^cap_net_bind_service"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=0
+
+depend() {
+	need localmount
+	after net chronyd ntpd
+}

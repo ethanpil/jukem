@@ -1,0 +1,8 @@
+# Configuration file for /etc/init.d/jukem
+
+# Bootstrap config file.
+#JUKEM_CONFIG="/etc/jukem/config.yaml"
+
+# Restart the service automatically after "apk upgrade" installs a new version.
+# Playback stops for a few seconds and then resumes on its own.
+#JUKEM_RESTART_ON_UPGRADE="yes"

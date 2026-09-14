@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  packages:
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Write signing key
+        run: |
+          umask 077
+          printf '%s' "${{ secrets.APK_SIGNING_KEY }}" > "$RUNNER_TEMP/jukem.rsa"
+      - name: Build signed package
+        env:
+          APK_SIGNING_KEY: ${{ runner.temp }}/jukem.rsa
+        run: scripts/package.sh ${{ matrix.arch }} "${GITHUB_REF_NAME}"
+      - run: rm -f "$RUNNER_TEMP/jukem.rsa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.arch }}
+          path: dist/*.apk
+
+  install-test:
+    needs: packages
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            alpine: "3.21"
+          - arch: amd64
+            runner: ubuntu-24.04
+            alpine: "3.24"
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            alpine: "3.21"
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            alpine: "3.24"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-${{ matrix.arch }}
+          path: dist
+      - name: Install the signed package on Alpine ${{ matrix.alpine }} without --allow-untrusted
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/packaging/keys:/keys:ro" alpine:${{ matrix.alpine }} sh -ec '
+            sed -i "s|^#\(.*community\)|\1|" /etc/apk/repositories
+            cp /keys/jukem.rsa.pub /etc/apk/keys/
+            apk add --no-cache /dist/jukem-*.apk
+            jukem version
+          '
+
+  release:
+    needs: install-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: dist
+          merge-multiple: true
+      - name: Collect release files
+        run: |
+          cp packaging/keys/jukem.rsa.pub dist/
+          (cd dist && sha256sum *.apk jukem.rsa.pub > SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.apk
+            dist/jukem.rsa.pub
+            dist/SHA256SUMS
+
+  image:
+    needs: install-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image name
+        id: img
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.img.outputs.version }}
+          tags: |
+            ${{ steps.img.outputs.name }}:${{ steps.img.outputs.version }}
+            ${{ steps.img.outputs.name }}:latest

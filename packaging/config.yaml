@@ -1,0 +1,4 @@
+# Bootstrap settings. Everything else is configured in the web UI.
+listen: ":80"
+data_dir: /var/lib/jukem
+log_file: /var/log/jukem/jukem.log

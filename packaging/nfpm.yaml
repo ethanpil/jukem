@@ -1,0 +1,38 @@
+name: jukem
+arch: ${NFPM_ARCH}
+version: ${VERSION}
+release: 0
+maintainer: jukem maintainers <jukem@example.com>
+description: Jukebox appliance that plays MPD through the local sound hardware
+homepage: https://github.com/OWNER/jukem
+license: MIT
+depends:
+  - mpd
+  - alsa-utils
+  - tzdata
+  - ca-certificates
+contents:
+  - src: build/jukem
+    dst: /usr/bin/jukem
+    file_info:
+      mode: 0755
+  - src: packaging/openrc/jukem.initd
+    dst: /etc/init.d/jukem
+    file_info:
+      mode: 0755
+  - src: packaging/openrc/jukem.confd
+    dst: /etc/conf.d/jukem
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: packaging/config.yaml
+    dst: /etc/jukem/config.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+scripts:
+  preinstall: packaging/scripts/pre-install.sh
+  postinstall: packaging/scripts/post-install.sh
+apk:
+  scripts:
+    postupgrade: packaging/scripts/post-upgrade.sh

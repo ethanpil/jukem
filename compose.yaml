@@ -1,0 +1,15 @@
+services:
+  jukem:
+    image: ghcr.io/OWNER/jukem:latest
+    init: true
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    group_add:
+      - "29"                         # host audio GID: getent group audio | cut -d: -f3
+    device_cgroup_rules:
+      - "c 116:* rmw"                # ALSA devices, including USB DACs plugged in later
+    volumes:
+      - /dev/snd:/dev/snd
+      - /srv/jukem/music:/srv/jukem/music
+      - /srv/jukem/data:/var/lib/jukem
