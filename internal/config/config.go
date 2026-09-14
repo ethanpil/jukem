@@ -1,8 +1,9 @@
-// Package config loads the bootstrap settings. Everything else lives in the
-// database and is set from the web UI.
+// Package config loads the bootstrap settings. The database holds every other
+// setting, and the web UI changes them.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,6 +17,16 @@ type Config struct {
 	LogFile string `yaml:"log_file"`
 }
 
+// ParseError reports a config file that does not parse. The caller shows a
+// different fix for this than for a file it cannot read.
+type ParseError struct {
+	Path string
+	Err  error
+}
+
+func (e *ParseError) Error() string { return fmt.Sprintf("parse %s: %v", e.Path, e.Err) }
+func (e *ParseError) Unwrap() error { return e.Err }
+
 // Default returns the settings that apply when a key is missing.
 func Default() Config {
 	return Config{
@@ -25,52 +36,60 @@ func Default() Config {
 	}
 }
 
-// Load reads the file at path, applies the environment overrides, and returns
-// the result with a warning for each unknown key. A missing file is not an
-// error: the defaults and the environment apply.
+// Load reads the file at path and applies the environment overrides. It
+// returns a warning for each unknown key. A missing file is not an error: the
+// defaults and the environment apply. The environment applies also when the
+// file fails, so that maintenance mode listens where the operator expects.
 func Load(path string) (Config, []string, error) {
 	cfg := Default()
 	var warnings []string
+	var loadErr error
 
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
 		w, err := parse(data, &cfg)
 		if err != nil {
-			return cfg, nil, fmt.Errorf("parse %s: %w", path, err)
+			loadErr = &ParseError{Path: path, Err: err}
 		}
 		warnings = append(warnings, w...)
-	case os.IsNotExist(err):
+	case errors.Is(err, os.ErrNotExist):
 		warnings = append(warnings, fmt.Sprintf("config file %s not found, using defaults", path))
 	default:
-		return cfg, nil, fmt.Errorf("read %s: %w", path, err)
+		loadErr = fmt.Errorf("read %s: %w", path, err)
 	}
 
 	applyEnv(&cfg)
-	return cfg, warnings, nil
+	return cfg, warnings, loadErr
 }
 
-// parse decodes YAML into cfg and reports unknown keys.
+// parse decodes YAML into cfg with one pass and reports unknown keys. A key
+// that is present with a null value keeps its default.
 func parse(data []byte, cfg *Config) ([]string, error) {
-	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	var warnings []string
+	if len(doc.Content) == 0 {
+		return nil, nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, errors.New("top level must be a mapping")
+	}
 	known := map[string]bool{"listen": true, "data_dir": true, "log_file": true}
-	for k := range raw {
-		if !known[k] {
+	var warnings []string
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if k := root.Content[i].Value; !known[k] {
 			warnings = append(warnings, fmt.Sprintf("unknown config key %q ignored", k))
 		}
 	}
-	// A second pass with the typed struct applies only the known keys. A key
-	// that is present but null keeps its default.
 	var typed struct {
 		Listen  *string `yaml:"listen"`
 		DataDir *string `yaml:"data_dir"`
 		LogFile *string `yaml:"log_file"`
 	}
-	if err := yaml.Unmarshal(data, &typed); err != nil {
+	if err := root.Decode(&typed); err != nil {
 		return nil, err
 	}
 	if typed.Listen != nil {
@@ -86,8 +105,8 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 }
 
 // applyEnv applies JUKEM_LISTEN, JUKEM_DATA_DIR and JUKEM_LOG_FILE. A variable
-// that is set to the empty string still applies: JUKEM_LOG_FILE="" selects
-// stdout, which is what the Docker image uses.
+// set to the empty string still applies: JUKEM_LOG_FILE="" selects stdout,
+// which the Docker image uses.
 func applyEnv(cfg *Config) {
 	if v, ok := os.LookupEnv("JUKEM_LISTEN"); ok {
 		cfg.Listen = v
@@ -101,7 +120,7 @@ func applyEnv(cfg *Config) {
 }
 
 // Runtime reports where jukem runs: "docker" or "host". The Docker image sets
-// JUKEM_RUNTIME=docker so that fix-it messages are phrased for a container.
+// JUKEM_RUNTIME=docker so that fix-it messages apply to a container.
 func Runtime() string {
 	if os.Getenv("JUKEM_RUNTIME") == "docker" {
 		return "docker"

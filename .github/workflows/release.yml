@@ -30,10 +30,22 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check signing material
+        env:
+          KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The APK_SIGNING_KEY secret is not set. See packaging/keys/README.md."; exit 1
+          fi
+          if [ ! -f packaging/keys/jukem.rsa.pub ]; then
+            echo "::error::packaging/keys/jukem.rsa.pub is missing. See packaging/keys/README.md."; exit 1
+          fi
       - name: Write signing key
+        env:
+          KEY: ${{ secrets.APK_SIGNING_KEY }}
         run: |
           umask 077
-          printf '%s' "${{ secrets.APK_SIGNING_KEY }}" > "$RUNNER_TEMP/jukem.rsa"
+          printf '%s' "$KEY" > "$RUNNER_TEMP/jukem.rsa"
       - name: Build signed package
         env:
           APK_SIGNING_KEY: ${{ runner.temp }}/jukem.rsa

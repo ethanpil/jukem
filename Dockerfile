@@ -13,8 +13,8 @@ RUN scripts/package.sh "$TARGETARCH" "$VERSION"
 # Runtime stage: the same apk that bare-metal installs use.
 FROM alpine:3.24
 COPY --from=build /src/dist/ /tmp/dist/
-# The package was built in the stage above and never left the build, so no signature is needed.
-# Afterwards the service user is re-created as 1000:1000 so bind mounts owned by the host's first user just work.
+# The build stage above made the package and it did not leave the build, so it needs no signature.
+# Then the image makes the service user again as 1000:1000, the usual owner of a host bind mount.
 RUN apk add --no-cache --allow-untrusted /tmp/dist/jukem-*.apk \
  && rm -rf /tmp/dist \
  && deluser jukem && (delgroup jukem 2>/dev/null || true) \

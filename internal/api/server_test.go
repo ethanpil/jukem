@@ -15,11 +15,11 @@ func okHealth() watchdog.Report {
 }
 
 func TestHealthzAndStatic(t *testing.T) {
-	srv, err := New(Options{Version: "test", Static: web.Files, Health: okHealth})
+	h, err := New(Options{Version: "test", Static: web.Files, Health: okHealth})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(srv.Handler())
+	ts := httptest.NewServer(h)
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/healthz")
@@ -42,7 +42,7 @@ func TestHealthzAndStatic(t *testing.T) {
 	}
 
 	// A deep link is the app shell too, for the hash router.
-	resp, _ = http.Get(ts.URL + "/library/Christmas")
+	resp, _ = http.Get(ts.URL + "/library/R.E.M.")
 	if resp.StatusCode != 200 {
 		t.Fatalf("deep link: %d", resp.StatusCode)
 	}
@@ -57,9 +57,9 @@ func TestHealthzAndStatic(t *testing.T) {
 		t.Fatalf("asset cache: %q", resp.Header.Get("Cache-Control"))
 	}
 
-	resp, _ = http.Get(ts.URL + "/app/missing.js")
-	if resp.StatusCode != 404 {
-		t.Fatalf("missing asset: %d", resp.StatusCode)
+	resp, _ = http.Get(ts.URL + "/api/v1/nothing")
+	if resp.StatusCode != 404 || resp.Header.Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("unknown api: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }
 
@@ -90,5 +90,9 @@ func TestMaintenanceMode(t *testing.T) {
 	resp, _ = http.Get(ts.URL + "/app/maintenance.js")
 	if resp.StatusCode != 200 {
 		t.Fatalf("maintenance asset %d", resp.StatusCode)
+	}
+	resp, _ = http.Get(ts.URL + "/app/anything")
+	if resp.StatusCode != 503 {
+		t.Fatalf("maintenance mode must not serve the app shell: %d", resp.StatusCode)
 	}
 }

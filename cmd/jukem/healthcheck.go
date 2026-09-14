@@ -26,7 +26,7 @@ func runHealthcheck(args []string) error {
 	if err != nil {
 		return fmt.Errorf("listen address %q: %w", cfg.Listen, err)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}
 	client := &http.Client{Timeout: 4 * time.Second}

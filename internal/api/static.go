@@ -9,67 +9,78 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// staticFile is one embedded asset, compressed once at startup.
+// staticFile is one embedded asset. The gzip form is built on first use.
 type staticFile struct {
 	raw         []byte
-	gz          []byte
 	contentType string
+	once        sync.Once
+	gz          []byte
 }
 
-// staticHandler serves the embedded web UI. Assets are served gzipped with a
-// long cache when the request carries a version query string; index.html is
-// never cached because it is the entry point that names the current version.
+func (f *staticFile) gzipped() []byte {
+	f.once.Do(func() {
+		if !compressible(f.contentType) {
+			return
+		}
+		var buf bytes.Buffer
+		w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		w.Write(f.raw)
+		w.Close()
+		f.gz = buf.Bytes()
+	})
+	return f.gz
+}
+
+// staticHandler serves the embedded web UI. A known asset is served gzipped,
+// with a long cache when the request carries the current version query
+// string. Every other path gets the shell page with shellStatus, and the
+// shell is never cached because it names the current version.
 type staticHandler struct {
-	files   map[string]*staticFile
-	index   *staticFile
-	version string
+	files       map[string]*staticFile
+	shell       *staticFile
+	shellStatus int
+	versionQ    string
 }
 
-func newStaticHandler(fsys fs.FS, version string) (*staticHandler, error) {
-	h := &staticHandler{files: map[string]*staticFile{}, version: version}
+var lastModified = time.Now().UTC().Format(http.TimeFormat)
+
+func newStaticHandler(fsys fs.FS, version, shell string, shellStatus int) (*staticHandler, error) {
+	h := &staticHandler{files: map[string]*staticFile{}, shellStatus: shellStatus, versionQ: "v=" + version}
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasSuffix(p, ".keep") {
+		if err != nil || d.IsDir() {
 			return err
 		}
 		data, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return err
 		}
-		f := &staticFile{raw: data, contentType: contentTypeFor(p)}
-		if compressible(f.contentType) {
-			var buf bytes.Buffer
-			w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-			w.Write(data)
-			w.Close()
-			f.gz = buf.Bytes()
-		}
-		if p == "index.html" {
-			h.index = f
-		} else {
-			h.files["/"+p] = f
-		}
+		h.files["/"+p] = &staticFile{raw: data, contentType: contentTypeFor(p)}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	h.shell = h.files["/"+shell]
+	if h.shell == nil {
+		return nil, &fs.PathError{Op: "open", Path: shell, Err: fs.ErrNotExist}
+	}
+	// The shell pages are reachable only as the fallback.
+	delete(h.files, "/index.html")
+	delete(h.files, "/maintenance.html")
 	return h, nil
 }
 
 func contentTypeFor(p string) string {
+	// The stdlib table covers the common types. Font types are missing from
+	// it, and /etc/mime.types on the host can change .js, so these stay fixed.
 	switch path.Ext(p) {
 	case ".js", ".mjs":
 		return "text/javascript; charset=utf-8"
-	case ".css":
-		return "text/css; charset=utf-8"
-	case ".html":
-		return "text/html; charset=utf-8"
-	case ".svg":
-		return "image/svg+xml"
-	case ".json", ".map":
+	case ".map":
 		return "application/json"
 	case ".woff2":
 		return "font/woff2"
@@ -94,39 +105,31 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f, ok := h.files[r.URL.Path]; ok {
-		if r.URL.Query().Get("v") == h.version {
+		if r.URL.RawQuery == h.versionQ {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
-		serveStatic(w, r, f)
+		serveStatic(w, r, f, http.StatusOK)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/") || strings.Contains(path.Base(r.URL.Path), ".") {
-		http.NotFound(w, r)
-		return
-	}
-	// Every other path is the app shell; the hash router takes over.
+	// The hash router owns every other path, so each one gets the shell.
 	w.Header().Set("Cache-Control", "no-store")
-	serveStatic(w, r, h.index)
+	serveStatic(w, r, h.shell, h.shellStatus)
 }
 
-func serveStatic(w http.ResponseWriter, r *http.Request, f *staticFile) {
+func serveStatic(w http.ResponseWriter, r *http.Request, f *staticFile, status int) {
 	w.Header().Set("Content-Type", f.contentType)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	body := f.raw
-	if f.gz != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+	if gz := f.gzipped(); gz != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Add("Vary", "Accept-Encoding")
-		body = f.gz
+		body = gz
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.Header().Set("Last-Modified", startTime.UTC().Format(http.TimeFormat))
-	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
-		return
+	w.Header().Set("Last-Modified", lastModified)
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		w.Write(body)
 	}
-	w.Write(body)
 }
-
-var startTime = time.Now()

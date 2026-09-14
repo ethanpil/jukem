@@ -1,5 +1,5 @@
 // Renders the maintenance page from /api/v1/health. No framework: the page
-// exists so that a broken install still explains itself at the usual address.
+// shows the problem at the usual address when the install is broken.
 async function load() {
   const reason = document.getElementById('reason');
   const fix = document.getElementById('fix');

@@ -1,1 +1,1 @@
-vendored libraries are added in build step 5
+Build step 5 adds the vendored libraries here.

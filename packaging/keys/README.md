@@ -12,5 +12,5 @@ openssl rsa -in jukem.rsa -pubout -out jukem.rsa.pub
 ```
 
 Commit `jukem.rsa.pub` here. Store the private key as the GitHub Actions
-secret `APK_SIGNING_KEY` and keep an offline backup. The private key is never
-committed.
+secret `APK_SIGNING_KEY` and keep an offline backup. Do not commit the private
+key.

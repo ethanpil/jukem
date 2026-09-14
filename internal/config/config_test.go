@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,5 +63,32 @@ func TestBadYAML(t *testing.T) {
 	os.WriteFile(p, []byte("listen: [\n"), 0o600)
 	if _, _, err := Load(p); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestEnvAppliesWhenFileIsBroken(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(p, []byte("listen: [\n"), 0o600)
+	t.Setenv("JUKEM_LISTEN", ":8080")
+	cfg, _, err := Load(p)
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ParseError, got %v", err)
+	}
+	if cfg.Listen != ":8080" {
+		t.Fatalf("env override lost: %+v", cfg)
+	}
+}
+
+func TestNullKeepsDefault(t *testing.T) {
+	os.Unsetenv("JUKEM_LOG_FILE")
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(p, []byte("log_file:\n"), 0o600)
+	cfg, _, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogFile != Default().LogFile {
+		t.Fatalf("got %q", cfg.LogFile)
 	}
 }

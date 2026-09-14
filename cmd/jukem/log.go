@@ -8,12 +8,12 @@ import (
 	"sync"
 )
 
-// maxLogSize is the size at which the log file rotates. One rotated copy is
-// kept, so the log never uses more than twice this on an SD card.
+// maxLogSize is the size at which the log file rotates. jukem keeps one
+// rotated copy, so the log uses at most twice this on an SD card.
 const maxLogSize = 5 << 20
 
-// rotatingFile is a size-capped log file. When it grows past maxLogSize it is
-// renamed to <name>.1 and a new file is started.
+// rotatingFile is a size-capped log file. When the file grows past
+// maxLogSize, jukem renames it to <name>.1 and starts a new file.
 type rotatingFile struct {
 	mu   sync.Mutex
 	name string
@@ -21,8 +21,12 @@ type rotatingFile struct {
 	size int64
 }
 
+func openLogFile(name string) (*os.File, error) {
+	return os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+}
+
 func openRotatingFile(name string) (*rotatingFile, error) {
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	f, err := openLogFile(name)
 	if err != nil {
 		return nil, err
 	}
@@ -38,18 +42,31 @@ func (r *rotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.size+int64(len(p)) > maxLogSize {
-		r.f.Close()
-		os.Rename(r.name, r.name+".1")
-		f, err := os.OpenFile(r.name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
-		if err != nil {
-			return 0, err
+		if err := r.rotate(); err != nil {
+			// Keep the current file. The size stays correct, so the next
+			// write tries again.
+			fmt.Fprintln(os.Stderr, "jukem: log rotation failed:", err)
 		}
-		r.f = f
-		r.size = 0
 	}
 	n, err := r.f.Write(p)
 	r.size += int64(n)
 	return n, err
+}
+
+// rotate renames the current file and opens a new one. The old handle stays
+// open until the new file exists, so a failure never loses the log.
+func (r *rotatingFile) rotate() error {
+	if err := os.Rename(r.name, r.name+".1"); err != nil {
+		return err
+	}
+	f, err := openLogFile(r.name)
+	if err != nil {
+		return err
+	}
+	r.f.Close()
+	r.f = f
+	r.size = 0
+	return nil
 }
 
 func (r *rotatingFile) Close() error {

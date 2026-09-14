@@ -90,9 +90,9 @@ func Sign(pkg []byte, key *rsa.PrivateKey, name string) ([]byte, error) {
 	return out, nil
 }
 
-// signatureStream builds the gzip stream that holds the signature entry. As
-// with abuild-tar --cut, the tar end-of-archive marker is omitted: the writer
-// is flushed but not closed.
+// signatureStream builds the gzip stream that holds the signature entry. Like
+// abuild-tar --cut, it writes no tar end-of-archive marker: it flushes the
+// writer and does not close it.
 func signatureStream(entryName string, sig []byte) ([]byte, error) {
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
