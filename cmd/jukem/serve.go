@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"jukem/internal/api"
 	"jukem/internal/config"
+	"jukem/internal/store"
 	"jukem/internal/watchdog"
 	"jukem/web"
 )
@@ -82,8 +84,12 @@ func buildApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (http
 	if err := checkDataDir(cfg.DataDir); err != nil {
 		return nil, nil, &maintenanceError{
 			Reason: fmt.Sprintf("The data directory %s is not usable: %v", cfg.DataDir, err),
-			Fix:    fmt.Sprintf("Create it and give it to the service user:\n  install -d -o jukem -g jukem -m 0750 %s\nthen restart the service.", cfg.DataDir),
+			Fix:    dataDirFix(cfg.DataDir),
 		}
+	}
+	db, err := openStore(ctx, cfg.DataDir)
+	if err != nil {
+		return nil, nil, err
 	}
 	health := func() watchdog.Report {
 		checks := []watchdog.Check{{Name: "Service", Status: watchdog.StatusOK, Summary: "running " + version}}
@@ -91,9 +97,55 @@ func buildApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (http
 	}
 	h, err := api.New(api.Options{Version: version, Static: web.Files, Health: health})
 	if err != nil {
+		db.Close()
 		return nil, nil, err
 	}
-	return h, func() {}, nil
+	return h, func() { db.Close() }, nil
+}
+
+// openStore opens and migrates the database. A schema the binary does not
+// know, or a migration that fails, becomes maintenance mode with the
+// rollback steps in the message.
+func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
+	dbPath := filepath.Join(dataDir, "jukem.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return nil, &maintenanceError{
+			Reason: fmt.Sprintf("The database %s does not open: %v", dbPath, err),
+			Fix:    "Check that the data directory is writable by the jukem user and that the disk has space, then restart the service.",
+		}
+	}
+	err = db.Migrate(ctx, filepath.Join(dataDir, "snapshots"))
+	if err == nil {
+		return db, nil
+	}
+	db.Close()
+	var tooNew *store.ErrSchemaTooNew
+	var failed *store.MigrationError
+	switch {
+	case errors.As(err, &tooNew):
+		return nil, &maintenanceError{
+			Reason: fmt.Sprintf("The database was written by a newer jukem: schema version %d, this binary knows version %d.", tooNew.Database, tooNew.Binary),
+			Fix: "Install the newer jukem package again, or roll back the database:\n" +
+				"  rc-service jukem stop\n" +
+				fmt.Sprintf("  cp %s/snapshots/jukem-v%d-<timestamp>.db %s\n", dataDir, tooNew.Binary, dbPath) +
+				fmt.Sprintf("  rm -f %s-wal %s-shm\n", dbPath, dbPath) +
+				"  rc-service jukem start",
+		}
+	case errors.As(err, &failed):
+		return nil, &maintenanceError{
+			Reason: fmt.Sprintf("Database migration %d failed and was rolled back: %v", failed.Version, failed.Err),
+			Fix: "The database is consistent at the previous version. Report this problem with the log. " +
+				"To go back to the previous jukem release, stop the service, install the older package, restore the snapshot:\n" +
+				fmt.Sprintf("  cp %s %s\n", failed.Snapshot, dbPath) +
+				fmt.Sprintf("  rm -f %s-wal %s-shm\n", dbPath, dbPath) +
+				"and start the service.",
+		}
+	}
+	return nil, &maintenanceError{
+		Reason: fmt.Sprintf("The database %s could not be prepared: %v", dbPath, err),
+		Fix:    "Check the log, then restart the service.",
+	}
 }
 
 // dataDirFix tells the operator how to repair the data directory. Under
