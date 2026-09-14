@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.initd text eol=lf
+*.confd text eol=lf
+*.png binary
+*.woff binary
+*.woff2 binary
