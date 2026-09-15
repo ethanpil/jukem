@@ -14,11 +14,12 @@ export async function nowPlayingView(main) {
   const seekRow = h('div.seek-row');
   const volumeRow = h('div.volume-row');
   const optionsRow = h('div.options-row');
+  const ownerRow = h('div.owner-row');
   const queueFig = h('span.queue-fig');
   const recentBox = h('div');
   const queueBox = h('div');
   main.append(h('section.page.page-narrow.stack',
-    h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, optionsRow),
+    h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, ownerRow, optionsRow),
     h('div.panel.clip',
       h('div.panel-head', h('h2.panel-title', 'Queue'), queueFig),
       recentBox, queueBox)));
@@ -69,6 +70,7 @@ export async function nowPlayingView(main) {
     clear(transport);
     clear(optionsRow);
     if (!st) {
+      clear(ownerRow);
       trackBox.append(h('div.art', icon('wifi-off')), h('div.flex-1', h('div.track-title', 'jukem is not reachable'), h('div.track-sub', 'The page tries again on its own.')));
       return;
     }
@@ -134,9 +136,26 @@ export async function nowPlayingView(main) {
       if (st.owner?.state === 'OVERRIDDEN') {
         optionsRow.append(h('button.btn.btn-sm.btn-warning', { type: 'button', onclick: resumeSchedule }, icon('calendar-check'), 'Resume schedule'));
       }
+      // The buttons need the sentence beside them, because a phone shows no
+      // tooltip.
+      optionsRow.append(h('p.options-note', why));
     }
     if (song) {
       optionsRow.append(h('button.btn.btn-sm.btn-outline-danger.push', { type: 'button', onclick: () => doNotPlay(song) }, icon('slash-circle'), 'Do not play'));
+    }
+    // The owner line says who plays the music and what is wrong with it. The
+    // top bar holds the same words, but it is one word wide on a phone.
+    clear(ownerRow);
+    if (st.owner?.reason) ownerRow.append(h('span.owner-reason', icon(ownerIcon(st.owner.state)), st.owner.reason));
+    if (st.owner?.warning) ownerRow.append(h('span.chip.chip-warn', icon('exclamation-triangle-fill'), st.owner.warning));
+  }
+
+  function ownerIcon(state) {
+    switch (state) {
+      case 'SCHEDULED': return 'calendar-week';
+      case 'OVERRIDDEN': return 'pause-circle';
+      case 'UNAVAILABLE': return 'exclamation-triangle';
+      default: return 'hand-index';
     }
   }
 
