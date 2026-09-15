@@ -181,6 +181,26 @@ export async function settingsView(main, rest) {
         h('div.col-sm-4', h('label.form-label', 'Nightly rescan hour'), hour),
         h('div.col-12', h('label.form-label', 'Allowed extensions'), exts)),
       h('button.btn.btn-primary.mt-3', { type: 'submit' }, 'Save library')));
+    const dnpBox = h('div.mt-4');
+    body.append(dnpBox);
+    renderDoNotPlay(dnpBox);
+  }
+
+  // renderDoNotPlay lists the excluded tracks, each with a way back.
+  async function renderDoNotPlay(box) {
+    let r;
+    try { r = await A.api.get('/do-not-play'); } catch (e) { clear(box).append(errorBox(e)); return; }
+    clear(box).append(h('h3.h6', 'Do not play'));
+    if (!r.entries.length) { box.append(h('p.small.text-body-secondary.mb-0', 'No track is excluded from scheduled playback.')); return; }
+    const list = h('div.list-group');
+    for (const e of r.entries) {
+      list.append(h('div.list-group-item.d-flex.align-items-center.gap-2',
+        h('div.flex-grow-1.text-break', h('div', e.title || e.file), e.title ? h('div.small.text-body-secondary.mono', e.file) : null),
+        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: async () => {
+          try { await A.api.del(`/do-not-play?file=${encodeURIComponent(e.file)}`); renderDoNotPlay(box); } catch (ex) { toast(ex.message, 'danger'); }
+        } }, 'Allow again')));
+    }
+    box.append(list);
   }
 
   async function renderSecurity(body) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -20,7 +21,10 @@ var ErrBadPath = errors.New("path is not allowed")
 // MPD skips hidden names, so a file there would never appear in the
 // library.
 func CleanRel(p string) (string, error) {
-	p = strings.ReplaceAll(p, "\\", "/")
+	if runtime.GOOS == "windows" {
+		// Only a development machine has backslash separators.
+		p = strings.ReplaceAll(p, "\\", "/")
+	}
 	// A bare slash means the root; any other leading slash is absolute.
 	if p == "/" {
 		return "", nil

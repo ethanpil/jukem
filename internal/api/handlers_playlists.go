@@ -237,7 +237,14 @@ func (s *Server) registerFileOps(api huma.API) {
 		if err != nil || file == "" {
 			return nil, huma.Error422UnprocessableEntity(badPathDetail)
 		}
-		return nil, s.store.AddDoNotPlay(ctx, file, in.Body.Title)
+		if err := s.store.AddDoNotPlay(ctx, file, in.Body.Title); err != nil {
+			return nil, err
+		}
+		// The track must not come round again in the loaded program.
+		if err := s.opts.Player.RemoveFile(file); err != nil {
+			return nil, mpdError(err)
+		}
+		return nil, nil
 	})
 	huma.Register(api, huma.Operation{
 		OperationID: "remove-do-not-play", Method: http.MethodDelete, Path: "/do-not-play", Tags: []string{"library"},

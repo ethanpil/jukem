@@ -204,6 +204,7 @@ type view struct {
 	hasOver  bool
 	overEnd  time.Time
 	hasEnd   bool
+	expired  bool // an override past its end is stored; Tick removes it
 }
 
 // snapshot computes the owner and the facts behind it.
@@ -219,8 +220,8 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 		end, hasEnd := overrideEnd(o, v.ivs)
 		if !hasEnd || v.now.Before(end) {
 			v.override, v.hasOver, v.overEnd, v.hasEnd = o, true, end, hasEnd
-		} else if err := s.d.Store.ClearOverride(ctx); err == nil {
-			s.d.Events.Publish(events.Schedule, "")
+		} else {
+			v.expired = true
 		}
 	}
 	if !s.d.MPDRunning() {
@@ -385,6 +386,9 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		return
 	}
 	v := s.snapshot(ctx)
+	if v.expired {
+		s.ClearOverride(ctx)
+	}
 	s.mu.Lock()
 	changed := v.owner.State != s.lastOwner.State || v.owner.Reason != s.lastOwner.Reason
 	s.lastOwner = v.owner
@@ -550,7 +554,7 @@ func (s *Scheduler) loadAndPlay(ctx context.Context, want Interval) {
 // currentVolume is the level to keep: MPD's current volume, or the level
 // before the last fade-out.
 func (s *Scheduler) currentVolume() int {
-	if st, err := s.d.Player.Status(); err == nil && st.Volume > 0 {
+	if st, err := s.d.Player.Status(); err == nil && st.Volume >= 0 {
 		return st.Volume
 	}
 	s.mu.Lock()

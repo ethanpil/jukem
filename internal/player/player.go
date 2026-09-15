@@ -351,7 +351,7 @@ func addAll(c *mpd.Client, files []string) error {
 	for i := 0; i < len(files); i += batch {
 		cl := c.BeginCommandList()
 		for _, f := range files[i:min(i+batch, len(files))] {
-			cl.Add(f)
+			cl.Add(literal(f))
 		}
 		if err := cl.End(); err != nil {
 			return err
@@ -427,6 +427,26 @@ func (p *Player) Add(files []string) (int, error) {
 		return addAll(c, files)
 	})
 	return len(files), err
+}
+
+// RemoveFile takes every queue entry of a file out of the queue.
+func (p *Player) RemoveFile(file string) error {
+	return p.pool.Do(func(c *mpd.Client) error {
+		entries, err := c.Command("playlistfind file %s", literal(file)).AttrsList("file")
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			id, err := strconv.Atoi(e["Id"])
+			if err != nil {
+				continue
+			}
+			if err := c.DeleteID(id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SongChanged resets the priority of a Play Next track once it plays, so
