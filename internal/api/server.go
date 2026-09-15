@@ -16,6 +16,7 @@ import (
 	"jukem/internal/events"
 	"jukem/internal/library"
 	"jukem/internal/player"
+	"jukem/internal/scheduler"
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
 )
@@ -25,6 +26,10 @@ import (
 const csp = "default-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'"
 
 const apiPrefix = "/api/v1"
+
+// scheduleEvent is published after any change to rules, exceptions,
+// overrides or the scheduler switch.
+const scheduleEvent = events.Schedule
 
 // Options configures the normal server. The function fields are the
 // application operations that touch more than one component.
@@ -43,6 +48,8 @@ type Options struct {
 	Library   *library.Browser
 	Files     *library.Files
 	Playlists *library.Playlists
+	Scheduler *scheduler.Scheduler
+	Clock     *scheduler.Clock
 	// Owner reports who decides playback now.
 	Owner func() player.Owner
 	// Transport runs play, pause or stop for a caller, creating an override
@@ -107,6 +114,9 @@ func New(opts Options) (*Server, error) {
 	if opts.Playlists != nil {
 		s.registerPlaylists(hapi)
 		s.registerFileOps(hapi)
+	}
+	if opts.Scheduler != nil {
+		s.registerSchedule(hapi)
 	}
 	if opts.Events != nil {
 		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)

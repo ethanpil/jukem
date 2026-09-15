@@ -1,0 +1,479 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"jukem/internal/library"
+	"jukem/internal/scheduler"
+	"jukem/internal/store"
+)
+
+// validateSource checks a schedule source.
+func (s *Server) validateSource(ctx context.Context, typ, ref string) error {
+	switch typ {
+	case "directory":
+		if _, err := library.CleanRel(ref); err != nil {
+			return huma.Error422UnprocessableEntity("the source folder path is not allowed")
+		}
+	case "playlist":
+		var id int64
+		if _, err := fmt.Sscanf(ref, "%d", &id); err != nil {
+			return huma.Error422UnprocessableEntity("the playlist reference must be an id")
+		}
+		if _, ok, err := s.store.GetPlaylist(ctx, id); err != nil {
+			return err
+		} else if !ok {
+			return huma.Error422UnprocessableEntity("no such playlist")
+		}
+	default:
+		return huma.Error422UnprocessableEntity("source_type must be directory or playlist")
+	}
+	return nil
+}
+
+func (s *Server) loc() *time.Location {
+	loc, err := time.LoadLocation(s.opts.Settings().TimeZone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// ConflictBody is the 409 answer for an overlapping rule.
+type ConflictBody struct {
+	Conflicts []scheduler.Conflict `json:"conflicts"`
+}
+
+// checkConflicts reports overlaps of r with the other rules.
+func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
+	rules, err := s.store.ListSchedules(ctx)
+	if err != nil {
+		return err
+	}
+	all := []store.Schedule{r}
+	for _, o := range rules {
+		if o.ID != r.ID {
+			all = append(all, o)
+		}
+	}
+	if !r.Enabled {
+		return nil
+	}
+	var mine []scheduler.Conflict
+	for _, c := range scheduler.Conflicts(all, s.loc(), s.opts.Scheduler.Now()) {
+		if c.RuleID == r.ID || c.OtherID == r.ID {
+			mine = append(mine, c)
+		}
+	}
+	if len(mine) == 0 {
+		return nil
+	}
+	names := ""
+	for i, c := range mine {
+		other := c.OtherName
+		if c.OtherID == r.ID {
+			other = c.RuleName
+		}
+		if i > 0 {
+			names += ", "
+		}
+		names += fmt.Sprintf("%s (%s)", other, c.At)
+	}
+	return huma.Error409Conflict("the rule overlaps with " + names)
+}
+
+func (s *Server) registerSchedule(api huma.API) {
+	type idInput struct {
+		ID int64 `path:"id"`
+	}
+	type rulesOutput struct {
+		Body struct {
+			Schedules []store.Schedule     `json:"schedules"`
+			Conflicts []scheduler.Conflict `json:"conflicts" doc:"Overlaps among the enabled rules"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "list-schedules", Method: http.MethodGet, Path: "/schedules", Tags: []string{"schedule"},
+		Summary: "Weekly rules with their conflicts",
+	}, func(ctx context.Context, _ *struct{}) (*rulesOutput, error) {
+		rules, err := s.store.ListSchedules(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := &rulesOutput{}
+		out.Body.Schedules = rules
+		out.Body.Conflicts = scheduler.Conflicts(rules, s.loc(), s.opts.Scheduler.Now())
+		if out.Body.Conflicts == nil {
+			out.Body.Conflicts = []scheduler.Conflict{}
+		}
+		return out, nil
+	})
+
+	type ruleInput struct {
+		Body store.Schedule
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "create-schedule", Method: http.MethodPost, Path: "/schedules", Tags: []string{"schedule"},
+		Summary: "Create a rule", Description: "Fails with 409 when the rule overlaps another enabled rule.", DefaultStatus: http.StatusCreated,
+	}, func(ctx context.Context, in *ruleInput) (*struct{ Body store.Schedule }, error) {
+		r := in.Body
+		r.ID = 0
+		if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
+			return nil, err
+		}
+		if err := s.checkConflicts(ctx, r); err != nil {
+			return nil, err
+		}
+		id, err := s.store.CreateSchedule(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		r.ID = id
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return &struct{ Body store.Schedule }{Body: r}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-schedule", Method: http.MethodGet, Path: "/schedules/{id}", Tags: []string{"schedule"},
+		Summary: "One rule",
+	}, func(ctx context.Context, in *idInput) (*struct{ Body store.Schedule }, error) {
+		r, ok, err := s.store.GetSchedule(ctx, in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, huma.Error404NotFound("no such rule")
+		}
+		return &struct{ Body store.Schedule }{Body: r}, nil
+	})
+
+	type updateRuleInput struct {
+		ID   int64 `path:"id"`
+		Body store.Schedule
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "update-schedule", Method: http.MethodPut, Path: "/schedules/{id}", Tags: []string{"schedule"},
+		Summary: "Replace a rule", Description: "Fails with 409 when the rule overlaps another enabled rule.",
+	}, func(ctx context.Context, in *updateRuleInput) (*struct{ Body store.Schedule }, error) {
+		r := in.Body
+		r.ID = in.ID
+		if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
+			return nil, err
+		}
+		if err := s.checkConflicts(ctx, r); err != nil {
+			return nil, err
+		}
+		ok, err := s.store.UpdateSchedule(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, huma.Error404NotFound("no such rule")
+		}
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return &struct{ Body store.Schedule }{Body: r}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-schedule", Method: http.MethodDelete, Path: "/schedules/{id}", Tags: []string{"schedule"},
+		Summary: "Delete a rule", DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *idInput) (*struct{}, error) {
+		ok, err := s.store.DeleteSchedule(ctx, in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, huma.Error404NotFound("no such rule")
+		}
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return nil, nil
+	})
+
+	type intervalsInput struct {
+		From time.Time `query:"from" doc:"Start of the range, RFC 3339"`
+		To   time.Time `query:"to" doc:"End of the range, RFC 3339"`
+	}
+	type intervalsOutput struct {
+		Body struct {
+			Intervals []scheduler.Interval `json:"intervals"`
+			TimeZone  string               `json:"time_zone"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "schedule-intervals", Method: http.MethodGet, Path: "/schedules/intervals", Tags: []string{"schedule"},
+		Summary: "Expanded intervals for a date range, what the week view draws",
+	}, func(ctx context.Context, in *intervalsInput) (*intervalsOutput, error) {
+		from, to := in.From, in.To
+		if from.IsZero() {
+			from = s.opts.Scheduler.Now()
+		}
+		if to.IsZero() {
+			to = from.AddDate(0, 0, 7)
+		}
+		if to.Sub(from) > 62*24*time.Hour {
+			return nil, huma.Error422UnprocessableEntity("the range is longer than 62 days")
+		}
+		ivs, err := s.opts.Scheduler.Intervals(ctx, from, to)
+		if err != nil {
+			return nil, err
+		}
+		out := &intervalsOutput{}
+		out.Body.Intervals = ivs
+		if out.Body.Intervals == nil {
+			out.Body.Intervals = []scheduler.Interval{}
+		}
+		out.Body.TimeZone = s.opts.Settings().TimeZone
+		return out, nil
+	})
+
+	// Exceptions
+	type excListInput struct {
+		From string `query:"from" doc:"YYYY-MM-DD"`
+		To   string `query:"to" doc:"YYYY-MM-DD"`
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "list-exceptions", Method: http.MethodGet, Path: "/schedule-exceptions", Tags: []string{"schedule"},
+		Summary: "Date exceptions",
+	}, func(ctx context.Context, in *excListInput) (*struct {
+		Body struct {
+			Exceptions []store.Exception `json:"exceptions"`
+		}
+	}, error) {
+		list, err := s.store.ListExceptions(ctx, in.From, in.To)
+		if err != nil {
+			return nil, err
+		}
+		out := &struct {
+			Body struct {
+				Exceptions []store.Exception `json:"exceptions"`
+			}
+		}{}
+		out.Body.Exceptions = list
+		return out, nil
+	})
+
+	type excInput struct {
+		Body store.Exception
+	}
+	putException := func(ctx context.Context, e store.Exception) error {
+		if _, err := time.Parse("2006-01-02", e.Date); err != nil {
+			return huma.Error422UnprocessableEntity("date must be YYYY-MM-DD")
+		}
+		switch e.Kind {
+		case "hours":
+			if e.StartTime == nil || e.EndTime == nil || e.SourceType == nil || e.SourceRef == nil {
+				return huma.Error422UnprocessableEntity("hours needs start_time, end_time, source_type and source_ref")
+			}
+		case "source":
+			if e.SourceType == nil || e.SourceRef == nil {
+				return huma.Error422UnprocessableEntity("source needs source_type and source_ref")
+			}
+		}
+		if e.SourceType != nil {
+			if err := s.validateSource(ctx, *e.SourceType, *e.SourceRef); err != nil {
+				return err
+			}
+		}
+		if err := s.store.PutException(ctx, e); err != nil {
+			return err
+		}
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return nil
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "create-exception", Method: http.MethodPost, Path: "/schedule-exceptions", Tags: []string{"schedule"},
+		Summary: "Create or replace the exception for a date", DefaultStatus: http.StatusCreated,
+	}, func(ctx context.Context, in *excInput) (*struct{ Body store.Exception }, error) {
+		if err := putException(ctx, in.Body); err != nil {
+			return nil, err
+		}
+		return &struct{ Body store.Exception }{Body: in.Body}, nil
+	})
+	type excDateInput struct {
+		Date string `path:"date"`
+		Body store.Exception
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "update-exception", Method: http.MethodPut, Path: "/schedule-exceptions/{date}", Tags: []string{"schedule"},
+		Summary: "Replace the exception for a date",
+	}, func(ctx context.Context, in *excDateInput) (*struct{ Body store.Exception }, error) {
+		e := in.Body
+		e.Date = in.Date
+		if err := putException(ctx, e); err != nil {
+			return nil, err
+		}
+		return &struct{ Body store.Exception }{Body: e}, nil
+	})
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-exception", Method: http.MethodDelete, Path: "/schedule-exceptions/{date}", Tags: []string{"schedule"},
+		Summary: "Remove the exception for a date", DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *struct {
+		Date string `path:"date"`
+	}) (*struct{}, error) {
+		ok, err := s.store.DeleteException(ctx, in.Date)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, huma.Error404NotFound("no exception on that date")
+		}
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return nil, nil
+	})
+
+	// Override
+	type overrideOutput struct {
+		Body struct {
+			Active   bool            `json:"active"`
+			Override *store.Override `json:"override,omitempty"`
+			EndsAt   *time.Time      `json:"ends_at,omitempty" doc:"When the schedule resumes, if known"`
+		}
+	}
+	readOverride := func(ctx context.Context) *overrideOutput {
+		out := &overrideOutput{}
+		if o, end, ok := s.opts.Scheduler.Override(ctx); ok {
+			out.Body.Active = true
+			out.Body.Override = &o
+			out.Body.EndsAt = end
+		}
+		return out
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "get-override", Method: http.MethodGet, Path: "/override", Tags: []string{"schedule"},
+		Summary: "The active override",
+	}, func(ctx context.Context, in *zoneInput) (*overrideOutput, error) {
+		return readOverride(ctx), nil
+	})
+	type overrideInput struct {
+		zoneInput
+		Body struct {
+			Mode    string `json:"mode" enum:"until_next,timed" doc:"until_next ends at the next scheduled event; timed ends after minutes or at the next event, whichever is first"`
+			Minutes int    `json:"minutes,omitempty" minimum:"1" maximum:"1440"`
+			Intent  string `json:"intent,omitempty" enum:"play,pause,stop" doc:"Defaults to the current state"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "create-override", Method: http.MethodPost, Path: "/override", Tags: []string{"schedule"},
+		Summary: "Hold the current state for a while", DefaultStatus: http.StatusCreated,
+	}, func(ctx context.Context, in *overrideInput) (*overrideOutput, error) {
+		if !s.opts.Settings().SchedulerEnabled {
+			return nil, huma.Error409Conflict("the scheduler is off; everything is manual")
+		}
+		p, _ := PrincipalFrom(ctx)
+		o := store.Override{Mode: in.Body.Mode, Intent: in.Body.Intent, Source: p.Source()}
+		if o.Intent == "" {
+			st, err := s.opts.Player.Status()
+			if err != nil {
+				return nil, mpdError(err)
+			}
+			o.Intent = "pause"
+			if st.State == "play" {
+				o.Intent = "play"
+			}
+		}
+		if o.Mode == "timed" {
+			if in.Body.Minutes <= 0 {
+				return nil, huma.Error422UnprocessableEntity("a timed override needs minutes")
+			}
+			end := s.opts.Scheduler.Now().Add(time.Duration(in.Body.Minutes) * time.Minute)
+			o.EndsAt = &end
+		}
+		if err := s.opts.Scheduler.CreateOverride(ctx, o); err != nil {
+			return nil, err
+		}
+		return readOverride(ctx), nil
+	})
+	huma.Register(api, huma.Operation{
+		OperationID: "clear-override", Method: http.MethodDelete, Path: "/override", Tags: []string{"schedule"},
+		Summary: "Resume the schedule", DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *zoneInput) (*struct{}, error) {
+		return nil, s.opts.Scheduler.ClearOverride(ctx)
+	})
+
+	// Scheduler switch
+	type switchOutput struct {
+		Body struct {
+			Enabled bool `json:"enabled"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "get-scheduler", Method: http.MethodGet, Path: "/scheduler", Tags: []string{"schedule"},
+		Summary: "Whether the scheduler is on",
+	}, func(ctx context.Context, _ *struct{}) (*switchOutput, error) {
+		out := &switchOutput{}
+		out.Body.Enabled = s.opts.Settings().SchedulerEnabled
+		return out, nil
+	})
+	huma.Register(api, huma.Operation{
+		OperationID: "set-scheduler", Method: http.MethodPut, Path: "/scheduler", Tags: []string{"schedule"},
+		Summary: "Switch the scheduler on or off", Description: "Off puts the appliance in manual mode and clears any override.",
+	}, func(ctx context.Context, in *struct {
+		Body struct {
+			Enabled bool `json:"enabled"`
+		}
+	}) (*switchOutput, error) {
+		set := s.opts.Settings()
+		set.SchedulerEnabled = in.Body.Enabled
+		if err := s.opts.UpdateSettings(ctx, set); err != nil {
+			return nil, err
+		}
+		out := &switchOutput{}
+		out.Body.Enabled = in.Body.Enabled
+		return out, nil
+	})
+
+	// Clock
+	huma.Register(api, huma.Operation{
+		OperationID: "get-clock", Method: http.MethodGet, Path: "/clock", Tags: []string{"schedule"},
+		Summary: "Clock source and status",
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body scheduler.ClockStatus }, error) {
+		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, s.opts.Settings().TimeZone)}, nil
+	})
+	type clockInput struct {
+		Body struct {
+			Date     string `json:"date" pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`
+			Time     string `json:"time" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
+			TimeZone string `json:"time_zone" minLength:"1"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "set-clock", Method: http.MethodPut, Path: "/clock", Tags: []string{"schedule"},
+		Summary:     "Set the date, time and zone by hand for this boot",
+		Description: "jukem runs unprivileged and cannot set the system clock. It stores the difference and applies it to every schedule until the kernel reports synchronisation or the machine reboots.",
+	}, func(ctx context.Context, in *clockInput) (*struct{ Body scheduler.ClockStatus }, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
+		loc, err := time.LoadLocation(in.Body.TimeZone)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity("unknown time zone")
+		}
+		entered, err := time.ParseInLocation("2006-01-02 15:04", in.Body.Date+" "+in.Body.Time, loc)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity("date or time is not valid")
+		}
+		if err := s.opts.Clock.SetManual(ctx, entered); err != nil {
+			return nil, err
+		}
+		set := s.opts.Settings()
+		if set.TimeZone != in.Body.TimeZone {
+			set.TimeZone = in.Body.TimeZone
+			if err := s.opts.UpdateSettings(ctx, set); err != nil {
+				return nil, err
+			}
+		}
+		s.opts.Scheduler.Invalidate()
+		s.opts.Events.Publish(scheduleEvent, "")
+		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone)}, nil
+	})
+}

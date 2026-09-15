@@ -19,6 +19,7 @@ import (
 	"jukem/internal/library"
 	"jukem/internal/mpdctl"
 	"jukem/internal/player"
+	"jukem/internal/scheduler"
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
 	"jukem/web"
@@ -49,6 +50,8 @@ type App struct {
 	Library   *library.Browser
 	Files     *library.Files
 	Playlists *library.Playlists
+	Scheduler *scheduler.Scheduler
+	Clock     *scheduler.Clock
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -61,7 +64,7 @@ type App struct {
 }
 
 // Build opens the store, discovers devices and starts MPD.
-func Build(ctx context.Context, cfg config.Config, version string, log *slog.Logger) (*App, error) {
+func Build(ctx context.Context, cfg config.Config, version string, buildTime time.Time, log *slog.Logger) (*App, error) {
 	if err := checkDataDir(cfg.DataDir); err != nil {
 		return nil, &MaintenanceError{
 			Reason: fmt.Sprintf("The data directory %s is not usable: %v", cfg.DataDir, err),
@@ -88,6 +91,15 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Library = library.NewBrowser(a.Pool)
 	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
 	a.Playlists = library.NewPlaylists(paths.PlaylistDir, func() string { return a.Settings().MusicRoot }, db)
+	a.Clock = scheduler.NewClock(ctx, db, buildTime)
+	a.Scheduler = scheduler.New(ctx, scheduler.Deps{
+		Store: db, Player: a.Player, Events: a.Events, Clock: a.Clock, Log: log,
+		Settings:      a.Settings,
+		Resolve:       a.resolveProgram,
+		MPDRunning:    func() bool { return a.MPD.Status().Running },
+		DevicePresent: func() bool { return a.Devices.Snapshot().Selected != nil },
+		OnProblem:     a.onSchedulerProblem,
+	})
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
@@ -108,11 +120,12 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	go a.Devices.Run(ctx)
 	go a.watchMPD(ctx)
 	go a.Files.Run(ctx)
+	go a.Scheduler.Run(ctx)
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
-		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists,
-		Owner: a.Owner, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
+		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
+		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
 	})
 	if err != nil {
@@ -195,10 +208,12 @@ func (a *App) onMPDEvent(ev mpdctl.Event) {
 			a.applyPlayerSettings()
 			a.Events.Publish(events.Player, "")
 			a.Events.Publish(events.Health, "")
+			a.Scheduler.Kick()
 		}()
 	case mpdctl.EventExited, mpdctl.EventStopped:
 		a.Events.Publish(events.Player, "")
 		a.Events.Publish(events.Health, "")
+		a.Scheduler.Kick()
 	case mpdctl.EventUnstable:
 		a.log.Error("mpd keeps failing", "error", ev.Err)
 	}
@@ -249,6 +264,27 @@ func (a *App) Health() watchdog.Report {
 	default:
 		checks = append(checks, watchdog.Check{Name: "MPD", Status: watchdog.StatusError, Summary: "not running: " + mpd.LastError,
 			Fix: "jukem restarts MPD on its own. If this continues, check that the mpd package is installed and read the log."})
+	}
+
+	owner := a.ownerNow()
+	switch owner.State {
+	case player.OwnerUnavailable:
+		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusError, Summary: owner.Reason})
+	case player.OwnerManual:
+		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusWarning, Summary: "off, manual mode", Fix: "Switch the scheduler on in Settings > Schedule when the appliance should follow the schedule."})
+	default:
+		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusOK, Summary: owner.Reason})
+	}
+	clock := a.Clock.Status(context.Background(), a.Settings().TimeZone)
+	switch clock.Source {
+	case scheduler.ClockNTP:
+		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusOK, Summary: "synchronized (NTP)"})
+	case scheduler.ClockRTC:
+		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusOK, Summary: "hardware clock (RTC), not synchronized"})
+	case scheduler.ClockManual:
+		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusWarning, Summary: "set by hand for this boot", Fix: "Fix the system clock properly: " + clock.FixHint})
+	default:
+		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusError, Summary: "not set, nothing is scheduled", Fix: "Connect the network for NTP, add an RTC, or set the time in Settings > Schedule."})
 	}
 
 	snap := a.Devices.Snapshot()

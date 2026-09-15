@@ -8,8 +8,11 @@ import (
 	"os"
 )
 
-// version is set at build time with -ldflags "-X main.version=...".
-var version = "dev"
+// version and buildTime are set at build time with -ldflags -X.
+var (
+	version   = "dev"
+	buildTime = ""
+)
 
 const usageText = `usage: jukem <command> [options]
 

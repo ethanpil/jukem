@@ -18,7 +18,7 @@ apkver=$(printf '%s' "$version" | sed 's/-/_/')
 
 mkdir -p build dist
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-	go build -trimpath -ldflags "-s -w -X main.version=$version" \
+	go build -trimpath -ldflags "-s -w -X main.version=$version -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 	-o build/jukem ./cmd/jukem
 
 out="dist/jukem-$apkver-$apkarch.apk"

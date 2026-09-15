@@ -57,7 +57,7 @@ func runServe(args []string) error {
 		return serveMaintenance(ctx, cfg, cfgErr.Error(), fix)
 	}
 
-	a, err := app.Build(ctx, cfg, version, logger)
+	a, err := app.Build(ctx, cfg, version, buildStamp(), logger)
 	if err != nil {
 		var mm *app.MaintenanceError
 		if errors.As(err, &mm) {
@@ -67,6 +67,20 @@ func runServe(args []string) error {
 	}
 	defer a.Close()
 	return serveHTTP(ctx, cfg.Listen, a.Handler(), logger)
+}
+
+// buildStamp returns the build time from the linker, or the binary's
+// modification time as the fallback for a development build.
+func buildStamp() time.Time {
+	if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+		return t
+	}
+	if exe, err := os.Executable(); err == nil {
+		if st, err := os.Stat(exe); err == nil {
+			return st.ModTime()
+		}
+	}
+	return time.Time{}
 }
 
 func serveMaintenance(ctx context.Context, cfg config.Config, reason, fix string) error {

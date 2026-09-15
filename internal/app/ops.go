@@ -34,6 +34,7 @@ func (a *App) watchMPD(ctx context.Context) {
 					continue
 				}
 				a.Player.NoteSong(st)
+				a.Scheduler.Kick()
 				key := fmt.Sprintf("%d/%d/%s", a.MPD.Status().PID, st.Song.ID, st.Song.File)
 				if key != lastSong {
 					lastSong = key
@@ -59,47 +60,6 @@ func (a *App) watchMPD(ctx context.Context) {
 // onSongChange runs when a new track starts. Later steps record history
 // here.
 func (a *App) onSongChange(st player.Status) {}
-
-// Owner reports who decides playback. MPD down is always UNAVAILABLE. A
-// missing output makes the owner UNAVAILABLE only while the scheduler is
-// on; in manual mode it is a warning, because a person pressing play has
-// no schedule to get wrong.
-func (a *App) Owner() player.Owner {
-	if !a.MPD.Status().Running {
-		return player.Owner{State: player.OwnerUnavailable, Reason: "MPD is not running"}
-	}
-	set := a.Settings()
-	missing := a.Devices.Snapshot().Selected == nil
-	if !set.SchedulerEnabled {
-		o := player.Owner{State: player.OwnerManual, Reason: "Scheduler off"}
-		if missing {
-			o.Warning = "Output device missing"
-		}
-		return o
-	}
-	if missing {
-		return player.Owner{State: player.OwnerUnavailable, Reason: "Output device missing"}
-	}
-	return player.Owner{State: player.OwnerScheduled, Reason: "No schedule loaded"}
-}
-
-// Transport runs play, pause or stop for a caller.
-func (a *App) Transport(ctx context.Context, action, source string) error {
-	switch action {
-	case "play":
-		return a.Player.Play()
-	case "pause":
-		return a.Player.Pause()
-	case "stop":
-		return a.Player.Stop()
-	}
-	return huma.Error422UnprocessableEntity("unknown action " + action)
-}
-
-// PlayEntry plays from a queue entry.
-func (a *App) PlayEntry(ctx context.Context, id int, source string) error {
-	return a.Player.PlayID(id)
-}
 
 // resolveSource turns a queue action into an ordered list of files.
 func (a *App) resolveSource(ctx context.Context, q api.QueueAction) ([]string, error) {
@@ -160,6 +120,9 @@ func (a *App) QueueAction(ctx context.Context, q api.QueueAction, source string)
 		res.Added, err = a.Player.Load(files, st.Shuffle, -1)
 		if err != nil {
 			return res, err
+		}
+		if err := a.playNowOverride(ctx, source); err != nil {
+			a.log.Warn("cannot record the Play Now override", "error", err)
 		}
 	case "play_next":
 		res.Added, err = a.Player.PlayNext(files)
@@ -236,7 +199,9 @@ func (a *App) UpdateSettings(ctx context.Context, set store.Settings) error {
 	}
 	a.Events.Publish(events.Settings, "")
 	if set.SchedulerEnabled != old.SchedulerEnabled {
-		a.Events.Publish(events.Schedule, "")
+		a.applySchedulerSwitch(ctx, set.SchedulerEnabled)
+	} else if set.TimeZone != old.TimeZone || set.DefaultShuffle != old.DefaultShuffle {
+		a.Scheduler.Invalidate()
 	}
 	return nil
 }
