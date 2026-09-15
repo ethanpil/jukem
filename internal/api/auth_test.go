@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -176,17 +177,61 @@ func TestLoginRateLimit(t *testing.T) {
 }
 
 func TestCookieFlags(t *testing.T) {
-	proxied := httptest.NewRequest("GET", "/", nil)
-	proxied.Header.Set("X-Forwarded-Proto", "https")
-	c := sessionCookie(proxied, "abc")
+	a := &auth{proxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}
+	req := func(remote string, headers ...string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Add(headers[i], headers[i+1])
+		}
+		return r
+	}
+	proxied := req("127.0.0.1:5000", "X-Forwarded-Proto", "https")
+	c := a.sessionCookie(proxied, "abc")
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" || c.MaxAge <= 0 {
 		t.Fatalf("cookie %+v", c)
 	}
-	if cc := clearCookie(proxied); cc.MaxAge != -1 || cc.Value != "" {
+	if cc := a.clearCookie(proxied); cc.MaxAge != -1 || cc.Value != "" || !cc.Secure {
 		t.Fatalf("clear cookie %+v", cc)
 	}
-	if sessionCookie(httptest.NewRequest("GET", "/", nil), "abc").Secure {
-		t.Fatal("Secure set for a plain HTTP request")
+	for name, r := range map[string]*http.Request{
+		"plain HTTP":        req("127.0.0.1:5000"),
+		"untrusted address": req("192.0.2.7:5000", "X-Forwarded-Proto", "https"),
+	} {
+		if a.sessionCookie(r, "abc").Secure {
+			t.Errorf("%s: Secure set", name)
+		}
+	}
+	for name, r := range map[string]*http.Request{
+		"proxy chain":      req("127.0.0.1:5000", "X-Forwarded-Proto", "https, http"),
+		"Forwarded header": req("127.0.0.1:5000", "Forwarded", `for=192.0.2.7;proto="https", for=10.0.0.2`),
+	} {
+		if !a.sessionCookie(r, "abc").Secure {
+			t.Errorf("%s: Secure not set", name)
+		}
+	}
+}
+
+func TestClientIPBehindProxy(t *testing.T) {
+	a := &auth{proxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8")}}
+	cases := []struct {
+		remote, xff, want string
+	}{
+		{"192.0.2.7:1", "203.0.113.9", "192.0.2.7"},                           // not a proxy: the header is ignored
+		{"127.0.0.1:1", "203.0.113.9", "203.0.113.9"},                         // one proxy
+		{"127.0.0.1:1", "198.51.100.1, 203.0.113.9, 10.1.1.1", "203.0.113.9"}, // a false first entry and two proxies
+		{"127.0.0.1:1", "", "127.0.0.1"},                                      // a proxy without the header
+		{"127.0.0.1:1", "not-an-address", "127.0.0.1"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := a.clientIP(r); got != c.want {
+			t.Errorf("remote %s, X-Forwarded-For %q: got %s, want %s", c.remote, c.xff, got, c.want)
+		}
 	}
 }
 

@@ -80,6 +80,11 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 			Fix:    dataDirFix(cfg.DataDir),
 		}
 	}
+	// An older release kept an uploaded certificate and its private key
+	// here. jukem no longer uses them, so the owner removes them.
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "tls")); err == nil {
+		log.Warn("the data directory holds TLS files from an older release; jukem no longer serves HTTPS, so remove them", "path", filepath.Join(cfg.DataDir, "tls"))
+	}
 	db, err := openStore(ctx, cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -146,7 +151,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.runNightly(ctx)
 
 	srv, err := api.New(api.Options{
-		Version: version, Static: web.Files, Store: db, Health: a.Health,
+		Version: version, Static: web.Files, Store: db, Health: a.Health, TrustedProxies: cfg.TrustedProxies,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,

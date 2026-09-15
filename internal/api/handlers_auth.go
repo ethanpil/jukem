@@ -108,7 +108,7 @@ func (s *Server) registerAuth(api huma.API) {
 		Summary: "Start a web session", Security: []map[string][]string{},
 	}, func(ctx context.Context, in *passwordInput) (*sessionOutput, error) {
 		r := requestFrom(ctx)
-		ip := clientIP(r)
+		ip := s.auth.clientIP(r)
 		if !s.auth.limiter.allowed(ip) {
 			return nil, huma.Error429TooManyRequests("too many failed logins; wait a few minutes")
 		}
@@ -141,7 +141,7 @@ func (s *Server) registerAuth(api huma.API) {
 		if err := s.store.DeleteSession(ctx, p.Session.ID); err != nil {
 			return nil, err
 		}
-		return &cookieOutput{SetCookie: clearCookie(requestFrom(ctx))}, nil
+		return &cookieOutput{SetCookie: s.auth.clearCookie(requestFrom(ctx))}, nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -175,7 +175,7 @@ func (s *Server) registerAuth(api huma.API) {
 		if err := s.store.SetPasswordHash(ctx, newHash); err != nil {
 			return nil, err
 		}
-		return &cookieOutput{SetCookie: clearCookie(requestFrom(ctx))}, nil
+		return &cookieOutput{SetCookie: s.auth.clearCookie(requestFrom(ctx))}, nil
 	})
 
 	huma.Register(api, huma.Operation{

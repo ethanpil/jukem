@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,7 +19,7 @@ func TestLoadDefaultsWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg != Default() {
+	if !reflect.DeepEqual(cfg, Default()) {
 		t.Fatalf("got %+v", cfg)
 	}
 	if len(warnings) != 1 {
@@ -92,5 +94,27 @@ func TestNullKeepsDefault(t *testing.T) {
 	}
 	if cfg.LogFile != Default().LogFile {
 		t.Fatalf("got %q", cfg.LogFile)
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(p, []byte("trusted_proxies: [\"10.0.0.0/8\", \"192.0.2.5\", \"bogus\"]\n"), 0o600)
+	cfg, warnings, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.5/32")}
+	if !reflect.DeepEqual(cfg.TrustedProxies, want) {
+		t.Fatalf("got %v", cfg.TrustedProxies)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "bogus") {
+		t.Fatalf("warnings %v", warnings)
+	}
+	t.Setenv("JUKEM_TRUSTED_PROXIES", "172.16.0.0/12, ::1")
+	cfg, _, _ = Load(p)
+	want = []netip.Prefix{netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("::1/128")}
+	if !reflect.DeepEqual(cfg.TrustedProxies, want) {
+		t.Fatalf("env: got %v", cfg.TrustedProxies)
 	}
 }

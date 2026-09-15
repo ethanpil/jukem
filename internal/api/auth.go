@@ -11,6 +11,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +74,7 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 }
 
 // requestFrom returns the HTTP request stored by the auth middleware, for
-// handlers that need the remote address or the user agent.
+// handlers that need the client address, the scheme or the user agent.
 func requestFrom(ctx context.Context) *http.Request {
 	r, _ := ctx.Value(requestKey{}).(*http.Request)
 	return r
@@ -92,6 +93,7 @@ type auth struct {
 	store   *store.Store
 	limiter *loginLimiter
 	hashSem chan struct{}
+	proxies []netip.Prefix // trusted reverse proxies
 }
 
 // HashPassword returns an argon2id PHC string.
@@ -208,15 +210,46 @@ func (l *loginLimiter) recent(ip string) []time.Time {
 	return kept
 }
 
-// clientIP returns the remote address without the port. Behind a reverse
-// proxy every client shares the proxy's address; jukem serves a LAN
-// directly, so it does not read forwarding headers.
-func clientIP(r *http.Request) string {
+// clientIP returns the address of the client. A request from a trusted
+// reverse proxy gives the client in X-Forwarded-For. jukem reads that list
+// from the right and takes the first address that is not a trusted proxy.
+// A client cannot use a false header to hide from the login limit, because
+// jukem reads the header only from a trusted proxy.
+func (a *auth) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if !a.fromProxy(r) {
+		return host
+	}
+	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip, err := netip.ParseAddr(strings.TrimSpace(parts[i]))
+		if err != nil {
+			break
+		}
+		if !a.trusted(ip) {
+			return ip.Unmap().String()
+		}
 	}
 	return host
+}
+
+// fromProxy reports whether the request comes from a trusted proxy.
+func (a *auth) fromProxy(r *http.Request) bool {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	return err == nil && a.trusted(ap.Addr())
+}
+
+func (a *auth) trusted(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	for _, p := range a.proxies {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // openPaths are reachable without a credential. The same endpoints carry
@@ -257,7 +290,7 @@ func (a *auth) middleware(next http.Handler) http.Handler {
 		if p != nil {
 			ctx = context.WithValue(ctx, principalKey{}, *p)
 			if p.renew {
-				http.SetCookie(w, sessionCookie(r, p.Session.ID))
+				http.SetCookie(w, a.sessionCookie(r, p.Session.ID))
 			}
 		}
 		if isOpen(r.URL.Path) {
@@ -294,7 +327,7 @@ func (a *auth) authenticate(r *http.Request) (*Principal, error) {
 		}
 		if k.LastUsedAt == nil || time.Since(*k.LastUsedAt) > touchInterval {
 			// A failed update does not reject the request.
-			a.store.TouchAPIKey(ctx, k.ID, clientIP(r))
+			a.store.TouchAPIKey(ctx, k.ID, a.clientIP(r))
 		}
 		return &Principal{Kind: KindAPIKey, Name: k.Name}, nil
 	}
@@ -321,20 +354,18 @@ func (a *auth) startSession(ctx context.Context, r *http.Request) (store.Session
 		CreatedAt: time.Now(),
 		LastSeen:  time.Now(),
 		ExpiresAt: time.Now().Add(sessionLife),
-		IP:        clientIP(r),
+		IP:        a.clientIP(r),
 		UserAgent: r.UserAgent(),
 	}
 	if err := a.store.CreateSession(ctx, se); err != nil {
 		return se, nil, err
 	}
-	return se, sessionCookie(r, se.ID), nil
+	return se, a.sessionCookie(r, se.ID), nil
 }
 
-// sessionCookie builds the session cookie. It is Secure when the browser
-// reached jukem over HTTPS: directly, or through a reverse proxy that says
-// so in X-Forwarded-Proto. A false header can only make the cookie
-// Secure, which a plain-HTTP browser then does not store.
-func sessionCookie(r *http.Request, id string) *http.Cookie {
+// sessionCookie builds the session cookie. The cookie is Secure when a
+// trusted reverse proxy reports that the browser used HTTPS.
+func (a *auth) sessionCookie(r *http.Request, id string) *http.Cookie {
 	return &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    id,
@@ -342,18 +373,31 @@ func sessionCookie(r *http.Request, id string) *http.Cookie {
 		MaxAge:   int(sessionLife.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isHTTPS(r),
+		Secure:   a.fromProxy(r) && forwardedProto(r) == "https",
 	}
 }
 
-// isHTTPS reports whether the request came over HTTPS.
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+// forwardedProto returns the scheme the browser used, from the first
+// proxy in the chain. It reads X-Forwarded-Proto, then the proto parameter
+// of the standard Forwarded header.
+func forwardedProto(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
+		first, _, _ := strings.Cut(v, ",")
+		return strings.ToLower(strings.TrimSpace(first))
+	}
+	first, _, _ := strings.Cut(r.Header.Get("Forwarded"), ",")
+	for _, pair := range strings.Split(first, ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if ok && strings.EqualFold(k, "proto") {
+			return strings.ToLower(strings.Trim(v, `"`))
+		}
+	}
+	return ""
 }
 
 // clearCookie tells the browser to drop the session cookie.
-func clearCookie(r *http.Request) *http.Cookie {
-	c := sessionCookie(r, "")
+func (a *auth) clearCookie(r *http.Request) *http.Cookie {
+	c := a.sessionCookie(r, "")
 	c.MaxAge = -1
 	return c
 }

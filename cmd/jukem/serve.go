@@ -98,34 +98,42 @@ func serveMaintenance(ctx context.Context, cfg config.Config, reason, fix string
 }
 
 // serveHTTP runs the listener until ctx is cancelled, then drains for a few
-// seconds. A port that does not open is retried, not fatal: an exit would
-// make the supervisor restart jukem every two seconds. jukem serves plain
-// HTTP only; a reverse proxy in front of it adds HTTPS.
+// seconds. A port that does not open is retried, not fatal. An exit makes
+// the supervisor restart jukem every two seconds. jukem serves plain HTTP
+// only. A reverse proxy in front of it adds HTTPS.
 func serveHTTP(ctx context.Context, listen string, h http.Handler, logger *slog.Logger) error {
 	ln, err := listenWithRetry(ctx, listen, logger)
 	if err != nil {
 		return err
 	}
+	// The request contexts end when the shutdown starts. An event stream
+	// stays open until its context ends, so without this every stop would
+	// wait for the full drain time.
+	base, endRequests := context.WithCancel(context.Background())
+	defer endRequests()
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return base },
 	}
+	srv.RegisterOnShutdown(endRequests)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	logger.Info("listening", "addr", ln.Addr().String())
 	select {
-	case err = <-errc:
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
+	case err := <-errc:
 		return err
 	case <-ctx.Done():
 		logger.Info("shutting down")
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	if err := srv.Shutdown(sctx); err != nil {
+		// A request that did not finish in time is not a failed stop.
+		logger.Warn("requests still open at shutdown", "error", err)
+	}
+	return nil
 }
 
 // listenWithRetry opens the port, and tries again every few seconds until

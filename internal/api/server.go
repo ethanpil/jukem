@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -35,6 +36,9 @@ type Options struct {
 	Static  fs.FS
 	Store   *store.Store
 	Health  func() watchdog.Report
+	// TrustedProxies are the reverse proxies whose forwarding headers
+	// jukem reads.
+	TrustedProxies []netip.Prefix
 
 	Player    *player.Player
 	Events    *events.Hub
@@ -86,7 +90,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		opts:    opts,
 		store:   opts.Store,
-		auth:    &auth{store: opts.Store, limiter: newLoginLimiter(), hashSem: make(chan struct{}, hashSlots)},
+		auth:    &auth{store: opts.Store, limiter: newLoginLimiter(), hashSem: make(chan struct{}, hashSlots), proxies: opts.TrustedProxies},
 		started: time.Now(),
 	}
 

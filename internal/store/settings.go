@@ -13,6 +13,11 @@ import (
 // Settings holds every setting the UI exposes. The bootstrap settings
 // (listen address, data directory, log file) are in the config file.
 type Settings struct {
+	// A PUT from a page or client of another release can hold a field this
+	// release does not know, such as the removed https_enabled. jukem
+	// ignores such a field and does not reject the request.
+	_ struct{} `json:"-" additionalProperties:"true"`
+
 	SetupComplete bool `json:"setup_complete" doc:"True after the setup wizard has finished"`
 
 	// Playback

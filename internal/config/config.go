@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,9 @@ type Config struct {
 	Listen  string `yaml:"listen"`
 	DataDir string `yaml:"data_dir"`
 	LogFile string `yaml:"log_file"`
+	// TrustedProxies are the addresses of reverse proxies. jukem reads
+	// X-Forwarded-For and X-Forwarded-Proto only from them.
+	TrustedProxies []netip.Prefix `yaml:"-"`
 }
 
 // ParseError reports a config file that does not parse. The caller shows a
@@ -32,9 +36,10 @@ func (e *ParseError) Unwrap() error { return e.Err }
 // Default returns the settings that apply when a key is missing.
 func Default() Config {
 	return Config{
-		Listen:  ":80",
-		DataDir: "/var/lib/jukem",
-		LogFile: "/var/log/jukem/jukem.log",
+		Listen:         ":80",
+		DataDir:        "/var/lib/jukem",
+		LogFile:        "/var/log/jukem/jukem.log",
+		TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
 	}
 }
 
@@ -61,7 +66,7 @@ func Load(path string) (Config, []string, error) {
 		loadErr = fmt.Errorf("read %s: %w", path, err)
 	}
 
-	applyEnv(&cfg)
+	warnings = append(warnings, applyEnv(&cfg)...)
 	// MPD reads the socket path from the data dir, so it must be absolute.
 	if !filepath.IsAbs(cfg.DataDir) && !strings.HasPrefix(cfg.DataDir, "/") {
 		if abs, err := filepath.Abs(cfg.DataDir); err == nil {
@@ -85,7 +90,7 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 	if root.Kind != yaml.MappingNode {
 		return nil, errors.New("top level must be a mapping")
 	}
-	known := map[string]bool{"listen": true, "data_dir": true, "log_file": true}
+	known := map[string]bool{"listen": true, "data_dir": true, "log_file": true, "trusted_proxies": true}
 	var warnings []string
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if k := root.Content[i].Value; !known[k] {
@@ -93,9 +98,10 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 		}
 	}
 	var typed struct {
-		Listen  *string `yaml:"listen"`
-		DataDir *string `yaml:"data_dir"`
-		LogFile *string `yaml:"log_file"`
+		Listen         *string  `yaml:"listen"`
+		DataDir        *string  `yaml:"data_dir"`
+		LogFile        *string  `yaml:"log_file"`
+		TrustedProxies []string `yaml:"trusted_proxies"`
 	}
 	if err := root.Decode(&typed); err != nil {
 		return nil, err
@@ -109,13 +115,43 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 	if typed.LogFile != nil {
 		cfg.LogFile = *typed.LogFile
 	}
+	if typed.TrustedProxies != nil {
+		var w []string
+		cfg.TrustedProxies, w = parseProxies(typed.TrustedProxies)
+		warnings = append(warnings, w...)
+	}
 	return warnings, nil
 }
 
-// applyEnv applies JUKEM_LISTEN, JUKEM_DATA_DIR and JUKEM_LOG_FILE. A
-// variable set to the empty string still applies: JUKEM_LOG_FILE="" selects stdout,
-// which the Docker image uses.
-func applyEnv(cfg *Config) {
+// parseProxies reads addresses and CIDR ranges. A bad entry is skipped
+// with a warning.
+func parseProxies(list []string) ([]netip.Prefix, []string) {
+	out := []netip.Prefix{}
+	var warnings []string
+	for _, raw := range list {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(v); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		if a, err := netip.ParseAddr(v); err == nil {
+			out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("trusted proxy %q is not an address or a CIDR range, ignored", v))
+	}
+	return out, warnings
+}
+
+// applyEnv applies JUKEM_LISTEN, JUKEM_DATA_DIR, JUKEM_LOG_FILE and
+// JUKEM_TRUSTED_PROXIES (a comma list). A variable set to the empty string
+// still applies. JUKEM_LOG_FILE="" selects stdout, which the Docker image
+// uses.
+func applyEnv(cfg *Config) []string {
+	var warnings []string
 	if v, ok := os.LookupEnv("JUKEM_LISTEN"); ok {
 		cfg.Listen = v
 	}
@@ -125,6 +161,10 @@ func applyEnv(cfg *Config) {
 	if v, ok := os.LookupEnv("JUKEM_LOG_FILE"); ok {
 		cfg.LogFile = v
 	}
+	if v, ok := os.LookupEnv("JUKEM_TRUSTED_PROXIES"); ok {
+		cfg.TrustedProxies, warnings = parseProxies(strings.Split(v, ","))
+	}
+	return warnings
 }
 
 // Runtime reports where jukem runs: "docker" or "host". The Docker image sets
