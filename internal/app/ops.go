@@ -11,6 +11,7 @@ import (
 	"jukem/internal/api"
 	"jukem/internal/audio"
 	"jukem/internal/events"
+	"jukem/internal/library"
 	"jukem/internal/mpdctl"
 	"jukem/internal/player"
 	"jukem/internal/store"
@@ -197,6 +198,7 @@ func (a *App) UpdateSettings(ctx context.Context, set store.Settings) error {
 		return err
 	}
 	if set.MusicRoot != old.MusicRoot {
+		library.ForgetStat()
 		a.mu.Lock()
 		outputs := a.outputs
 		a.rescanAfterStart = true

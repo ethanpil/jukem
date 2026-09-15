@@ -136,7 +136,7 @@ func (p *Player) Status() (Status, error) {
 				return err
 			}
 			if song["file"] != "" {
-				t := trackFrom(song)
+				t := TrackFrom(song)
 				st.Song = &t
 			}
 		}
@@ -161,7 +161,8 @@ func parseStatus(a mpd.Attrs) Status {
 	return st
 }
 
-func trackFrom(a mpd.Attrs) Track {
+// TrackFrom builds a Track from MPD's attributes for a song.
+func TrackFrom(a mpd.Attrs) Track {
 	t := Track{File: a["file"], Title: a["Title"], Artist: a["Artist"], Album: a["Album"]}
 	t.ID, _ = strconv.Atoi(a["Id"])
 	t.Pos, _ = strconv.Atoi(a["Pos"])
@@ -279,7 +280,7 @@ func (p *Player) Queue(offset, limit int) ([]Track, int, error) {
 			return err
 		}
 		for _, a := range attrs {
-			tracks = append(tracks, trackFrom(a))
+			tracks = append(tracks, TrackFrom(a))
 		}
 		return nil
 	})

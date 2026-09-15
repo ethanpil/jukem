@@ -17,11 +17,11 @@ func TestParseStatus(t *testing.T) {
 }
 
 func TestTrackFrom(t *testing.T) {
-	tr := trackFrom(mpd.Attrs{"file": "Rock/Band/01 - Song.flac", "Id": "5", "Pos": "2", "duration": "200.5"})
+	tr := TrackFrom(mpd.Attrs{"file": "Rock/Band/01 - Song.flac", "Id": "5", "Pos": "2", "duration": "200.5"})
 	if tr.Title != "01 - Song" || tr.ID != 5 || tr.Pos != 2 || tr.Duration != 200.5 {
 		t.Fatalf("got %+v", tr)
 	}
-	tr = trackFrom(mpd.Attrs{"file": "a.mp3", "Title": "A", "Time": "30"})
+	tr = TrackFrom(mpd.Attrs{"file": "a.mp3", "Title": "A", "Time": "30"})
 	if tr.Title != "A" || tr.Duration != 30 {
 		t.Fatalf("got %+v", tr)
 	}

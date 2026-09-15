@@ -1,6 +1,7 @@
 package library
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,8 +23,8 @@ func TestCleanRel(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"../x", "a/../b", "a/./b", "a//b", ".hidden/x.mp3", "a/.jukem-tmp/x", "/etc/passwd",
-		"C:/Windows", "a\x00b", "a\nb", strings.Repeat("x", 256) + ".mp3",
+		"../x", "a/../b", "a/./b", "a//b", ".hidden/x.mp3", "a/.jukem-tmp/x", "/etc/passwd", "/Christmas",
+		"a\x00b", "a\nb", strings.Repeat("x", 256) + ".mp3", ".", "..",
 	}
 	for _, in := range bad {
 		if _, err := CleanRel(in); err == nil {
@@ -43,5 +44,31 @@ func TestAbsStaysInsideRoot(t *testing.T) {
 	}
 	if _, err := Abs(root, "../x"); err == nil {
 		t.Fatal("escaped root")
+	}
+	// A root at the top of the file system works too.
+	top := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	if abs, err := Abs(top, "a/b.mp3"); err != nil || abs != filepath.Join(top, "a", "b.mp3") {
+		t.Fatalf("top root: %q %v", abs, err)
+	}
+}
+
+func TestResolveRejectsSymlinkOutOfRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "music")
+	outside := filepath.Join(base, "secret.db")
+	os.MkdirAll(filepath.Join(root, "a"), 0o750)
+	os.WriteFile(filepath.Join(root, "a", "song.mp3"), []byte("x"), 0o600)
+	os.WriteFile(outside, []byte("x"), 0o600)
+	if err := os.Symlink(outside, filepath.Join(root, "a", "link.mp3")); err != nil {
+		t.Skip("symlinks not available:", err)
+	}
+	if _, err := Resolve(root, "a/song.mp3"); err != nil {
+		t.Fatalf("real file: %v", err)
+	}
+	if _, err := Resolve(root, "a/link.mp3"); err == nil {
+		t.Fatal("symlink out of the root was accepted")
+	}
+	if _, err := Resolve(root, "a/missing.mp3"); !os.IsNotExist(err) {
+		t.Fatalf("missing file: %v", err)
 	}
 }

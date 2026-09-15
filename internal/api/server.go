@@ -95,6 +95,8 @@ func New(opts Options) (*Server, error) {
 		s.registerPlayer(hapi)
 		s.registerDevices(hapi)
 		s.registerSettings(hapi)
+	}
+	if opts.Library != nil {
 		s.registerLibrary(hapi, apiMux)
 	}
 	if opts.Events != nil {

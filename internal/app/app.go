@@ -272,13 +272,10 @@ func checkDataDir(dir string) error {
 	if !st.IsDir() {
 		return errors.New("not a directory")
 	}
-	f, err := os.CreateTemp(dir, ".write-test-*")
-	if err != nil {
-		return err
+	if !library.Writable(dir) {
+		return errors.New("not writable")
 	}
-	name := f.Name()
-	f.Close()
-	return os.Remove(name)
+	return nil
 }
 
 // dataDirFix tells the operator how to repair the data directory. Under

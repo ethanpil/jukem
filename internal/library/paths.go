@@ -4,6 +4,7 @@ package library
 
 import (
 	"errors"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -12,11 +13,12 @@ import (
 // ErrBadPath reports a relative path that must not reach the file system.
 var ErrBadPath = errors.New("path is not allowed")
 
-// CleanRel validates a path relative to the music root and returns it in
-// canonical form with forward slashes. It rejects absolute paths, ".."
-// segments, empty segments, control characters, segments over 255 bytes,
-// and names that begin with a dot: MPD skips hidden names, so a file
-// there would never appear in the library.
+// CleanRel validates a path relative to the music root. It returns the
+// path with forward slashes and no trailing slash. It rejects absolute
+// paths, ".." and "." segments, empty segments, control characters, and
+// segments over 255 bytes. It also rejects names that begin with a dot.
+// MPD skips hidden names, so a file there would never appear in the
+// library.
 func CleanRel(p string) (string, error) {
 	p = strings.ReplaceAll(p, "\\", "/")
 	// A bare slash means the root; any other leading slash is absolute.
@@ -43,11 +45,7 @@ func CleanRel(p string) (string, error) {
 			}
 		}
 	}
-	cleaned := path.Clean(p)
-	if cleaned != p {
-		return "", ErrBadPath
-	}
-	return cleaned, nil
+	return path.Clean(p), nil
 }
 
 // Abs joins a validated relative path onto the root and confirms the
@@ -59,8 +57,42 @@ func Abs(root, rel string) (string, error) {
 	}
 	root = filepath.Clean(root)
 	abs := filepath.Join(root, filepath.FromSlash(rel))
-	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+	if !inside(root, abs) {
 		return "", ErrBadPath
 	}
 	return abs, nil
+}
+
+// Resolve is Abs followed by symlink resolution. The resolved path must
+// still be inside the resolved root, so a link that points out of the
+// music root is rejected. The target must exist.
+func Resolve(root, rel string) (string, error) {
+	abs, err := Abs(root, rel)
+	if err != nil {
+		return "", err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", err
+		}
+		return "", ErrBadPath
+	}
+	if !inside(realRoot, real) {
+		return "", ErrBadPath
+	}
+	return real, nil
+}
+
+// inside reports whether p is root or below it.
+func inside(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
