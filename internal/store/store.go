@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 // Store is the SQLite database. One write connection and a small read pool
-// avoid SQLITE_BUSY under WAL.
+// avoid SQLITE_BUSY under WAL. Code inside a Tx callback must use the
+// transaction, not the store: the single write connection is in use.
 type Store struct {
 	path string
 	w    *sql.DB
@@ -23,14 +25,13 @@ type Store struct {
 // Open opens or creates the database file. It does not migrate; call
 // Migrate next so that the caller can act on schema problems.
 func Open(path string) (*Store, error) {
-	w, err := openDB(path)
+	w, err := openDB(path, false)
 	if err != nil {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1)
 	w.SetMaxIdleConns(1)
-	w.SetConnMaxLifetime(0)
-	r, err := openDB(path)
+	r, err := openDB(path, true)
 	if err != nil {
 		w.Close()
 		return nil, err
@@ -47,22 +48,22 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-func openDB(path string) (*sql.DB, error) {
+// uriEscaper escapes the characters that end or decode inside a SQLite
+// file: URI path.
+var uriEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+
+func openDB(path string, readOnly bool) (*sql.DB, error) {
 	q := url.Values{}
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "foreign_keys(ON)")
 	q.Add("_pragma", "busy_timeout(5000)")
-	dsn := "file:" + filepath.ToSlash(path) + "?" + q.Encode()
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+	if readOnly {
+		q.Add("_pragma", "query_only(1)")
 	}
-	return db, nil
+	dsn := "file:" + uriEscaper.Replace(filepath.ToSlash(path)) + "?" + q.Encode()
+	return sql.Open("sqlite", dsn)
 }
-
-// Path returns the database file path.
-func (s *Store) Path() string { return s.path }
 
 // Close closes both connection pools.
 func (s *Store) Close() error {
@@ -74,7 +75,7 @@ func (s *Store) Close() error {
 	return err2
 }
 
-// Read returns the read pool.
+// Read returns the read pool. Its connections reject writes.
 func (s *Store) Read() *sql.DB { return s.r }
 
 // Write returns the single-connection write pool.
@@ -91,15 +92,4 @@ func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 		return err
 	}
 	return tx.Commit()
-}
-
-// now returns the current time as stored in the database.
-func now() string {
-	return time.Now().UTC().Format(time.RFC3339)
-}
-
-// parseTime reads a time written by now.
-func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
 }

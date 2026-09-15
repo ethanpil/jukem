@@ -115,7 +115,10 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 			Fix:    "Check that the data directory is writable by the jukem user and that the disk has space, then restart the service.",
 		}
 	}
-	err = db.Migrate(ctx, filepath.Join(dataDir, "snapshots"))
+	snapDir := filepath.Join(dataDir, "snapshots")
+	// A stop signal must not cut a migration short: the migration completes
+	// or rolls back on its own, and the caller stops afterwards.
+	err = db.Migrate(context.WithoutCancel(ctx), snapDir)
 	if err == nil {
 		return db, nil
 	}
@@ -124,28 +127,47 @@ func openStore(ctx context.Context, dataDir string) (*store.Store, error) {
 	var failed *store.MigrationError
 	switch {
 	case errors.As(err, &tooNew):
+		snapshot, ok := store.LatestSnapshot(snapDir, tooNew.Binary)
+		fix := "Install the newer jukem package again."
+		if ok {
+			fix += " To stay on this release, restore the last snapshot this release understands:\n" + restoreSteps(snapshot, dbPath)
+		} else {
+			fix += fmt.Sprintf(" No snapshot for schema version %d or older exists in %s, so this release cannot use the database.", tooNew.Binary, snapDir)
+		}
 		return nil, &maintenanceError{
-			Reason: fmt.Sprintf("The database was written by a newer jukem: schema version %d, this binary knows version %d.", tooNew.Database, tooNew.Binary),
-			Fix: "Install the newer jukem package again, or roll back the database:\n" +
-				"  rc-service jukem stop\n" +
-				fmt.Sprintf("  cp %s/snapshots/jukem-v%d-<timestamp>.db %s\n", dataDir, tooNew.Binary, dbPath) +
-				fmt.Sprintf("  rm -f %s-wal %s-shm\n", dbPath, dbPath) +
-				"  rc-service jukem start",
+			Reason: fmt.Sprintf("A newer jukem wrote the database: schema version %d, this binary knows version %d.", tooNew.Database, tooNew.Binary),
+			Fix:    fix,
 		}
 	case errors.As(err, &failed):
+		fix := "Report this problem with the log, then restart the service to try again."
+		if failed.Snapshot != "" {
+			fix = "The database stays consistent at the previous version. Report this problem with the log. " +
+				"To go back to the previous jukem release, install the older package and restore the snapshot:\n" +
+				restoreSteps(failed.Snapshot, dbPath)
+		}
 		return nil, &maintenanceError{
-			Reason: fmt.Sprintf("Database migration %d failed and was rolled back: %v", failed.Version, failed.Err),
-			Fix: "The database is consistent at the previous version. Report this problem with the log. " +
-				"To go back to the previous jukem release, stop the service, install the older package, restore the snapshot:\n" +
-				fmt.Sprintf("  cp %s %s\n", failed.Snapshot, dbPath) +
-				fmt.Sprintf("  rm -f %s-wal %s-shm\n", dbPath, dbPath) +
-				"and start the service.",
+			Reason: fmt.Sprintf("Database migration %d failed. The store rolled it back: %v", failed.Version, failed.Err),
+			Fix:    fix,
 		}
 	}
 	return nil, &maintenanceError{
-		Reason: fmt.Sprintf("The database %s could not be prepared: %v", dbPath, err),
+		Reason: fmt.Sprintf("The database %s is not ready: %v", dbPath, err),
 		Fix:    "Check the log, then restart the service.",
 	}
+}
+
+// restoreSteps lists the commands that put a snapshot in place of the
+// database. The service must be stopped first, and how depends on where
+// jukem runs.
+func restoreSteps(snapshot, dbPath string) string {
+	stop, start := "  rc-service jukem stop\n", "  rc-service jukem start"
+	if config.Runtime() == "docker" {
+		stop, start = "  docker compose stop jukem   (paths below are inside the container)\n", "  docker compose start jukem"
+	}
+	return stop +
+		fmt.Sprintf("  cp %s %s\n", snapshot, dbPath) +
+		fmt.Sprintf("  rm -f %s-wal %s-shm\n", dbPath, dbPath) +
+		start
 }
 
 // dataDirFix tells the operator how to repair the data directory. Under

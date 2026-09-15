@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,8 +25,8 @@ type Migration struct {
 	SQL     string
 }
 
-// ErrSchemaTooNew reports a database written by a newer binary. An old binary
-// must never write to a newer schema.
+// ErrSchemaTooNew reports a database that a newer binary wrote. An old
+// binary must never write to a newer schema.
 type ErrSchemaTooNew struct {
 	Database int
 	Binary   int
@@ -36,7 +36,9 @@ func (e *ErrSchemaTooNew) Error() string {
 	return fmt.Sprintf("database schema version %d is newer than this binary supports (%d)", e.Database, e.Binary)
 }
 
-// MigrationError reports a migration that failed and was rolled back.
+// MigrationError reports a migration that failed. The store rolled it back,
+// and the database stays at the last version that completed. Snapshot is
+// empty when the database was new, because there was nothing to keep.
 type MigrationError struct {
 	Version  int
 	Snapshot string
@@ -44,7 +46,7 @@ type MigrationError struct {
 }
 
 func (e *MigrationError) Error() string {
-	return fmt.Sprintf("migration %d failed: %v (snapshot: %s)", e.Version, e.Err, e.Snapshot)
+	return fmt.Sprintf("migration %d failed: %v", e.Version, e.Err)
 }
 
 func (e *MigrationError) Unwrap() error { return e.Err }
@@ -147,9 +149,6 @@ func (s *Store) applyMigration(ctx context.Context, m Migration) error {
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
-			return err
-		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, m.Version)
 		return err
 	})
@@ -158,53 +157,110 @@ func (s *Store) applyMigration(ctx context.Context, m Migration) error {
 // keepSnapshots is the number of snapshots that survive pruning.
 const keepSnapshots = 5
 
-// Snapshot copies the database with VACUUM INTO and prunes old copies. It
-// returns the path of the new file.
+// Snapshot copies the database with VACUUM INTO and removes old copies. It
+// returns the path of the new file. A copy that does not complete is
+// removed, so a partial file never counts as a snapshot.
 func (s *Store) Snapshot(ctx context.Context, dir string, version int) (string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("jukem-v%d-%s.db", version, time.Now().UTC().Format("20060102T150405Z"))
-	path := filepath.Join(dir, name)
-	quoted := strings.ReplaceAll(filepath.ToSlash(path), "'", "''")
-	if _, err := s.w.ExecContext(ctx, "VACUUM INTO '"+quoted+"'"); err != nil {
+	path := filepath.Join(dir, snapshotName(version, time.Now()))
+	if _, err := s.w.ExecContext(ctx, "VACUUM INTO ?", filepath.ToSlash(path)); err != nil {
+		os.Remove(path)
 		return "", err
 	}
+	// A prune failure is not a reason to stop an upgrade: the new snapshot
+	// exists, and an extra file in the directory does no harm.
 	if err := pruneSnapshots(dir); err != nil {
-		return path, err
+		slog.Warn("cannot remove old database snapshots", "dir", dir, "error", err)
 	}
 	return path, nil
 }
 
-// pruneSnapshots keeps the newest keepSnapshots files. The timestamp in the
-// name sorts them.
-func pruneSnapshots(dir string) error {
+// snapshotName builds jukem-v<version>-<timestamp>.db. The timestamp has
+// millisecond resolution so that two snapshots in one second differ.
+func snapshotName(version int, t time.Time) string {
+	return fmt.Sprintf("jukem-v%d-%s.db", version, t.UTC().Format("20060102T150405.000Z"))
+}
+
+// snapshotFile is a parsed snapshot name.
+type snapshotFile struct {
+	name    string
+	version int
+	stamp   string
+}
+
+// listSnapshots returns the snapshots in dir, newest first.
+func listSnapshots(dir string) ([]snapshotFile, error) {
 	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files []snapshotFile
+	for _, e := range entries {
+		var v int
+		var stamp string
+		rest, ok := strings.CutPrefix(e.Name(), "jukem-v")
+		if !ok || !strings.HasSuffix(rest, ".db") {
+			continue
+		}
+		vs, st, ok := strings.Cut(strings.TrimSuffix(rest, ".db"), "-")
+		if !ok {
+			continue
+		}
+		v, err := strconv.Atoi(vs)
+		if err != nil {
+			continue
+		}
+		stamp = st
+		files = append(files, snapshotFile{name: e.Name(), version: v, stamp: stamp})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].stamp > files[j].stamp })
+	return files, nil
+}
+
+// pruneSnapshots keeps the newest keepSnapshots files. It never removes the
+// last snapshot of a schema version: after a migration that fails on every
+// start, that file is the one a rollback needs.
+func pruneSnapshots(dir string) error {
+	files, err := listSnapshots(dir)
 	if err != nil {
 		return err
 	}
-	var names []string
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "jukem-v") && strings.HasSuffix(e.Name(), ".db") {
-			names = append(names, e.Name())
-		}
+	perVersion := map[int]int{}
+	for _, f := range files {
+		perVersion[f.version]++
 	}
-	sort.Slice(names, func(i, j int) bool { return stamp(names[i]) < stamp(names[j]) })
-	var errs []error
-	for len(names) > keepSnapshots {
-		if err := os.Remove(filepath.Join(dir, names[0])); err != nil {
-			errs = append(errs, err)
+	kept := 0
+	var errs []string
+	for _, f := range files {
+		if kept < keepSnapshots || perVersion[f.version] == 1 {
+			kept++
+			continue
 		}
-		names = names[1:]
+		if err := os.Remove(filepath.Join(dir, f.name)); err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		perVersion[f.version]--
 	}
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
-// stamp returns the timestamp part of a snapshot name.
-func stamp(name string) string {
-	i := strings.LastIndex(name, "-")
-	if i < 0 {
-		return name
+// LatestSnapshot returns the newest snapshot in dir whose schema version is
+// at most maxVersion. It returns false when there is none.
+func LatestSnapshot(dir string, maxVersion int) (string, bool) {
+	files, err := listSnapshots(dir)
+	if err != nil {
+		return "", false
 	}
-	return name[i+1:]
+	for _, f := range files {
+		if f.version <= maxVersion {
+			return filepath.Join(dir, f.name), true
+		}
+	}
+	return "", false
 }

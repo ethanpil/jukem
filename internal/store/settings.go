@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -102,7 +101,9 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 	return s.SetState(ctx, settingsKey, set)
 }
 
-// Validate checks the cross-field rules a schema cannot express.
+// Validate checks the cross-field rules a schema cannot express and
+// normalises the extension list. It replaces the slice instead of writing
+// into it, so a caller that shares the slice is not changed.
 func (set *Settings) Validate() error {
 	if set.VolumeMin < 0 || set.VolumeMax > 100 || set.VolumeMin > set.VolumeMax {
 		return fmt.Errorf("volume limits must satisfy 0 <= min <= max <= 100")
@@ -113,13 +114,15 @@ func (set *Settings) Validate() error {
 	if set.MusicRoot == "" {
 		return fmt.Errorf("music root is required")
 	}
-	for i, ext := range set.AllowedExtensions {
-		ext = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
+	exts := make([]string, 0, len(set.AllowedExtensions))
+	for _, raw := range set.AllowedExtensions {
+		ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(raw), "."))
 		if ext == "" || strings.ContainsAny(ext, "./\\") {
-			return fmt.Errorf("allowed extension %q is not valid", set.AllowedExtensions[i])
+			return fmt.Errorf("allowed extension %q is not valid", raw)
 		}
-		set.AllowedExtensions[i] = ext
+		exts = append(exts, ext)
 	}
+	set.AllowedExtensions = exts
 	if set.AlertWebhookPreset == "" {
 		set.AlertWebhookPreset = "generic"
 	}
@@ -139,10 +142,4 @@ func (set *Settings) ExtensionAllowed(name string) bool {
 		}
 	}
 	return false
-}
-
-// String returns the settings as JSON, for logs.
-func (set Settings) String() string {
-	b, _ := json.Marshal(set)
-	return string(b)
 }

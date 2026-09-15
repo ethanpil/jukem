@@ -1,5 +1,9 @@
 -- Initial schema.
 
+CREATE TABLE schema_version (
+    version INTEGER NOT NULL
+);
+
 CREATE TABLE state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

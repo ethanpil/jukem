@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTest(t *testing.T) (*Store, string) {
@@ -56,19 +57,20 @@ func TestSchemaTooNew(t *testing.T) {
 	}
 }
 
+var testMigrations = []Migration{
+	{Version: 1, Name: "0001_a.sql", SQL: `CREATE TABLE schema_version (version INTEGER NOT NULL); CREATE TABLE a (x INTEGER);`},
+	{Version: 2, Name: "0002_b.sql", SQL: `CREATE TABLE b (x INTEGER);`},
+	{Version: 3, Name: "0003_bad.sql", SQL: `CREATE TABLE c (x INTEGER); CREATE TABLE b (x INTEGER);`},
+}
+
 func TestFailedMigrationRollsBackAndSnapshots(t *testing.T) {
 	s, dir := openTest(t)
 	ctx := context.Background()
 	snapDir := filepath.Join(dir, "snapshots")
-	ms := []Migration{
-		{Version: 1, Name: "0001_a.sql", SQL: `CREATE TABLE a (x INTEGER);`},
-		{Version: 2, Name: "0002_b.sql", SQL: `CREATE TABLE b (x INTEGER);`},
-		{Version: 3, Name: "0003_bad.sql", SQL: `CREATE TABLE c (x INTEGER); CREATE TABLE b (x INTEGER);`},
-	}
-	if err := s.migrate(ctx, snapDir, ms[:1]); err != nil {
+	if err := s.migrate(ctx, snapDir, testMigrations[:1]); err != nil {
 		t.Fatal(err)
 	}
-	err := s.migrate(ctx, snapDir, ms)
+	err := s.migrate(ctx, snapDir, testMigrations)
 	var me *MigrationError
 	if !errors.As(err, &me) || me.Version != 3 {
 		t.Fatalf("got %v", err)
@@ -97,6 +99,35 @@ func TestFailedMigrationRollsBackAndSnapshots(t *testing.T) {
 	}
 }
 
+func TestRepeatedFailureKeepsRollbackSnapshot(t *testing.T) {
+	s, dir := openTest(t)
+	ctx := context.Background()
+	snapDir := filepath.Join(dir, "snapshots")
+	if err := s.migrate(ctx, snapDir, testMigrations[:1]); err != nil {
+		t.Fatal(err)
+	}
+	// Every start retries and fails at migration 3, leaving version 2 and a
+	// new v2 snapshot each time.
+	for i := 0; i < keepSnapshots+3; i++ {
+		if err := s.migrate(ctx, snapDir, testMigrations); err == nil {
+			t.Fatal("expected failure")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The v1 snapshot is the one a rollback to the previous release needs.
+	path, ok := LatestSnapshot(snapDir, 1)
+	if !ok {
+		t.Fatal("v1 snapshot was pruned")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := listSnapshots(snapDir)
+	if len(files) > keepSnapshots+1 {
+		t.Fatalf("kept %d snapshots", len(files))
+	}
+}
+
 func TestSnapshotPruning(t *testing.T) {
 	s, dir := openTest(t)
 	ctx := context.Background()
@@ -105,27 +136,55 @@ func TestSnapshotPruning(t *testing.T) {
 	}
 	snapDir := filepath.Join(dir, "snapshots")
 	os.MkdirAll(snapDir, 0o750)
-	for _, n := range []string{"jukem-v1-20200101T000000Z.db", "jukem-v1-20200102T000000Z.db", "jukem-v1-20200103T000000Z.db", "jukem-v1-20200104T000000Z.db", "jukem-v1-20200105T000000Z.db", "other.txt"} {
-		os.WriteFile(filepath.Join(snapDir, n), []byte("x"), 0o600)
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < keepSnapshots; i++ {
+		os.WriteFile(filepath.Join(snapDir, snapshotName(1, base.AddDate(0, 0, i))), []byte("x"), 0o600)
 	}
+	os.WriteFile(filepath.Join(snapDir, "other.txt"), []byte("x"), 0o600)
 	if _, err := s.Snapshot(ctx, snapDir, 1); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(snapDir)
-	var dbs int
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".db" {
-			dbs++
-		}
+	files, _ := listSnapshots(snapDir)
+	if len(files) != keepSnapshots {
+		t.Fatalf("kept %d snapshots, want %d", len(files), keepSnapshots)
 	}
-	if dbs != keepSnapshots {
-		t.Fatalf("kept %d snapshots, want %d", dbs, keepSnapshots)
-	}
-	if _, err := os.Stat(filepath.Join(snapDir, "jukem-v1-20200101T000000Z.db")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(snapDir, snapshotName(1, base))); !os.IsNotExist(err) {
 		t.Fatal("oldest snapshot should be pruned")
 	}
 	if _, err := os.Stat(filepath.Join(snapDir, "other.txt")); err != nil {
 		t.Fatal("unrelated file must stay")
+	}
+	if _, ok := LatestSnapshot(snapDir, 0); ok {
+		t.Fatal("no snapshot at version 0 exists")
+	}
+}
+
+func TestOpenEscapesPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "odd#dir?x")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Skip("file system rejects the name")
+	}
+	s, err := Open(filepath.Join(dir, "jukem.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(context.Background(), filepath.Join(dir, "snapshots")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "jukem.db")); err != nil {
+		t.Fatalf("database not at the expected path: %v", err)
+	}
+}
+
+func TestReadPoolRejectsWrites(t *testing.T) {
+	s, dir := openTest(t)
+	ctx := context.Background()
+	if err := s.Migrate(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Read().ExecContext(ctx, `INSERT INTO state (key, value) VALUES ('a', '1')`); err == nil {
+		t.Fatal("read pool accepted a write")
 	}
 }
 
@@ -143,9 +202,13 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("defaults: %+v", set)
 	}
 	set.VolumeMax = 80
-	set.AllowedExtensions = []string{".MP3", "flac"}
+	input := []string{".MP3", "flac"}
+	set.AllowedExtensions = input
 	if err := s.SaveSettings(ctx, set); err != nil {
 		t.Fatal(err)
+	}
+	if input[0] != ".MP3" {
+		t.Fatal("Validate changed the caller's slice")
 	}
 	got, _ := s.LoadSettings(ctx)
 	if got.VolumeMax != 80 || got.AllowedExtensions[0] != "mp3" {
