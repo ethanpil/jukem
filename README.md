@@ -53,6 +53,10 @@ rc-service chronyd start
 rc-service jukem start
 ```
 
+A pre-release tag such as `v1.3.0-rc1` gives the file name
+`jukem-1.3.0_rc1-<arch>.apk`, because apk writes the suffix with an
+underscore.
+
 Open `http://<host>/` and follow the setup wizard. `apk add` installs `mpd`
 and the other dependencies from Alpine's mirrors. chrony keeps the clock
 correct, which the schedule needs.

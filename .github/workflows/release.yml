@@ -105,6 +105,8 @@ jobs:
           (cd dist && sha256sum *.apk jukem.rsa.pub > SHA256SUMS)
       - uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix, such as v1.3.0-rc1, is a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.apk
             dist/jukem.rsa.pub
@@ -127,6 +129,11 @@ jobs:
         run: |
           echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          # Only a final release moves the latest tag.
+          case "$GITHUB_REF_NAME" in
+            *-*) echo "latest=" >> "$GITHUB_OUTPUT" ;;
+            *) echo "latest=ghcr.io/${GITHUB_REPOSITORY,,}:latest" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -135,4 +142,4 @@ jobs:
           build-args: VERSION=${{ steps.img.outputs.version }}
           tags: |
             ${{ steps.img.outputs.name }}:${{ steps.img.outputs.version }}
-            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.latest }}
