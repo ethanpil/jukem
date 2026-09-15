@@ -9,9 +9,8 @@ import (
 
 // DirEntry is one subdirectory in a listing.
 type DirEntry struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Writable bool   `json:"writable"`
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 // DirListing is a server-side directory listing, for choosing the music
@@ -42,11 +41,15 @@ func ListDirs(path string) (DirListing, error) {
 		out.Parent = &p
 	}
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		full := filepath.Join(path, e.Name())
-		out.Entries = append(out.Entries, DirEntry{Name: e.Name(), Path: filepath.ToSlash(full), Writable: Writable(full)})
+		// A music root is often a symlink to a mount; follow it.
+		if st, err := os.Stat(full); err != nil || !st.IsDir() {
+			continue
+		}
+		out.Entries = append(out.Entries, DirEntry{Name: e.Name(), Path: filepath.ToSlash(full)})
 	}
 	sort.Slice(out.Entries, func(i, j int) bool {
 		return strings.ToLower(out.Entries[i].Name) < strings.ToLower(out.Entries[j].Name)

@@ -63,9 +63,13 @@ func TestHistoryTrim(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := st.ListHistory(ctx, base.Add(3*time.Minute), 10)
+	all, err := st.ListHistory(ctx, 0, 10)
+	if err != nil || len(all) != 5 {
+		t.Fatalf("list: %v %v", all, err)
+	}
+	rows, err := st.ListHistory(ctx, all[1].ID, 10)
 	if err != nil || len(rows) != 3 || !rows[0].StartedAt.Equal(base.Add(2*time.Minute)) {
-		t.Fatalf("before paging: %v %v", rows, err)
+		t.Fatalf("paging: %v %v", rows, err)
 	}
 	last, ok, err := st.LastHistoryAt(ctx)
 	if err != nil || !ok || !last.Equal(base.Add(4*time.Minute)) {
@@ -75,14 +79,14 @@ func TestHistoryTrim(t *testing.T) {
 	if err := st.TrimHistory(ctx, 100000, 2); err != nil {
 		t.Fatal(err)
 	}
-	rows, _ = st.ListHistory(ctx, time.Time{}, 10)
+	rows, _ = st.ListHistory(ctx, 0, 10)
 	if len(rows) != 2 || !rows[0].StartedAt.Equal(base.Add(4*time.Minute)) {
 		t.Fatalf("after trim: %v", rows)
 	}
 	if err := st.TrimHistory(ctx, 1, 100); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ = st.ListHistory(ctx, time.Time{}, 10); len(rows) != 0 {
+	if rows, _ = st.ListHistory(ctx, 0, 10); len(rows) != 0 {
 		t.Fatalf("age trim kept %v", rows)
 	}
 }

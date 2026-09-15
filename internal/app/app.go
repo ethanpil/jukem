@@ -64,6 +64,12 @@ type App struct {
 
 	handler http.Handler
 	cancel  context.CancelFunc
+
+	// The health report is cached for a moment: GET /status, /healthz
+	// and the Docker health check all ask for it.
+	healthMu sync.Mutex
+	healthAt time.Time
+	health   watchdog.Report
 }
 
 // Build opens the store, discovers devices and starts MPD.
@@ -132,7 +138,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.runNightly(ctx)
 
 	srv, err := api.New(api.Options{
-		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
+		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: a.ServeTLS(),
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
@@ -265,14 +271,31 @@ func (a *App) applyOutput() {
 	}
 }
 
-// Health assembles the health report.
+// Health returns the health report, at most two seconds old.
 func (a *App) Health() watchdog.Report {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	if time.Since(a.healthAt) < 2*time.Second {
+		return a.health
+	}
+	a.health = a.buildHealth()
+	a.healthAt = time.Now()
+	return a.health
+}
+
+// buildHealth assembles the health report.
+func (a *App) buildHealth() watchdog.Report {
+	set := a.Settings()
+	loc, err := time.LoadLocation(set.TimeZone)
+	if err != nil {
+		loc = time.UTC
+	}
 	checks := []watchdog.Check{{Name: "Service", Status: watchdog.StatusOK, Summary: "running " + a.Version}}
 
 	mpd := a.MPD.Status()
 	switch {
 	case mpd.Running:
-		checks = append(checks, watchdog.Check{Name: "MPD", Status: watchdog.StatusOK, Summary: "running " + time.Since(mpd.Since).Truncate(time.Second).String()})
+		checks = append(checks, watchdog.Check{Name: "MPD", Status: watchdog.StatusOK, Summary: "running " + since(time.Since(mpd.Since))})
 	default:
 		checks = append(checks, watchdog.Check{Name: "MPD", Status: watchdog.StatusError, Summary: "not running: " + mpd.LastError,
 			Fix: "jukem restarts MPD on its own. If this continues, check that the mpd package is installed and read the log."})
@@ -287,7 +310,7 @@ func (a *App) Health() watchdog.Report {
 	default:
 		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusOK, Summary: owner.Reason})
 	}
-	clock := a.Clock.Status(context.Background(), a.Settings().TimeZone)
+	clock := a.Clock.Status(context.Background(), set.TimeZone)
 	switch clock.Source {
 	case scheduler.ClockNTP:
 		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusOK, Summary: "synchronized (NTP)"})
@@ -313,27 +336,23 @@ func (a *App) Health() watchdog.Report {
 		}
 		checks = append(checks, watchdog.Check{Name: "Audio", Status: watchdog.StatusOK, Summary: summary})
 	}
-	checks = append(checks, a.libraryChecks()...)
-	alerts, err := a.Store.ActiveAlerts(context.Background())
-	if err != nil {
-		a.log.Warn("cannot list alerts", "error", err)
-	}
-	return watchdog.Report{Status: watchdog.Worst(checks), Checks: checks, Alerts: alerts}
+	checks = append(checks, a.libraryChecks(set, loc)...)
+	return watchdog.Report{Status: watchdog.Worst(checks), Checks: checks}
 }
 
 // libraryChecks reports the library, the storage and the last track
 // change.
-func (a *App) libraryChecks() []watchdog.Check {
-	set := a.Settings()
-	loc, err := time.LoadLocation(set.TimeZone)
-	if err != nil {
-		loc = time.UTC
-	}
+func (a *App) libraryChecks(set store.Settings, loc *time.Location) []watchdog.Check {
 	var checks []watchdog.Check
 	if songs, updated, err := a.Player.Stats(); err == nil {
 		summary := fmt.Sprintf("OK, %s tracks", withCommas(songs))
 		if !updated.IsZero() {
-			summary += ", last scan " + updated.In(loc).Format("Mon 15:04")
+			// Today's scan shows the time; an older one adds the weekday.
+			layout := "15:04"
+			if updated.In(loc).Format("2006-01-02") != time.Now().In(loc).Format("2006-01-02") {
+				layout = "Mon 15:04"
+			}
+			summary += ", last scan " + updated.In(loc).Format(layout)
 		}
 		st := watchdog.Check{Name: "Library", Status: watchdog.StatusOK, Summary: summary}
 		if songs == 0 {
@@ -357,24 +376,24 @@ func (a *App) libraryChecks() []watchdog.Check {
 		checks = append(checks, c)
 	}
 	if last, ok, err := a.Store.LastHistoryAt(context.Background()); err == nil && ok {
-		checks = append(checks, watchdog.Check{Name: "Last track change", Status: watchdog.StatusOK, Summary: ago(time.Since(last))})
+		checks = append(checks, watchdog.Check{Name: "Last track change", Status: watchdog.StatusOK, Summary: since(time.Since(last)) + " ago"})
 	} else if err == nil {
 		checks = append(checks, watchdog.Check{Name: "Last track change", Status: watchdog.StatusOK, Summary: "nothing played yet"})
 	}
 	return checks
 }
 
-// ago writes a duration as "2m ago".
-func ago(d time.Duration) string {
+// since writes a duration in two units: "4d 2h", "1h 5m", "3m", "20s".
+func since(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return "just now"
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh %dm ago", int(d.Hours()), int(d.Minutes())%60)
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
 	}
-	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	return fmt.Sprintf("%dd %dh", int(d.Hours()/24), int(d.Hours())%24)
 }
 
 // withCommas writes 8412 as 8,412.

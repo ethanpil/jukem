@@ -45,14 +45,17 @@ func (a *Alerter) Raise(ctx context.Context, kind, message, fix string) {
 		a.log.Error("cannot record an alert", "kind", kind, "error", err)
 		return
 	}
-	a.events.Publish(events.Alerts, "")
 	if !created {
 		return
 	}
+	a.events.Publish(events.Alerts, "")
 	a.log.Warn("alert raised", "kind", kind, "message", message)
-	if err := a.deliver(ctx, al); err != nil {
-		a.log.Warn("cannot deliver the alert to the webhook", "kind", kind, "error", err)
-	}
+	// The caller may be the scheduler loop; a slow webhook must not hold it.
+	go func() {
+		if err := a.deliver(context.WithoutCancel(ctx), al); err != nil {
+			a.log.Warn("cannot deliver the alert to the webhook", "kind", kind, "error", err)
+		}
+	}()
 }
 
 // Clear ends the active alert of a kind because the problem is gone.

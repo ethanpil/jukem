@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"time"
 )
 
@@ -20,27 +19,17 @@ type Alert struct {
 	Count       int        `json:"count" doc:"How many times the problem was seen"`
 }
 
+const alertColumns = `id, kind, message, fix, raised_at, updated_at, dismissed_at, count`
+
 // RaiseAlert records a problem. It returns the alert and whether it is
-// new, so the caller sends a notification once per problem.
+// new, so the caller sends a notification once per problem. The partial
+// unique index on active kinds makes this one upsert.
 func (s *Store) RaiseAlert(ctx context.Context, kind, message, fix string) (Alert, bool, error) {
 	t := now()
-	res, err := s.w.ExecContext(ctx, `UPDATE alerts SET message = ?, fix = ?, updated_at = ?, count = count + 1 WHERE kind = ? AND dismissed_at IS NULL`, message, fix, t, kind)
-	if err != nil {
-		return Alert{}, false, err
-	}
-	created := false
-	if n, _ := res.RowsAffected(); n == 0 {
-		created = true
-		if _, err := s.w.ExecContext(ctx, `INSERT INTO alerts (kind, message, fix, raised_at, updated_at) VALUES (?, ?, ?, ?, ?)`, kind, message, fix, t, t); err != nil {
-			return Alert{}, false, err
-		}
-	}
-	a, err := s.activeAlert(ctx, kind)
-	return a, created, err
-}
-
-func (s *Store) activeAlert(ctx context.Context, kind string) (Alert, error) {
-	return scanAlert(s.r.QueryRowContext(ctx, `SELECT id, kind, message, fix, raised_at, updated_at, dismissed_at, count FROM alerts WHERE kind = ? AND dismissed_at IS NULL`, kind))
+	a, err := scanAlert(s.w.QueryRowContext(ctx, `INSERT INTO alerts (kind, message, fix, raised_at, updated_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(kind) WHERE dismissed_at IS NULL DO UPDATE SET message = excluded.message, fix = excluded.fix, updated_at = excluded.updated_at, count = count + 1
+		RETURNING `+alertColumns, kind, message, fix, t, t))
+	return a, a.Count == 1, err
 }
 
 // ResolveAlert ends the active alert of a kind, because the problem is
@@ -66,7 +55,7 @@ func (s *Store) DismissAlert(ctx context.Context, id int64) (bool, error) {
 
 // ActiveAlerts lists the alerts nobody dismissed, newest first.
 func (s *Store) ActiveAlerts(ctx context.Context) ([]Alert, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT id, kind, message, fix, raised_at, updated_at, dismissed_at, count FROM alerts WHERE dismissed_at IS NULL ORDER BY raised_at DESC`)
+	rows, err := s.r.QueryContext(ctx, `SELECT `+alertColumns+` FROM alerts WHERE dismissed_at IS NULL ORDER BY raised_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +82,7 @@ func scanAlert(row interface{ Scan(dest ...any) error }) (Alert, error) {
 	var a Alert
 	var raised, updated string
 	var dismissed sql.NullString
-	err := row.Scan(&a.ID, &a.Kind, &a.Message, &a.Fix, &raised, &updated, &dismissed, &a.Count)
-	if errors.Is(err, sql.ErrNoRows) {
-		return a, errors.New("alert not found")
-	}
-	if err != nil {
+	if err := row.Scan(&a.ID, &a.Kind, &a.Message, &a.Fix, &raised, &updated, &dismissed, &a.Count); err != nil {
 		return a, err
 	}
 	a.RaisedAt, a.UpdatedAt = parse(raised), parse(updated)

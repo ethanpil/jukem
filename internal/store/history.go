@@ -2,8 +2,7 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"math"
 	"time"
 )
 
@@ -25,13 +24,15 @@ func (s *Store) AddHistory(ctx context.Context, r HistoryRow) error {
 	return err
 }
 
-// ListHistory returns up to limit rows that started before the given
-// time, newest first. A zero time means now.
-func (s *Store) ListHistory(ctx context.Context, before time.Time, limit int) ([]HistoryRow, error) {
-	if before.IsZero() {
-		before = time.Now().Add(time.Hour)
+// ListHistory returns up to limit rows, newest first. Rows are added
+// in time order, so the id orders them and pages them without a gap:
+// a page continues below the last id of the page before it. A zero
+// beforeID starts at the newest row.
+func (s *Store) ListHistory(ctx context.Context, beforeID int64, limit int) ([]HistoryRow, error) {
+	if beforeID <= 0 {
+		beforeID = math.MaxInt64
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT id, started_at, file, title, artist, album, source FROM history WHERE started_at < ? ORDER BY started_at DESC, id DESC LIMIT ?`, format(before), limit)
+	rows, err := s.r.QueryContext(ctx, `SELECT id, started_at, file, title, artist, album, source FROM history WHERE id < ? ORDER BY id DESC LIMIT ?`, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -51,15 +52,11 @@ func (s *Store) ListHistory(ctx context.Context, before time.Time, limit int) ([
 
 // LastHistoryAt returns the start of the newest row.
 func (s *Store) LastHistoryAt(ctx context.Context) (time.Time, bool, error) {
-	var started string
-	err := s.r.QueryRowContext(ctx, `SELECT started_at FROM history ORDER BY started_at DESC, id DESC LIMIT 1`).Scan(&started)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
+	rows, err := s.ListHistory(ctx, 0, 1)
+	if err != nil || len(rows) == 0 {
 		return time.Time{}, false, err
 	}
-	return parse(started), true, nil
+	return rows[0].StartedAt, true, nil
 }
 
 // TrimHistory keeps the newest rows within both limits: days of age and
@@ -69,6 +66,6 @@ func (s *Store) TrimHistory(ctx context.Context, days, rows int) error {
 	if _, err := s.w.ExecContext(ctx, `DELETE FROM history WHERE started_at < ?`, cutoff); err != nil {
 		return err
 	}
-	_, err := s.w.ExecContext(ctx, `DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY started_at DESC, id DESC LIMIT ?)`, rows)
+	_, err := s.w.ExecContext(ctx, `DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT ?)`, rows)
 	return err
 }

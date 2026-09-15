@@ -346,6 +346,19 @@ func (s *Scheduler) Override(ctx context.Context) (store.Override, *time.Time, b
 	return v.override, nil, true
 }
 
+// PlaySource names who put the music on, for the history: the program,
+// the person behind an override, or "manual".
+func (s *Scheduler) PlaySource(ctx context.Context) string {
+	v := s.snapshot(ctx)
+	switch {
+	case v.hasOver:
+		return v.override.Source
+	case v.owner.State == player.OwnerScheduled && v.owner.Program != "":
+		return v.owner.Program
+	}
+	return "manual"
+}
+
 // Loaded returns the loaded program.
 func (s *Scheduler) Loaded() Program {
 	s.mu.Lock()

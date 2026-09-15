@@ -33,24 +33,29 @@ func (a *App) tlsFiles() (cert, key string) {
 	return filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
 }
 
-// TLSFiles returns the certificate and key paths when HTTPS is switched
-// on and both files exist.
-func (a *App) TLSFiles() (cert, key string, ok bool) {
+// ServeTLS reports whether the service serves TLS: HTTPS is switched on
+// and a valid pair is stored. The session cookie is Secure only then.
+func (a *App) ServeTLS() bool {
 	if !a.Settings().HTTPSEnabled {
-		return "", "", false
+		return false
 	}
-	cert, key = a.tlsFiles()
-	if _, err := os.Stat(cert); err != nil {
-		return "", "", false
+	_, err := a.LoadTLS()
+	return err == nil
+}
+
+// LoadTLS reads the stored certificate and key. The TLS listener calls
+// it at each handshake, so a new pair applies without a restart.
+func (a *App) LoadTLS() (*tls.Certificate, error) {
+	cert, key := a.tlsFiles()
+	c, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := os.Stat(key); err != nil {
-		return "", "", false
-	}
-	return cert, key, true
+	return &c, nil
 }
 
 // StoreTLS validates a certificate and key pair and writes it to the
-// data directory. It takes effect at the next restart.
+// data directory.
 func (a *App) StoreTLS(certPEM, keyPEM string) error {
 	if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
 		return fmt.Errorf("the certificate and key do not match or do not parse: %w", err)
@@ -124,14 +129,11 @@ func localAddresses() []net.IP {
 	return ips
 }
 
-// ErrNoRestart reports that nothing runs the restart, as in tests.
-var ErrNoRestart = errors.New("restart is not available")
-
 // RequestRestart stops the service cleanly. The supervisor, or Docker,
 // starts it again.
 func (a *App) RequestRestart() error {
 	if a.Restart == nil {
-		return ErrNoRestart
+		return errors.New("restart is not available")
 	}
 	a.log.Warn("restart requested from the UI")
 	a.Restart()

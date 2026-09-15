@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -71,11 +72,11 @@ func runServe(args []string) error {
 	sctx, stopServing := context.WithCancel(ctx)
 	defer stopServing()
 	a.Restart = func() { time.AfterFunc(500*time.Millisecond, stopServing) }
-	if cert, key, ok := a.TLSFiles(); ok {
-		return serveTLS(sctx, cfg.Listen, cfg.ListenTLS, cert, key, a.Handler(), logger)
+	if a.ServeTLS() {
+		return serveTLS(sctx, cfg.Listen, cfg.ListenTLS, a.LoadTLS, a.Handler(), logger)
 	}
 	if a.Settings().HTTPSEnabled {
-		logger.Warn("HTTPS is switched on but no certificate is stored, serving HTTP")
+		logger.Warn("HTTPS is switched on but no valid certificate is stored, serving HTTP")
 	}
 	return serveHTTP(sctx, cfg.Listen, a.Handler(), logger)
 }
@@ -115,9 +116,11 @@ func serveHTTP(ctx context.Context, listen string, h http.Handler, logger *slog.
 }
 
 // serveTLS serves the application over TLS and redirects plain HTTP to
-// it. The redirect keeps the host name and uses the TLS port when it is
-// not 443.
-func serveTLS(ctx context.Context, listen, listenTLS, cert, key string, h http.Handler, logger *slog.Logger) error {
+// it. The plain port still answers /healthz itself, for the container
+// health check. The redirect keeps the host name. It adds the TLS port
+// when that is not 443, except in Docker, where the published port is
+// 443 and the container port is not.
+func serveTLS(ctx context.Context, listen, listenTLS string, load func() (*tls.Certificate, error), h http.Handler, logger *slog.Logger) error {
 	tlsLn, err := listenWithRetry(ctx, listenTLS, logger)
 	if err != nil {
 		return err
@@ -128,25 +131,33 @@ func serveTLS(ctx context.Context, listen, listenTLS, cert, key string, h http.H
 		return err
 	}
 	_, port, _ := net.SplitHostPort(tlsLn.Addr().String())
-	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirect := http.NewServeMux()
+	redirect.Handle("GET /healthz", h)
+	redirect.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.Host)
 		if err != nil {
 			host = r.Host
 		}
 		target := "https://" + host
-		if port != "443" {
-			target += ":" + port
+		if port != "443" && config.Runtime() != "docker" {
+			target = "https://" + net.JoinHostPort(host, port)
 		}
 		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusPermanentRedirect)
 	})
-	return runServers(ctx, logger, server{ln: tlsLn, h: h, cert: cert, key: key}, server{ln: plainLn, h: redirect})
+	tlsConf := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return load()
+		},
+	}
+	return runServers(ctx, logger, server{ln: tlsLn, h: h, tls: tlsConf}, server{ln: plainLn, h: redirect})
 }
 
 // server is one listener with its handler.
 type server struct {
-	ln        net.Listener
-	h         http.Handler
-	cert, key string // set for TLS
+	ln  net.Listener
+	h   http.Handler
+	tls *tls.Config // set for TLS
 }
 
 // runServers serves every listener until one fails or ctx ends, then
@@ -157,18 +168,19 @@ func runServers(ctx context.Context, logger *slog.Logger, servers ...server) err
 	for _, s := range servers {
 		srv := &http.Server{
 			Handler:           s.h,
+			TLSConfig:         s.tls,
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}
 		running = append(running, srv)
 		go func(s server, srv *http.Server) {
-			if s.cert != "" {
-				errc <- srv.ServeTLS(s.ln, s.cert, s.key)
+			if s.tls != nil {
+				errc <- srv.ServeTLS(s.ln, "", "")
 				return
 			}
 			errc <- srv.Serve(s.ln)
 		}(s, srv)
-		logger.Info("listening", "addr", s.ln.Addr().String(), "tls", s.cert != "")
+		logger.Info("listening", "addr", s.ln.Addr().String(), "tls", s.tls != nil)
 	}
 	var err error
 	select {

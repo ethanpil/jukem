@@ -12,6 +12,11 @@ import (
 	"jukem/internal/store"
 )
 
+// ownerNow reports the owner for the API and the health report.
+func (a *App) ownerNow() player.Owner {
+	return a.Scheduler.Owner(context.Background())
+}
+
 // resolveProgram resolves a schedule source to files, without the
 // do-not-play tracks.
 func (a *App) resolveProgram(ctx context.Context, src scheduler.Source) ([]string, bool, error) {

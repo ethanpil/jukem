@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -13,26 +12,36 @@ import (
 	"jukem/internal/store"
 )
 
+type alertsOutput struct {
+	Body struct {
+		Alerts []store.Alert `json:"alerts"`
+	}
+}
+
+type historyOutput struct {
+	Body struct {
+		Rows []store.HistoryRow `json:"rows"`
+	}
+}
+
+type snapshotOutput struct {
+	Body struct {
+		Path string `json:"path"`
+	}
+}
+
 // registerSystemOps adds the alerts, history, maintenance and TLS
 // endpoints that need the running application.
 func (s *Server) registerSystemOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-alerts", Method: http.MethodGet, Path: "/alerts", Tags: []string{"system"},
 		Summary: "Active alerts",
-	}, func(ctx context.Context, _ *struct{}) (*struct {
-		Body struct {
-			Alerts []store.Alert `json:"alerts"`
-		}
-	}, error) {
+	}, func(ctx context.Context, _ *struct{}) (*alertsOutput, error) {
 		list, err := s.store.ActiveAlerts(ctx)
 		if err != nil {
 			return nil, err
 		}
-		out := &struct {
-			Body struct {
-				Alerts []store.Alert `json:"alerts"`
-			}
-		}{}
+		out := &alertsOutput{}
 		out.Body.Alerts = list
 		return out, nil
 	})
@@ -67,22 +76,14 @@ func (s *Server) registerSystemOps(api huma.API) {
 		OperationID: "list-history", Method: http.MethodGet, Path: "/history", Tags: []string{"system"},
 		Summary: "Play history, newest first",
 	}, func(ctx context.Context, in *struct {
-		Before time.Time `query:"before" doc:"Return rows that started before this time, for paging"`
-		Limit  int       `query:"limit" default:"100" minimum:"1" maximum:"500"`
-	}) (*struct {
-		Body struct {
-			Rows []store.HistoryRow `json:"rows"`
-		}
-	}, error) {
-		rows, err := s.store.ListHistory(ctx, in.Before, in.Limit)
+		BeforeID int64 `query:"before_id" doc:"Return rows with a smaller id, for paging: the last id of the previous page"`
+		Limit    int   `query:"limit" default:"100" minimum:"1" maximum:"500"`
+	}) (*historyOutput, error) {
+		rows, err := s.store.ListHistory(ctx, in.BeforeID, in.Limit)
 		if err != nil {
 			return nil, err
 		}
-		out := &struct {
-			Body struct {
-				Rows []store.HistoryRow `json:"rows"`
-			}
-		}{}
+		out := &historyOutput{}
 		out.Body.Rows = rows
 		return out, nil
 	})
@@ -110,20 +111,12 @@ func (s *Server) registerSystemOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "snapshot-database", Method: http.MethodPost, Path: "/system/snapshot", Tags: []string{"system"},
 		Summary: "Copy the database to the snapshots directory",
-	}, func(ctx context.Context, _ *struct{}) (*struct {
-		Body struct {
-			Path string `json:"path"`
-		}
-	}, error) {
+	}, func(ctx context.Context, _ *struct{}) (*snapshotOutput, error) {
 		path, err := s.opts.Snapshot(ctx)
 		if err != nil {
 			return nil, err
 		}
-		out := &struct {
-			Body struct {
-				Path string `json:"path"`
-			}
-		}{}
+		out := &snapshotOutput{}
 		out.Body.Path = path
 		return out, nil
 	})
@@ -141,7 +134,7 @@ func (s *Server) registerSystemOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "put-tls", Method: http.MethodPut, Path: "/settings/tls", Tags: []string{"settings"},
 		Summary: "Store a certificate and key in PEM form", DefaultStatus: http.StatusNoContent,
-		Description: "The pair is used at the next restart when HTTPS is switched on.",
+		Description: "A running TLS listener uses the new pair at the next connection. The HTTPS switch itself applies at the next restart.",
 	}, func(ctx context.Context, in *struct {
 		Body struct {
 			Certificate string `json:"certificate" minLength:"1"`

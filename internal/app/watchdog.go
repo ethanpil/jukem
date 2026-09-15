@@ -11,7 +11,7 @@ import (
 	"jukem/internal/store"
 )
 
-// watchInterval is how often the watchdog looks at reality.
+// watchInterval is the time between two watchdog checks.
 const watchInterval = 30 * time.Second
 
 // stallState remembers what the last check saw, so that a track whose
@@ -21,6 +21,7 @@ type stallState struct {
 	elapsed     float64
 	stuck       int       // checks in a row without progress
 	restartedAt time.Time // the last MPD restart for a stall
+	resume      bool      // press play after the restart: MPD comes back paused
 }
 
 // runWatchdog checks playback, the disk and the output device until ctx
@@ -44,13 +45,26 @@ func (a *App) runWatchdog(ctx context.Context) {
 	}
 }
 
-// checkStall notices a playing track whose elapsed time stands still,
-// which a hung USB DAC causes. The first time MPD is restarted; when that
-// does not help within ten minutes, an alert is raised.
+// checkStall finds a playing track whose elapsed time does not change.
+// A hung USB DAC causes this. The first time, jukem restarts MPD. When
+// the stall continues in the ten minutes after that, jukem raises an
+// alert.
 func (a *App) checkStall(ctx context.Context, s *stallState) {
 	st, err := a.Player.Status()
-	if err != nil || st.State != "play" || st.Song == nil {
+	if err != nil {
 		s.stuck = 0
+		return
+	}
+	if s.resume && st.State == "pause" {
+		// The restart was for a stall while playing, so play again. In
+		// manual mode nothing else does.
+		s.resume = false
+		a.Player.Play()
+		return
+	}
+	if st.State != "play" || st.Song == nil {
+		s.stuck = 0
+		a.Alerter.Clear(ctx, "playback_stalled")
 		return
 	}
 	if st.Song.ID == s.songID && st.Elapsed == s.elapsed {
@@ -71,6 +85,7 @@ func (a *App) checkStall(ctx context.Context, s *stallState) {
 		a.log.Warn("playback stalled, restarting mpd", "track", name)
 		s.restartedAt = time.Now()
 		s.stuck = 0
+		s.resume = true
 		a.MPD.Restart()
 		return
 	}
@@ -123,16 +138,7 @@ func (a *App) onSchedulerProblem(kind, message string) {
 // onSongChange records a track start in the history.
 func (a *App) onSongChange(st player.Status) {
 	ctx := context.Background()
-	source := "manual"
-	switch owner := a.ownerNow(); owner.State {
-	case player.OwnerScheduled:
-		source = owner.Program
-	case player.OwnerOverridden:
-		if o, _, ok := a.Scheduler.Override(ctx); ok {
-			source = o.Source
-		}
-	}
-	row := store.HistoryRow{StartedAt: time.Now(), File: st.Song.File, Title: st.Song.Title, Artist: st.Song.Artist, Album: st.Song.Album, Source: source}
+	row := store.HistoryRow{StartedAt: time.Now(), File: st.Song.File, Title: st.Song.Title, Artist: st.Song.Artist, Album: st.Song.Album, Source: a.Scheduler.PlaySource(ctx)}
 	if err := a.Store.AddHistory(ctx, row); err != nil {
 		a.log.Warn("cannot record the play history", "error", err)
 	}
@@ -160,13 +166,14 @@ func (a *App) runNightly(ctx context.Context) {
 			return
 		case <-time.After(wait):
 		}
-		if wait < time.Hour || a.Clock.Now().In(loc).After(next) {
+		if wait < time.Hour || !a.Clock.Now().In(loc).Before(next) {
 			a.nightly(ctx)
 		}
 	}
 }
 
-// nightly is the job itself.
+// nightly runs the full rescan, the retention trim and the playlist
+// check.
 func (a *App) nightly(ctx context.Context) {
 	set := a.Settings()
 	a.log.Info("nightly job", "rescan", true)
@@ -182,8 +189,8 @@ func (a *App) nightly(ctx context.Context) {
 	a.checkPlaylists(ctx)
 }
 
-// checkPlaylists flags playlist entries whose files vanished outside
-// jukem.
+// checkPlaylists raises an alert for playlist entries whose files are
+// missing. Files removed outside jukem cause this.
 func (a *App) checkPlaylists(ctx context.Context) {
 	lists, err := a.Store.ListPlaylists(ctx)
 	if err != nil {
@@ -216,11 +223,6 @@ func (a *App) checkPlaylists(ctx context.Context) {
 		"Open Playlists and remove the entries marked missing, or put the files back.")
 }
 
-// ownerNow reports the owner for the API and the health report.
-func (a *App) ownerNow() player.Owner {
-	return a.Scheduler.Owner(context.Background())
-}
-
 // humanBytes writes a byte count with a unit.
 func humanBytes(n int64) string {
 	const unit = 1024
@@ -232,5 +234,9 @@ func humanBytes(n int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	v := float64(n) / float64(div)
+	if v >= 10 {
+		return fmt.Sprintf("%.0f %cB", v, "KMGTPE"[exp])
+	}
+	return fmt.Sprintf("%.1f %cB", v, "KMGTPE"[exp])
 }

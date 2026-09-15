@@ -117,10 +117,7 @@ func (s *Supervisor) Reconfigure(conf Config) error {
 	s.mu.Lock()
 	s.conf = conf
 	s.mu.Unlock()
-	select {
-	case s.restartCh <- struct{}{}:
-	default:
-	}
+	s.Restart()
 	return nil
 }
 
