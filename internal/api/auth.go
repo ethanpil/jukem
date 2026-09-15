@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +23,9 @@ const (
 	sessionCookie = "jukem_session"
 	csrfHeader    = "X-CSRF-Token"
 	sessionLife   = 30 * 24 * time.Hour
+	// touchInterval limits how often a request records its use, so a
+	// polling client does not write to the database on every request.
+	touchInterval = time.Hour
 )
 
 // PrincipalKind says how a request authenticated.
@@ -53,7 +55,7 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 }
 
 // requestFrom returns the HTTP request stored by the auth middleware, for
-// handlers that need the remote address or the cookies.
+// handlers that need the remote address or the user agent.
 func requestFrom(ctx context.Context) *http.Request {
 	r, _ := ctx.Value(requestKey{}).(*http.Request)
 	return r
@@ -126,8 +128,8 @@ func hashKey(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// loginLimiter counts failed logins per IP. After maxFailures in the window
-// the address must wait.
+// loginLimiter counts failed logins per IP. After loginMaxFail failures in
+// the window the address must wait.
 type loginLimiter struct {
 	mu       sync.Mutex
 	failures map[string][]time.Time
@@ -136,6 +138,9 @@ type loginLimiter struct {
 const (
 	loginWindow  = 5 * time.Minute
 	loginMaxFail = 10
+	// limiterSweepAt bounds the map: past this many addresses, a failure
+	// first drops every address with no recent failures.
+	limiterSweepAt = 1000
 )
 
 func newLoginLimiter() *loginLimiter {
@@ -153,6 +158,11 @@ func (l *loginLimiter) allowed(ip string) bool {
 func (l *loginLimiter) fail(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if len(l.failures) >= limiterSweepAt {
+		for other := range l.failures {
+			l.recent(other)
+		}
+	}
 	l.failures[ip] = append(l.recent(ip), time.Now())
 }
 
@@ -163,6 +173,7 @@ func (l *loginLimiter) reset(ip string) {
 	delete(l.failures, ip)
 }
 
+// recent drops the failures outside the window and returns the rest.
 func (l *loginLimiter) recent(ip string) []time.Time {
 	cutoff := time.Now().Add(-loginWindow)
 	kept := l.failures[ip][:0]
@@ -179,7 +190,9 @@ func (l *loginLimiter) recent(ip string) []time.Time {
 	return kept
 }
 
-// clientIP returns the remote address without the port.
+// clientIP returns the remote address without the port. Behind a reverse
+// proxy every client shares the proxy's address; jukem serves a LAN
+// directly, so it does not read forwarding headers.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -188,32 +201,46 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// openPaths need no login: the login itself, first-time setup, the health
-// detail, the version, and the API description.
+// openPaths are reachable without a credential. The same endpoints carry
+// an empty Security list in the OpenAPI document.
 var openPaths = map[string]bool{
-	"/api/v1/auth/login":   true,
-	"/api/v1/auth/setup":   true,
-	"/api/v1/auth/session": true,
-	"/api/v1/health":       true,
-	"/api/v1/system/info":  true,
-	"/api/v1/openapi.json": true,
-	"/api/v1/openapi.yaml": true,
-	"/api/v1/docs":         true,
+	apiPrefix + "/auth/login":       true,
+	apiPrefix + "/auth/setup":       true,
+	apiPrefix + "/auth/session":     true,
+	apiPrefix + "/health":           true,
+	apiPrefix + "/system/info":      true,
+	apiPrefix + "/openapi.json":     true,
+	apiPrefix + "/openapi.yaml":     true,
+	apiPrefix + "/openapi-3.0.json": true,
+	apiPrefix + "/openapi-3.0.yaml": true,
+	apiPrefix + "/docs":             true,
+	apiPrefix + "/schemas/":         true,
 }
 
-// middleware authenticates every /api request. A session cookie or a
-// bearer key sets the principal; a state-changing session request must
-// also carry the CSRF header.
+func isOpen(path string) bool {
+	if openPaths[path] {
+		return true
+	}
+	return strings.HasPrefix(path, apiPrefix+"/schemas/")
+}
+
+// middleware authenticates every /api request and stores the principal.
+// An open path passes with or without a credential; every other path needs
+// one, and a state-changing session request must also carry the CSRF
+// header.
 func (a *auth) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), requestKey{}, r)
-		if openPaths[r.URL.Path] {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
 		p, err := a.authenticate(r)
 		if err != nil {
 			writeProblem(w, http.StatusInternalServerError, "authentication check failed")
+			return
+		}
+		if p != nil {
+			ctx = context.WithValue(ctx, principalKey{}, *p)
+		}
+		if isOpen(r.URL.Path) {
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		if p == nil {
@@ -226,7 +253,7 @@ func (a *auth) middleware(next http.Handler) http.Handler {
 			writeProblem(w, http.StatusForbidden, "missing or wrong CSRF token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, principalKey{}, *p)))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -244,9 +271,10 @@ func (a *auth) authenticate(r *http.Request) (*Principal, error) {
 		if err != nil || !ok {
 			return nil, err
 		}
-		// Recording each use is best effort; a failed update is not a
-		// reason to reject the request.
-		a.store.TouchAPIKey(ctx, k.ID, clientIP(r))
+		if k.LastUsedAt == nil || time.Since(*k.LastUsedAt) > touchInterval {
+			// A failed update does not reject the request.
+			a.store.TouchAPIKey(ctx, k.ID, clientIP(r))
+		}
 		return &Principal{Kind: KindAPIKey, Name: k.Name}, nil
 	}
 	c, err := r.Cookie(sessionCookie)
@@ -257,7 +285,7 @@ func (a *auth) authenticate(r *http.Request) (*Principal, error) {
 	if err != nil || !ok {
 		return nil, err
 	}
-	if time.Since(se.LastSeen) > time.Hour {
+	if time.Since(se.LastSeen) > touchInterval {
 		a.store.TouchSession(ctx, se.ID, time.Now().Add(sessionLife))
 	}
 	return &Principal{Kind: KindSession, Name: "web UI", Session: se}, nil
@@ -277,25 +305,24 @@ func (a *auth) startSession(ctx context.Context, r *http.Request) (store.Session
 	if err := a.store.CreateSession(ctx, se); err != nil {
 		return se, nil, err
 	}
-	return se, a.cookie(se.ID, sessionLife), nil
+	return se, a.sessionCookie(se.ID), nil
 }
 
-func (a *auth) cookie(value string, life time.Duration) *http.Cookie {
-	c := &http.Cookie{
+func (a *auth) sessionCookie(id string) *http.Cookie {
+	return &http.Cookie{
 		Name:     sessionCookie,
-		Value:    value,
+		Value:    id,
 		Path:     "/",
+		MaxAge:   int(sessionLife.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   a.secure,
 	}
-	if life <= 0 {
-		c.MaxAge = -1
-	} else {
-		c.MaxAge = int(life.Seconds())
-	}
-	return c
 }
 
-// errWebSessionOnly rejects an API key on endpoints that manage access.
-var errWebSessionOnly = errors.New("this endpoint needs a web session")
+// clearCookie tells the browser to drop the session cookie.
+func (a *auth) clearCookie() *http.Cookie {
+	c := a.sessionCookie("")
+	c.MaxAge = -1
+	return c
+}

@@ -16,6 +16,18 @@ func (s *Store) PasswordHash(ctx context.Context) (hash string, ok bool, err err
 	return hash, err == nil, err
 }
 
+// SetPasswordIfNone stores the first login hash. It reports false when a
+// password already exists, in one statement, so two setup requests cannot
+// both succeed.
+func (s *Store) SetPasswordIfNone(ctx context.Context, hash string) (bool, error) {
+	res, err := s.w.ExecContext(ctx, `INSERT OR IGNORE INTO login (id, password_hash, updated_at) VALUES (1, ?, ?)`, hash, now())
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // SetPasswordHash stores the login hash and signs out every session.
 func (s *Store) SetPasswordHash(ctx context.Context, hash string) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
@@ -40,12 +52,18 @@ type Session struct {
 	UserAgent string
 }
 
-// CreateSession stores a new session.
+// CreateSession stores a new session and removes expired ones, so the
+// table does not grow over the life of the appliance.
 func (s *Store) CreateSession(ctx context.Context, se Session) error {
-	_, err := s.w.ExecContext(ctx, `INSERT INTO sessions (id, csrf_token, created_at, last_seen_at, expires_at, ip, user_agent)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		se.ID, se.CSRFToken, format(se.CreatedAt), format(se.LastSeen), format(se.ExpiresAt), se.IP, se.UserAgent)
-	return err
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, csrf_token, created_at, last_seen_at, expires_at, ip, user_agent)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			se.ID, se.CSRFToken, format(se.CreatedAt), format(se.LastSeen), format(se.ExpiresAt), se.IP, se.UserAgent)
+		return err
+	})
 }
 
 // GetSession returns a session that has not expired.
@@ -74,12 +92,6 @@ func (s *Store) TouchSession(ctx context.Context, id string, expiresAt time.Time
 // DeleteSession signs out one session.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	_, err := s.w.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
-	return err
-}
-
-// PruneSessions removes expired sessions.
-func (s *Store) PruneSessions(ctx context.Context) error {
-	_, err := s.w.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now())
 	return err
 }
 
@@ -153,11 +165,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, id int64) (bool, error) {
 	return n > 0, nil
 }
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanAPIKey(row scanner) (APIKey, error) {
+func scanAPIKey(row interface{ Scan(dest ...any) error }) (APIKey, error) {
 	var k APIKey
 	var created string
 	var lastUsed, expires sql.NullString

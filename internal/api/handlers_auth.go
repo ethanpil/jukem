@@ -23,6 +23,11 @@ type sessionOutput struct {
 	Body      SessionInfo
 }
 
+// cookieOutput is a 204 answer that only changes the cookie.
+type cookieOutput struct {
+	SetCookie *http.Cookie `header:"Set-Cookie"`
+}
+
 type passwordInput struct {
 	Body struct {
 		Password string `json:"password" minLength:"8" maxLength:"256"`
@@ -59,7 +64,7 @@ type createAPIKeyOutput struct {
 func (s *Server) registerAuth(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-session", Method: http.MethodGet, Path: "/auth/session", Tags: []string{"auth"},
-		Summary: "Read the sign-in state",
+		Summary: "Read the sign-in state", Security: []map[string][]string{},
 	}, func(ctx context.Context, _ *struct{}) (*sessionOutput, error) {
 		info, err := s.sessionInfo(ctx)
 		return &sessionOutput{Body: info}, err
@@ -68,22 +73,25 @@ func (s *Server) registerAuth(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "setup-password", Method: http.MethodPost, Path: "/auth/setup", Tags: []string{"auth"},
 		Summary: "Set the first password", Description: "Allowed only while no password exists. Starts a web session.",
-		DefaultStatus: http.StatusCreated,
+		DefaultStatus: http.StatusCreated, Security: []map[string][]string{},
 	}, func(ctx context.Context, in *passwordInput) (*sessionOutput, error) {
-		if _, exists, err := s.store.PasswordHash(ctx); err != nil {
+		hash, err := HashPassword(in.Body.Password)
+		if err != nil {
 			return nil, err
-		} else if exists {
-			return nil, huma.Error409Conflict("a password is already set")
 		}
-		if err := s.setPassword(ctx, in.Body.Password); err != nil {
+		set, err := s.store.SetPasswordIfNone(ctx, hash)
+		if err != nil {
 			return nil, err
+		}
+		if !set {
+			return nil, huma.Error409Conflict("a password is already set")
 		}
 		return s.signIn(ctx)
 	})
 
 	huma.Register(api, huma.Operation{
 		OperationID: "login", Method: http.MethodPost, Path: "/auth/login", Tags: []string{"auth"},
-		Summary: "Start a web session",
+		Summary: "Start a web session", Security: []map[string][]string{},
 	}, func(ctx context.Context, in *passwordInput) (*sessionOutput, error) {
 		r := requestFrom(ctx)
 		ip := clientIP(r)
@@ -105,7 +113,7 @@ func (s *Server) registerAuth(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "logout", Method: http.MethodPost, Path: "/auth/logout", Tags: []string{"auth"},
 		Summary: "End the web session", DefaultStatus: http.StatusNoContent,
-	}, func(ctx context.Context, _ *struct{}) (*sessionOutput, error) {
+	}, func(ctx context.Context, _ *struct{}) (*cookieOutput, error) {
 		p, err := webSession(ctx)
 		if err != nil {
 			return nil, err
@@ -113,14 +121,14 @@ func (s *Server) registerAuth(api huma.API) {
 		if err := s.store.DeleteSession(ctx, p.Session.ID); err != nil {
 			return nil, err
 		}
-		return &sessionOutput{SetCookie: s.auth.cookie("", 0)}, nil
+		return &cookieOutput{SetCookie: s.auth.clearCookie()}, nil
 	})
 
 	huma.Register(api, huma.Operation{
 		OperationID: "change-password", Method: http.MethodPut, Path: "/auth/password", Tags: []string{"auth"},
-		Summary: "Change the password", Description: "Signs out every session, including this one.",
+		Summary: "Change the password", Description: "Signs out every session, including this one. API keys stay valid; revoke them separately.",
 		DefaultStatus: http.StatusNoContent,
-	}, func(ctx context.Context, in *changePasswordInput) (*sessionOutput, error) {
+	}, func(ctx context.Context, in *changePasswordInput) (*cookieOutput, error) {
 		if _, err := webSession(ctx); err != nil {
 			return nil, err
 		}
@@ -131,10 +139,14 @@ func (s *Server) registerAuth(api huma.API) {
 		if !VerifyPassword(hash, in.Body.Current) {
 			return nil, huma.Error403Forbidden("the current password is wrong")
 		}
-		if err := s.setPassword(ctx, in.Body.Password); err != nil {
+		newHash, err := HashPassword(in.Body.Password)
+		if err != nil {
 			return nil, err
 		}
-		return &sessionOutput{SetCookie: s.auth.cookie("", 0)}, nil
+		if err := s.store.SetPasswordHash(ctx, newHash); err != nil {
+			return nil, err
+		}
+		return &cookieOutput{SetCookie: s.auth.clearCookie()}, nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -199,25 +211,12 @@ func (s *Server) sessionInfo(ctx context.Context) (SessionInfo, error) {
 		return SessionInfo{}, err
 	}
 	info := SessionInfo{SetupRequired: !exists}
-	r := requestFrom(ctx)
-	p, err := s.auth.authenticate(r)
-	if err != nil {
-		return info, err
-	}
-	if p != nil {
+	if p, ok := PrincipalFrom(ctx); ok {
 		info.Authenticated = true
 		info.Kind = string(p.Kind)
 		info.CSRFToken = p.Session.CSRFToken
 	}
 	return info, nil
-}
-
-func (s *Server) setPassword(ctx context.Context, password string) error {
-	hash, err := HashPassword(password)
-	if err != nil {
-		return err
-	}
-	return s.store.SetPasswordHash(ctx, hash)
 }
 
 func (s *Server) signIn(ctx context.Context) (*sessionOutput, error) {
@@ -232,12 +231,12 @@ func (s *Server) signIn(ctx context.Context) (*sessionOutput, error) {
 	}, nil
 }
 
-// webSession returns the principal when it is a browser session. Access
-// management stays out of reach of a leaked API key.
+// webSession returns the principal when it is a browser session. A leaked
+// API key cannot manage access.
 func webSession(ctx context.Context) (Principal, error) {
 	p, ok := PrincipalFrom(ctx)
 	if !ok || p.Kind != KindSession {
-		return p, huma.Error403Forbidden(errWebSessionOnly.Error())
+		return p, huma.Error403Forbidden("this endpoint needs a web session")
 	}
 	return p, nil
 }

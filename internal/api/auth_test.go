@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
@@ -171,6 +172,39 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 	if resp, _ := c.do("POST", "/api/v1/auth/login", map[string]string{"password": "correct horse"}); resp.StatusCode != 429 {
 		t.Fatalf("expected 429, got %d", resp.StatusCode)
+	}
+}
+
+func TestCookieFlags(t *testing.T) {
+	a := &auth{secure: true}
+	c := a.sessionCookie("abc")
+	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" || c.MaxAge <= 0 {
+		t.Fatalf("cookie %+v", c)
+	}
+	if cc := a.clearCookie(); cc.MaxAge != -1 || cc.Value != "" {
+		t.Fatalf("clear cookie %+v", cc)
+	}
+	a.secure = false
+	if a.sessionCookie("abc").Secure {
+		t.Fatal("Secure set without TLS")
+	}
+}
+
+func TestExpiredAPIKeyIsRejected(t *testing.T) {
+	ts := newTestServer(t)
+	c := &client{t: t, base: ts.URL}
+	c.do("POST", "/api/v1/auth/setup", map[string]string{"password": "correct horse"})
+	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	resp, out := c.do("POST", "/api/v1/api-keys", map[string]any{"name": "old", "expires_at": past})
+	if resp.StatusCode != 201 {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	kc := &client{t: t, base: ts.URL, auth: out["key"].(string)}
+	if resp, _ := kc.do("GET", "/api/v1/auth/session", nil); resp.StatusCode != 200 {
+		t.Fatalf("open path with expired key: %d", resp.StatusCode)
+	}
+	if resp, _ := kc.do("GET", "/api/v1/nothing", nil); resp.StatusCode != 401 {
+		t.Fatalf("expired key must fail: %d", resp.StatusCode)
 	}
 }
 
