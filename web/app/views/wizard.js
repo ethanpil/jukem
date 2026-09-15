@@ -20,7 +20,9 @@ export async function wizardView(main, _rest, opts = {}) {
     clear(box);
     const dots = h('div.d-flex.gap-1.mb-3');
     STEPS.forEach((name, i) => dots.append(h('span', { class: `badge rounded-pill ${i === step ? 'text-bg-primary' : i < step ? 'text-bg-success' : 'text-bg-secondary'}`, title: name }, `${i + 1}`)));
-    box.append(h('h1.h4.mb-1', title), dots, body, h('div.d-flex.gap-2.mt-4', footer));
+    box.append(h('div.d-flex.align-items-center.gap-2.mb-1',
+      h('picture', h('source', { srcset: '/app/logo-dark.svg', media: '(prefers-color-scheme: dark)' }), h('img', { src: '/app/logo.svg', alt: '', width: 36, height: 36 })),
+      h('h1.h4.mb-0', title)), dots, body, h('div.d-flex.gap-2.mt-4', footer));
   }
   const go = (n) => { step = n; render(); };
   // The footer sits outside the form, so the button names it.

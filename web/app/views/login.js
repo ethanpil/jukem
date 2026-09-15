@@ -28,6 +28,9 @@ export function loginView(main, onSignedIn) {
     h('label.form-label', { for: 'login-password' }, 'Password'),
     input, err, btn);
   main.append(h('div.mx-auto.mt-5', { style: 'max-width: 360px' },
+    h('div.text-center.mb-2', h('picture',
+      h('source', { srcset: '/app/logo-dark.svg', media: '(prefers-color-scheme: dark)' }),
+      h('img', { src: '/app/logo.svg', alt: '', width: 72, height: 72 }))),
     h('h1.h3.mb-4.text-center', 'jukem'),
     form,
     h('p.text-body-secondary.small.mt-4', 'Forgot it? On the console: jukem reset-password')));

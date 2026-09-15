@@ -263,7 +263,8 @@ export async function settingsView(main, rest) {
         h('h3.h6.mt-3', 'Retention'),
         h('div.row.g-2', h('div.col-4', h('label.form-label', 'History days'), days), h('div.col-4', h('label.form-label', 'History rows'), rows), h('div.col-4', h('label.form-label', 'Dismissed alerts days'), adays)),
         h('button.btn.btn-primary.mt-3', { type: 'submit' }, 'Save system')),
-      h('p.small.text-body-secondary.mt-3', 'Log file: /var/log/jukem/jukem.log (or stdout in Docker).'));
+      h('p.small.text-body-secondary.mt-3', 'Log file: /var/log/jukem/jukem.log (or stdout in Docker).'),
+      h('p.small.text-body-secondary', 'Logo: music library icon from the Solar Bold Duotone Icons collection, CC Attribution License.'));
   }
 
   function renderMaintenance(body) {

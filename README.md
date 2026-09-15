@@ -216,3 +216,7 @@ way abuild does, with RSA-SHA256, so apk accepts it without
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+The logo and favicon are the music library icon from the Solar Bold Duotone
+Icons collection, used under the CC Attribution License. The dark-mode
+version changes only the colour.

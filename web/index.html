@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>jukem</title>
+<link rel="icon" type="image/svg+xml" href="/app/logo.svg" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/svg+xml" href="/app/logo-dark.svg" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css">
 <link rel="stylesheet" href="/app/app.css">
@@ -12,7 +14,7 @@
 <body>
 <nav class="navbar navbar-expand d-none d-lg-flex bg-body-tertiary border-bottom sticky-top" id="topnav">
   <div class="container-fluid">
-    <a class="navbar-brand fw-semibold" href="#/">jukem</a>
+    <a class="navbar-brand fw-semibold d-flex align-items-center gap-2" href="#/"><picture><source srcset="/app/logo-dark.svg" media="(prefers-color-scheme: dark)"><img src="/app/logo.svg" alt="" width="28" height="28"></picture>jukem</a>
     <ul class="navbar-nav me-auto" id="topnav-links"></ul>
     <div class="d-flex align-items-center gap-2">
       <div id="alert-badge" class="d-none"></div>
