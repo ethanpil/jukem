@@ -64,17 +64,17 @@ function buildPanel() {
 function render() {
   if (!ui) return;
   const b = clear(ui.panel.querySelector('.offcanvas-body'));
-  const target = h('div.mb-3', h('div.small.text-body-secondary', 'Into'), h('div.mono', state.target || '(music root)'));
+  const target = h('div.upload-target', h('div.form-label', 'Into'), h('div.mono', state.target || '(music root)'));
   const filePick = h('input', { type: 'file', multiple: true, class: 'd-none' });
   const dirPick = h('input', { type: 'file', multiple: true, class: 'd-none' });
   dirPick.setAttribute('webkitdirectory', '');
   filePick.addEventListener('change', () => addFiles([...filePick.files].map((f) => ({ file: f, rel: f.name }))));
   dirPick.addEventListener('change', () => addFiles([...dirPick.files].map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }))));
-  const dropZone = h('div.border.rounded.p-3.text-center.text-body-secondary.mb-3', { style: 'border-style: dashed !important' },
-    icon('cloud-upload', 'fs-3 d-block'), 'Drop files or folders here',
+  const dropZone = h('div.drop-zone',
+    icon('cloud-upload'), 'Drop files or folders here',
     h('div.mt-2.d-flex.gap-2.justify-content-center',
-      h('button.btn.btn-sm.btn-outline-primary', { type: 'button', onclick: () => filePick.click() }, 'Choose files'),
-      h('button.btn.btn-sm.btn-outline-primary.d-none.d-md-inline-block', { type: 'button', onclick: () => dirPick.click() }, 'Choose folder')),
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => filePick.click() }, 'Choose files'),
+      h('button.btn.btn-sm.btn-outline-secondary.d-none.d-md-inline-flex', { type: 'button', onclick: () => dirPick.click() }, 'Choose folder')),
     filePick, dirPick);
   const conflict = h('select.form-select.form-select-sm', { disabled: state.running, onchange: (e) => { state.conflict = e.target.value; renderProgress(); } },
     h('option', { value: 'skip', selected: state.conflict === 'skip' }, 'Skip files that already exist'),

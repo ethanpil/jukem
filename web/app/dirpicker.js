@@ -26,7 +26,7 @@ export function dirPicker({ start, onPick }) {
       crumb.textContent = path;
       clear(list);
       if (d.parent !== undefined && d.parent !== null) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = d.parent; load(); } }, icon('arrow-90deg-up', 'me-2'), '..'));
-      for (const e of d.entries) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder', 'me-2'), e.name));
+      for (const e of d.entries) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder-fill', 'folder-icon'), e.name));
       if (!d.entries.length) list.append(h('div.list-group-item.text-body-secondary', 'No subfolders.'));
     } catch (e) { clear(list).append(errorBox(e)); }
   }

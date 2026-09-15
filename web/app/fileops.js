@@ -89,7 +89,7 @@ export function libraryPicker({ title, start = '', files = false, onPick }) {
       if (path) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = parentOf(path); load(); } }, icon('arrow-90deg-up', 'me-2'), '..'));
       for (const e of entries) {
         if (e.type === 'directory') {
-          list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder', 'me-2'), e.name));
+          list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder-fill', 'folder-icon'), e.name));
         } else if (files) {
           const ic = icon(selected.has(e.path) ? 'check-square-fill' : 'square', 'me-2');
           list.append(h('button', { type: 'button', class: `list-group-item list-group-item-action ${selected.has(e.path) ? 'active' : ''}`, onclick: (ev) => {
