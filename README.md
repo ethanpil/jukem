@@ -1,9 +1,217 @@
 # jukem
 
-jukem is a self-hosted jukebox appliance. MPD plays music through the sound
-hardware of the machine jukem is installed on, and a web UI and REST API
-control it. It comes as a signed Alpine apk for x86_64 and aarch64, and as a
-Docker image that installs that same package.
+jukem is a self-hosted jukebox appliance. It plays music through the sound
+hardware of the machine it runs on, on a weekly schedule, with a web UI and a
+REST API to control it. MPD does the playback. jukem owns MPD: it writes the
+MPD configuration, starts MPD as a child process, and restarts it when it
+stops.
 
-See [PLAN.md](PLAN.md) for the design notes. The last build step completes
-this README.
+jukem comes as a signed Alpine apk for `x86_64` and `aarch64`, and as a Docker
+image that installs that same package.
+
+## What it does
+
+- Plays a folder or a playlist during weekly windows, with date exceptions
+  for holidays and one-off events.
+- Lets a person press play, pause or stop at any time. The schedule resumes
+  at the next window, or when the person presses Resume schedule.
+- Fades in and out at window boundaries. Applies a volume floor and ceiling
+  to people and API clients.
+- Accepts uploads from the browser, moves and renames files, and keeps
+  playlists and schedules pointing at the moved files.
+- Watches for silence when music should play, a missing output device, a
+  full disk, and an unstable MPD. It shows alerts in the UI and can post them
+  to a webhook (generic JSON or ntfy).
+- Keeps a play history.
+- Runs a first-run wizard that ends when you confirm that you hear music.
+
+See [PLAN.md](PLAN.md) for the design notes and the reasons behind them.
+
+## Install on Alpine Linux
+
+Use Alpine's `sys` install mode. The diskless and data-disk modes rebuild
+the root filesystem at every boot from the package cache, and a package that
+you install from a local file does not survive that. Support for those modes
+needs a local apk repository and is not part of version 1.
+
+Enable the community repository: remove the `#` before the `community` line
+in `/etc/apk/repositories`. Then run, as root:
+
+```sh
+VERSION=1.0.0
+ARCH=$(apk --print-arch)
+BASE=https://github.com/OWNER/jukem/releases/download/v$VERSION
+
+wget -qO /etc/apk/keys/jukem.rsa.pub "$BASE/jukem.rsa.pub"   # once; the key does not change
+sha256sum /etc/apk/keys/jukem.rsa.pub                              # compare with the value below
+wget "$BASE/jukem-$VERSION-$ARCH.apk"
+apk add chrony "./jukem-$VERSION-$ARCH.apk"
+
+rc-update add chronyd default
+rc-update add jukem default
+rc-service chronyd start
+rc-service jukem start
+```
+
+Public key SHA-256: `see packaging/keys/README.md; the value is published
+with the first release`.
+
+Open `http://<host>/` and follow the setup wizard. `apk add` installs `mpd`
+and the other dependencies from Alpine's mirrors. chrony keeps the clock
+correct, which the schedule needs.
+
+To upgrade, download the new package and run `apk add` again. The service
+restarts itself. Set `JUKEM_RESTART_ON_UPGRADE="no"` in `/etc/conf.d/jukem`
+to restart at a time of your choice.
+
+### Music copied by hand
+
+The service runs as the `jukem` user. If you copy music onto the machine as
+root, with scp, rsync or from a USB stick, give it to the service user:
+
+```sh
+chown -R jukem:jukem /srv/jukem/music
+```
+
+Without this, uploads and file operations in those folders fail. jukem shows
+the folders that are not writable and the command to fix them in Settings >
+Maintenance > Check library permissions.
+
+### Paths
+
+| Path | Purpose |
+|---|---|
+| `/usr/bin/jukem` | The binary, with the web UI embedded |
+| `/etc/init.d/jukem`, `/etc/conf.d/jukem` | OpenRC service script and options |
+| `/etc/jukem/config.yaml` | Bootstrap settings: listen addresses, data directory, log file |
+| `/var/lib/jukem/` | Database, snapshots, MPD state, playlists, TLS material |
+| `/var/log/jukem/` | Log file, capped in size |
+| `/srv/jukem/music/` | Default music root |
+
+Every other setting lives in the database and is changed in the web UI.
+
+## Install with Docker
+
+Prepare the two host directories. The image runs as UID and GID 1000, so the
+directories must belong to that user:
+
+```sh
+mkdir -p /srv/jukem/music /srv/jukem/data
+chown -R 1000:1000 /srv/jukem
+```
+
+Copy [compose.yaml](compose.yaml), set the host audio group id in
+`group_add` (`getent group audio | cut -d: -f3`), and start it:
+
+```sh
+docker compose up -d
+```
+
+Open `http://<host>/`. If the music belongs to a different user, add
+`user: "<uid>:<gid>"` to the service and give `/srv/jukem/data` the same
+owner.
+
+## First run
+
+The wizard asks for a password, the time zone, the music root, the output
+device and a first schedule. Then it plays a track and asks you if you hear
+it. Setup is complete when you say yes.
+
+If you hear nothing:
+
+- Check that the correct output device is selected.
+- Open Settings > Audio > Hardware level. A muted ALSA control is a common
+  cause of silence.
+- Check the amplifier and its volume.
+
+## Health and alerts
+
+The Health page answers "is it working?" in plain language: MPD, the
+scheduler, the clock, the output device, the library, the storage and the
+last track change. Anything that is not OK says what is wrong and what to do.
+
+Alerts show as a banner on every screen. To send them somewhere else, set a
+webhook URL in Settings > System. The generic format posts JSON. The ntfy
+format posts to an ntfy topic URL with a title and a priority.
+
+`/healthz` answers `200` when the service can do its job and `503` when it
+cannot. Docker uses it as the health check.
+
+## Access from outside the home
+
+jukem serves plain HTTP on the LAN. For access away from home, use Tailscale
+or WireGuard. Do not forward the port on the router.
+
+HTTPS is one switch in Settings > Security. Upload a certificate and key, or
+let jukem generate a self-signed certificate. Browsers warn about a
+self-signed certificate. When HTTPS is on and a certificate is stored, jukem
+serves TLS on `listen_tls` (default `:443`, `:8443` in Docker) and redirects
+HTTP to it. The switch takes effect at the next service restart.
+
+## API
+
+The REST API lives under `/api/v1`. The OpenAPI document is at
+`/api/v1/openapi.json` and the interactive docs at `/api/v1/docs`.
+
+Create an API key in Settings > Security and send it as
+`Authorization: Bearer <key>`. The web UI uses a session cookie instead. The
+event stream at `/api/v1/events` says what changed; the client refetches the
+resource.
+
+## Backup
+
+Stop the service and copy `/var/lib/jukem` (the `data` bind mount in
+Docker). That directory is the complete backup. The music root is separate.
+
+jukem copies the database to `/var/lib/jukem/snapshots/` before every schema
+migration and when you press Database snapshot in Settings > Maintenance.
+The Health page shows the rollback steps when a migration fails.
+
+## Configuration file
+
+`/etc/jukem/config.yaml`:
+
+```yaml
+listen: ":80"
+listen_tls: ":443"
+data_dir: /var/lib/jukem
+log_file: /var/log/jukem/jukem.log
+```
+
+`JUKEM_LISTEN`, `JUKEM_LISTEN_TLS`, `JUKEM_DATA_DIR` and `JUKEM_LOG_FILE`
+override these. An empty `log_file` logs to stdout, which the Docker image
+uses.
+
+## Forgotten password
+
+On the console, as root:
+
+```sh
+jukem reset-password
+```
+
+This sets a new password and signs out every device.
+
+## Music licensing
+
+Playing recorded music in a business generally needs a public performance
+licence (PRS and PPL in the UK; ASCAP, BMI, SESAC and GMR in the US), unless
+the music is licensed for commercial background use. The play history helps
+if a report is ever required.
+
+## Development
+
+```sh
+go test ./...
+go run ./cmd/jukem serve --config ./packaging/config.yaml
+scripts/package.sh amd64 v1.0.0      # unsigned apk in dist/
+```
+
+The web UI is plain ES modules under `web/app`, embedded in the binary.
+Restart the server to see a change. `tools/apksign` signs the package the
+way abuild does, with RSA-SHA256, so apk accepts it without
+`--allow-untrusted`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

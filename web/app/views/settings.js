@@ -1,6 +1,7 @@
 import * as A from '../api.js';
 import { h, clear, icon, toast, spinner, errorBox, confirmDialog, copyText, fmtTime, modal } from '../dom.js';
 import { signOut } from '../main.js';
+import { dirPicker } from '../dirpicker.js';
 
 // settingsView is one page with sections. Each section renders from the
 // current settings and saves the whole object.
@@ -173,31 +174,13 @@ export async function settingsView(main, rest) {
       if (root.value !== settings.music_root && !await confirmDialog({ title: 'Change the music root?', body: 'MPD restarts and rescans. Playlist entries are relative to the root, so they only resolve if the new root has the same structure.', confirmText: 'Change' })) return;
       await save({ music_root: root.value, upload_max_bytes: Number(maxMB.value) * 1048576, allowed_extensions: exts.value.split(/[\s,]+/).filter(Boolean), free_space_reserve: Number(reserveMB.value) * 1048576, nightly_rescan_hour: Number(hour.value) });
     } },
-      h('label.form-label', 'Music root'), h('div.d-flex.gap-2', root, h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => browseDir(root) }, 'Browse…')),
+      h('label.form-label', 'Music root'), h('div.d-flex.gap-2', root, h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => dirPicker({ start: root.value, onPick: (p) => { root.value = p; } }) }, 'Browse…')),
       h('div.row.g-3.mt-1',
         h('div.col-sm-4', h('label.form-label', 'Max upload (MB)'), maxMB),
         h('div.col-sm-4', h('label.form-label', 'Free space reserve (MB)'), reserveMB),
         h('div.col-sm-4', h('label.form-label', 'Nightly rescan hour'), hour),
         h('div.col-12', h('label.form-label', 'Allowed extensions'), exts)),
       h('button.btn.btn-primary.mt-3', { type: 'submit' }, 'Save library')));
-  }
-
-  async function browseDir(input) {
-    let path = input.value || '/';
-    const list = h('div.list-group');
-    const crumb = h('div.mono.small.mb-2');
-    async function load() {
-      try {
-        const d = await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`);
-        path = d.path;
-        crumb.textContent = path;
-        clear(list);
-        if (d.parent !== undefined && d.parent !== null) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = d.parent; load(); } }, icon('arrow-90deg-up', 'me-2'), '..'));
-        for (const e of d.entries) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder', 'me-2'), e.name, e.writable ? null : h('span.badge.text-bg-secondary.ms-2', 'read-only')));
-      } catch (e) { clear(list).append(errorBox(e)); }
-    }
-    const dlg = modal({ title: 'Choose the music root', body: [crumb, list], footer: h('button.btn.btn-primary', { type: 'button', onclick: () => { input.value = path; dlg.hide(); } }, 'Use this folder') });
-    load();
   }
 
   async function renderSecurity(body) {
@@ -257,7 +240,7 @@ export async function settingsView(main, rest) {
           try { await A.api.post('/settings/tls/self-signed'); toast('Self-signed certificate generated', 'success'); } catch (e) { toast(e.message, 'danger'); }
         } }, 'Generate self-signed'),
         h('div.form-check.form-switch.ms-3', enabled, h('label.form-check-label', { for: 'set-https' }, 'Serve HTTPS and redirect HTTP'))),
-      h('div.form-text', 'The switch takes effect at the next service restart.'));
+      h('div.form-text', 'A stored certificate applies at once. The switch takes effect at the next service restart.'));
     enabled.addEventListener('change', () => save({ https_enabled: enabled.checked }, 'Saved. Restart the service to apply.'));
     return box;
   }

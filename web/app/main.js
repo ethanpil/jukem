@@ -174,6 +174,7 @@ function showLogin() {
   loginView(document.getElementById('main'), onSignedIn);
 }
 
+// onSignedIn starts the app shell. An unfinished setup opens the wizard.
 async function onSignedIn(sess) {
   state.session = sess;
   A.setCSRF(sess.csrf_token);
@@ -183,6 +184,10 @@ async function onSignedIn(sess) {
   await refreshStatus();
   refreshAlerts();
   if (!statusTimer) statusTimer = setInterval(refreshStatus, 60000);
+  try {
+    const set = await A.settings();
+    if (!set.setup_complete && location.hash !== '#/setup') location.hash = '#/setup';
+  } catch { /* the wizard is optional when settings do not load */ }
   start();
 }
 
@@ -213,7 +218,7 @@ async function boot() {
     return;
   }
   if (sess.setup_required) {
-    wizardView(document.getElementById('main'), '', { firstRun: true, onSignedIn });
+    wizardView(document.getElementById('main'), '', { firstRun: true, onSignedIn: (s) => { location.hash = '#/setup'; return onSignedIn(s); } });
     return;
   }
   if (!sess.authenticated || sess.kind !== 'session') {
