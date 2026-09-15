@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"jukem/internal/audio"
 )
 
 // Settings holds every setting the UI exposes. Bootstrap settings (listen
@@ -48,15 +50,7 @@ type Settings struct {
 
 // DeviceIdentity is the stable identity of an output device, saved so that
 // the same physical output is selected after a reboot.
-type DeviceIdentity struct {
-	CardID    string `json:"card_id" doc:"ALSA card ID"`
-	Device    int    `json:"device" doc:"ALSA device number on the card"`
-	VendorID  string `json:"vendor_id,omitempty" doc:"USB vendor ID"`
-	ProductID string `json:"product_id,omitempty" doc:"USB product ID"`
-	Serial    string `json:"serial,omitempty" doc:"USB serial number"`
-	SysPath   string `json:"sys_path,omitempty" doc:"sysfs device path, which encodes the physical port"`
-	Name      string `json:"name,omitempty" doc:"Description shown to people"`
-}
+type DeviceIdentity = audio.Identity
 
 // DefaultSettings returns the settings of a fresh install.
 func DefaultSettings() Settings {
