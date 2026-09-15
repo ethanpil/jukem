@@ -16,10 +16,16 @@ export async function scheduleView(main) {
   let weekOffset = 0; // weeks from the current one
   let playlists = [];
   let tz = 'UTC';
+  let defaultShuffle = false;
   let weekGen = 0;
 
   async function loadAll() {
     try { playlists = (await A.api.get('/playlists')).playlists; } catch { playlists = []; }
+    try {
+      const set = await A.settings();
+      tz = set.time_zone;
+      defaultShuffle = set.default_shuffle;
+    } catch { /* the zone arrives with the intervals */ }
     clear(box).append(
       h('div.d-flex.align-items-center.gap-2.mb-3', h('h1.h3.mb-0.me-auto', 'Schedule'),
         h('button.btn.btn-primary', { type: 'button', onclick: () => ruleEditor(null) }, icon('plus-lg', 'me-1'), 'New rule')),
@@ -48,8 +54,6 @@ export async function scheduleView(main) {
     clear(weekBox).append(spinner());
     let r;
     try {
-      const probe = tz === 'UTC' && weekOffset === 0 ? await A.api.get('/schedules/intervals') : null;
-      if (probe) tz = probe.time_zone;
       const monday = mondayOf(localDate(new Date(), tz));
       r = await A.api.get(`/schedules/intervals?week=${monday}`);
     } catch (e) { if (gen === weekGen) clear(weekBox).append(weekNav(), errorBox(e)); return; }
@@ -167,7 +171,7 @@ export async function scheduleView(main) {
   }
 
   function ruleEditor(rule) {
-    const init = rule || { name: '', enabled: true, days: 31, start_time: '09:00', end_time: '17:00', source_type: 'directory', source_ref: '', shuffle: false, volume: null };
+    const init = rule || { name: '', enabled: true, days: 31, start_time: '09:00', end_time: '17:00', source_type: 'directory', source_ref: '', shuffle: defaultShuffle, volume: null };
     const name = h('input.form-control', { type: 'text', value: init.name, required: true, maxlength: 100 });
     const dayChecks = DAYS.map(([label, bit]) => { const c = h('input.btn-check', { type: 'checkbox', id: `day-${bit}`, checked: !!(init.days & bit), autocomplete: 'off' }); return [c, h('label.btn.btn-outline-secondary.btn-sm', { for: `day-${bit}` }, label)]; });
     const start = h('input.form-control', { type: 'time', value: init.start_time, required: true });

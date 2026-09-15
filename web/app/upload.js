@@ -1,9 +1,9 @@
-// Upload manager. It lives in the app shell, so changing screens does not
-// interrupt a batch. Three files go at a time, one request per file, over
+// Upload manager. It is part of the app shell, so a change of screen does
+// not interrupt a batch. Three files go at a time, one request per file, over
 // XMLHttpRequest for upload progress.
 
 import * as A from './api.js';
-import { h, clear, icon, toast, fmtBytes } from './dom.js';
+import { h, clear, icon, toast, fmtBytes, problemMessage } from './dom.js';
 
 const PARALLEL = 3;
 const ATTEMPTS = 4; // one try and three retries
@@ -55,6 +55,9 @@ function buildPanel() {
   place();
   panel.addEventListener('dragover', (e) => { e.preventDefault(); });
   panel.addEventListener('drop', onDrop);
+  // A drop that misses the panel must not open the file in the tab.
+  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  document.addEventListener('drop', (e) => { if (!panel.contains(e.target)) e.preventDefault(); });
   ui = { panel, offcanvas: new bootstrap.Offcanvas(panel), summary: h('div.mb-2'), bar: h('div.progress.mb-2', { role: 'progressbar' }, h('div.progress-bar')), rows: h('div.list-group.mb-3'), actions: h('div.d-flex.gap-2') };
 }
 
@@ -93,8 +96,10 @@ function counts() {
   return c;
 }
 
+// pendingBytes counts the files that still have to be sent. Files done
+// in an earlier batch are not part of the next total.
 function pendingBytes() {
-  return state.items.reduce((n, i) => n + (i.status === 'pending' || i.status === 'uploading' || i.status === 'retrying' || i.status === 'done' ? i.size : 0), 0);
+  return state.items.reduce((n, i) => n + (i.status === 'pending' || i.status === 'uploading' || i.status === 'retrying' ? i.size : 0), 0);
 }
 
 // scheduleRender coalesces the many progress events into one frame.
@@ -333,15 +338,9 @@ function send(item) {
 // problemText reads the server's message, with the fix and command when
 // it gave them.
 function problemText(xhr) {
-  let text = `HTTP ${xhr.status}`;
-  try {
-    const p = JSON.parse(xhr.responseText);
-    text = p.detail || text;
-    const e = p.errors?.[0];
-    if (e?.message) text += ` ${e.message}`;
-    if (e?.value) text += ` Command: ${e.value}`;
-  } catch { /* keep */ }
-  return text;
+  let problem = null;
+  try { problem = JSON.parse(xhr.responseText); } catch { /* not a problem document */ }
+  return problemMessage(problem, `HTTP ${xhr.status}`);
 }
 
 function cancel() {

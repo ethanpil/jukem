@@ -91,7 +91,7 @@ export async function settingsView(main, rest) {
         } }, 'Use')));
     }
     const showAll = h('input.form-check-input', { type: 'checkbox', checked: settings.show_all_devices, id: 'set-showall', onchange: async () => {
-      if (await save({ show_all_devices: showAll.checked })) bodies.audio.render(clear(body));
+      if (await save({ show_all_devices: showAll.checked })) bodies.audio.render(clear(body)); else showAll.checked = !showAll.checked;
     } });
     body.append(list,
       h('div.d-flex.align-items-center.gap-3',
@@ -103,6 +103,7 @@ export async function settingsView(main, rest) {
     let m;
     try { m = await A.mixer(dev.key); } catch (e) { toast(e.message, 'danger'); return; }
     const select = h('select.form-select');
+    m.controls = m.controls || [];
     for (const c of m.controls) select.append(h('option', { value: c.name, selected: m.remembered?.control === c.name }, `${c.name} — ${c.percent}%${c.muted ? ' (muted)' : ''}`));
     const level = h('input.form-range', { type: 'range', min: 0, max: 100, value: m.remembered?.level ?? (m.controls[0]?.percent ?? 80) });
     const levelLabel = h('span.mono', level.value);
@@ -125,7 +126,7 @@ export async function settingsView(main, rest) {
 
   function renderSchedule(body) {
     const enabled = h('input.form-check-input', { type: 'checkbox', checked: settings.scheduler_enabled, id: 'set-sched', onchange: async () => {
-      await save({ scheduler_enabled: enabled.checked }, enabled.checked ? 'Scheduler on' : 'Scheduler off: manual mode');
+      if (!await save({ scheduler_enabled: enabled.checked }, enabled.checked ? 'Scheduler on' : 'Scheduler off: manual mode')) enabled.checked = !enabled.checked;
     } });
     const tz = h('input.form-control', { type: 'text', value: settings.time_zone, list: 'tz-list', placeholder: 'Europe/London' });
     const tzList = tzDatalist('tz-list');
@@ -240,7 +241,9 @@ export async function settingsView(main, rest) {
         } }, 'Generate self-signed'),
         h('div.form-check.form-switch.ms-3', enabled, h('label.form-check-label', { for: 'set-https' }, 'Serve HTTPS and redirect HTTP'))),
       h('div.form-text', 'A stored certificate applies at once. The switch takes effect at the next service restart.'));
-    enabled.addEventListener('change', () => save({ https_enabled: enabled.checked }, 'Saved. Restart the service to apply.'));
+    enabled.addEventListener('change', async () => {
+      if (!await save({ https_enabled: enabled.checked }, 'Saved. Restart the service to apply.')) enabled.checked = !enabled.checked;
+    });
     return box;
   }
 

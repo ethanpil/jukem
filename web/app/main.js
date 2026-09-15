@@ -102,13 +102,18 @@ export async function refreshStatus() {
 function connectEvents() {
   if (es) es.close();
   es = new EventSource('/api/v1/events');
+  // Events are handled one after the other, and the status is refetched
+  // before the view hears about the event, so the view reads fresh state.
+  let chain = Promise.resolve();
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
-    if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) refreshStatus();
-    if (ev.type === 'alerts') refreshAlerts();
-    if (ev.type === 'upload') document.dispatchEvent(new CustomEvent('jukem-upload-done', { detail: ev }));
-    refreshCurrent(ev.type);
+    chain = chain.then(async () => {
+      if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) await refreshStatus();
+      if (ev.type === 'alerts') await refreshAlerts();
+      if (ev.type === 'upload') document.dispatchEvent(new CustomEvent('jukem-upload-done', { detail: ev }));
+      refreshCurrent(ev.type);
+    }).catch(() => {});
   };
   es.onopen = () => refreshStatus();
 }
@@ -122,7 +127,7 @@ function ownerClass(owner) {
   }
 }
 
-export function renderNowBar() {
+function renderNowBar() {
   const st = state.status;
   const bar = document.getElementById('now-bar');
   const title = document.getElementById('now-bar-title');
@@ -161,6 +166,8 @@ export function renderNowBar() {
   };
   document.getElementById('now-bar-text').onclick = () => navigate('#/');
 }
+
+document.addEventListener('jukem-unauthorized', () => { if (state.session?.authenticated) showLogin(); });
 
 function showLogin() {
   state.session = { authenticated: false };

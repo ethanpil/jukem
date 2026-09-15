@@ -7,11 +7,21 @@ export function dirPicker({ start, onPick }) {
   let path = start || '/';
   const list = h('div.list-group');
   const crumb = h('div.mono.small.mb-2');
+  let fellBack = false;
   async function load() {
     try {
-      // A start path that does not exist falls back to the root once.
-      if (path !== '/' && (await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`).then(() => false, (e) => e.status === 404))) path = '/';
-      const d = await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`);
+      let d;
+      try {
+        d = await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`);
+      } catch (e) {
+        // A start folder that is gone, or not readable, falls back to
+        // the root once.
+        if (fellBack || path === '/' || ![403, 404].includes(e.status)) throw e;
+        fellBack = true;
+        path = '/';
+        load();
+        return;
+      }
       path = d.path;
       crumb.textContent = path;
       clear(list);

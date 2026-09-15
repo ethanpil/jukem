@@ -3,19 +3,12 @@
 // Playlists views call these directly.
 
 import * as A from './api.js';
-import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox, fmtDuration } from './dom.js';
+import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox, fmtDuration, problemMessage } from './dom.js';
 import * as upload from './upload.js';
 
-function opMessage(err) {
-  const e = err.problem?.errors?.[0];
-  if (!e?.message) return err.message;
-  const sep = /[.!?]$/.test(err.message) ? ' ' : '. ';
-  return `${err.message}${sep}${e.message}${e.value ? ` Command: ${e.value}` : ''}`;
-}
+export function fail(err) { toast(problemMessage(err.problem, err.message), 'danger', 10000); }
 
-export function fail(err) { toast(opMessage(err), 'danger', 10000); }
-
-export function parentOf(path) { return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''; }
+function parentOf(path) { return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''; }
 export function baseOf(path) { return path.slice(path.lastIndexOf('/') + 1); }
 
 // queueToast reports a queue action result the same way everywhere.
@@ -75,7 +68,9 @@ export function libraryPicker({ title, start = '', files = false, onPick }) {
     } catch (e) { toast(e.message, 'danger'); }
   } }, 'Add all tracks here') : null;
   function refreshCount() { if (files) { count.textContent = `${selected.size} selected`; pickBtn.disabled = !selected.size; } }
+  let loadGen = 0;
   async function load() {
+    const gen = ++loadGen;
     clear(list).append(spinner());
     try {
       // Folders come first, so every subfolder fits on the pages read here.
@@ -87,6 +82,8 @@ export function libraryPicker({ title, start = '', files = false, onPick }) {
         entries.push(...pg.entries);
         if (!files && pg.entries.some((e) => e.type === 'file')) break;
       }
+      // A quicker second tap has moved on; its own load renders.
+      if (gen !== loadGen) return;
       crumb.textContent = '/' + path;
       clear(list);
       if (path) list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = parentOf(path); load(); } }, icon('arrow-90deg-up', 'me-2'), '..'));

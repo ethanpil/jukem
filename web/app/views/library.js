@@ -134,6 +134,8 @@ export async function libraryView(main, rest) {
         current = { entries: r.entries, search: query, limited: r.limited };
       } else {
         current = await A.api.get(`/library/browse?path=${encodeURIComponent(path)}&page=${page}`);
+        // The server clamps the page when the folder shrank.
+        page = current.page;
       }
       renderList(current);
       renderPager(current);

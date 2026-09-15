@@ -49,13 +49,13 @@ export function icon(name, extra = '') {
 // toast shows a short message; kind is a Bootstrap colour name.
 export function toast(message, kind = 'primary', delay = 4000) {
   const root = document.getElementById('toasts');
-  const el = h('div.toast.align-items-center.border-0', { role: 'status', class: `toast align-items-center border-0 text-bg-${kind}` },
+  const el = h('div', { role: 'status', class: `toast align-items-center border-0 text-bg-${kind}` },
     h('div.d-flex',
       h('div.toast-body', message),
       h('button.btn-close.btn-close-white.me-2.m-auto', { type: 'button', 'data-bs-dismiss': 'toast', 'aria-label': 'Close' })));
   root.append(el);
   const t = new bootstrap.Toast(el, { delay });
-  el.addEventListener('hidden.bs.toast', () => el.remove());
+  el.addEventListener('hidden.bs.toast', () => { t.dispose(); el.remove(); });
   t.show();
 }
 
@@ -74,7 +74,7 @@ export function confirmDialog({ title, body, confirmText = 'OK', danger = false 
     const m = new bootstrap.Modal(el);
     let result = false;
     okBtn.addEventListener('click', () => { result = true; m.hide(); });
-    el.addEventListener('hidden.bs.modal', () => { el.remove(); resolve(result); });
+    el.addEventListener('hidden.bs.modal', () => { m.dispose(); el.remove(); resolve(result); });
     m.show();
   });
 }
@@ -83,14 +83,14 @@ export function confirmDialog({ title, body, confirmText = 'OK', danger = false 
 export function modal({ title, body, footer, size = '' }) {
   const root = document.getElementById('modal-root');
   const el = h('div.modal.fade', { tabindex: '-1' },
-    h('div.modal-dialog', { class: `modal-dialog ${size}`.trim() },
+    h('div', { class: `modal-dialog ${size}`.trim() },
       h('div.modal-content',
         h('div.modal-header', h('h5.modal-title', title), h('button.btn-close', { type: 'button', 'data-bs-dismiss': 'modal', 'aria-label': 'Close' })),
         h('div.modal-body', body),
         footer ? h('div.modal-footer', footer) : null)));
   root.append(el);
   const m = new bootstrap.Modal(el);
-  el.addEventListener('hidden.bs.modal', () => el.remove());
+  el.addEventListener('hidden.bs.modal', () => { m.dispose(); el.remove(); });
   m.show();
   return { el, hide: () => m.hide() };
 }
@@ -133,7 +133,16 @@ export async function copyText(text) {
   ta.remove();
 }
 
-// spinner is a small loading placeholder.
+// problemMessage joins a problem document's detail with its first error
+// message and the fix command, when the server gave them.
+export function problemMessage(problem, fallback = '') {
+  let text = problem?.detail || fallback;
+  const e = problem?.errors?.[0];
+  if (e?.message) text += `${/[.!?]$/.test(text) ? ' ' : '. '}${e.message}`;
+  if (e?.value) text += ` Command: ${e.value}`;
+  return text;
+}
+
 // tzDatalist lists every IANA zone the browser knows, for a text input
 // with list=id.
 export function tzDatalist(id) {
@@ -142,6 +151,7 @@ export function tzDatalist(id) {
   return list;
 }
 
+// spinner is a small loading placeholder.
 export function spinner() {
   return h('div.text-center.py-4', h('div.spinner-border.text-secondary', { role: 'status' }, h('span.visually-hidden', 'Loading')));
 }

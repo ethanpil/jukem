@@ -28,7 +28,7 @@ function destroyCurrent() {
   current = null;
 }
 
-export async function dispatch() {
+async function dispatch() {
   if (!started) return;
   const hash = location.hash || '#/';
   const main = document.getElementById('main');

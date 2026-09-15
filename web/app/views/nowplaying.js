@@ -43,7 +43,7 @@ export async function nowPlayingView(main) {
     clearTimeout(volumeTimer);
     volumeTimer = setTimeout(sendVolume, 150);
   });
-  volumeInput.addEventListener('change', () => { volumeDragging = false; sendVolume(); });
+  volumeInput.addEventListener('change', () => { volumeDragging = false; clearTimeout(volumeTimer); sendVolume(); });
   async function sendVolume() {
     const sent = Number(volumeInput.value);
     try {
@@ -71,9 +71,9 @@ export async function nowPlayingView(main) {
     elapsedAt = Date.now();
     if (song) {
       trackBox.append(
-        h('div.h4.mb-1', song.title || song.file),
-        h('div.text-body-secondary', [song.artist, song.album].filter(Boolean).join(' · ')),
-        h('div.small.text-body-secondary.mono', song.file));
+        h('div.h4.mb-1.text-break', song.title || song.file),
+        h('div.text-body-secondary.text-break', [song.artist, song.album].filter(Boolean).join(' · ')),
+        h('div.small.text-body-secondary.mono.text-break', song.file));
       seekInput.max = Math.max(1, Math.round(song.duration || 0));
       durationLabel.textContent = fmtDuration(song.duration);
       seekInput.disabled = !song.duration;
@@ -151,9 +151,16 @@ export async function nowPlayingView(main) {
   let offset = 0;
   let total = 0;
   let sortable = null;
+  let dragging = false;
   async function loadQueue() {
+    if (dragging) return;
     try {
-      const q = await A.queue(offset, PAGE);
+      let q = await A.queue(offset, PAGE);
+      if (!q.tracks.length && q.total > 0 && offset >= q.total) {
+        // The queue shrank below this page: show its last page.
+        offset = Math.floor((q.total - 1) / PAGE) * PAGE;
+        q = await A.queue(offset, PAGE);
+      }
       total = q.total;
       renderQueue(q);
     } catch (e) {
@@ -198,7 +205,10 @@ export async function nowPlayingView(main) {
       if (sortable) sortable.destroy();
       sortable = Sortable.create(list, {
         handle: '.drag-handle', animation: 150,
+        // An event during a drag must not rebuild the list under the finger.
+        onStart: () => { dragging = true; },
         onEnd: async (ev) => {
+          dragging = false;
           if (ev.oldIndex === ev.newIndex) return;
           const id = Number(ev.item.dataset.id);
           try { await A.moveQueueEntry(id, offset + ev.newIndex); } catch (e) { toast(e.message, 'danger'); loadQueue(); }

@@ -12,15 +12,17 @@ export function loginView(main, onSignedIn) {
       e.preventDefault();
       btn.disabled = true;
       err.classList.add('d-none');
+      let sess;
       try {
-        const sess = await A.login(input.value);
-        await onSignedIn(sess);
+        sess = await A.login(input.value);
       } catch (ex) {
-        err.textContent = ex.status === 429 ? 'Too many attempts. Wait a few minutes.' : 'Wrong password.';
+        err.textContent = ex.status === 401 ? 'Wrong password.' : ex.status === 429 ? 'Too many attempts. Wait a few minutes.' : ex.status ? `Sign-in failed: ${ex.message}` : 'jukem is not reachable.';
         err.classList.remove('d-none');
         btn.disabled = false;
         input.select();
+        return;
       }
+      await onSignedIn(sess);
     },
   },
     h('label.form-label', { for: 'login-password' }, 'Password'),

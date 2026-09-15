@@ -1,10 +1,10 @@
-// API client. Every call goes through here so the CSRF token and error
-// handling live in one place.
+// API client. Every call goes through here, so the CSRF token and the
+// error handling are in one place.
 
 const base = '/api/v1';
 let csrfToken = '';
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(status, problem) {
     super(problem?.detail || problem?.title || `HTTP ${status}`);
     this.status = status;
@@ -14,7 +14,7 @@ export class ApiError extends Error {
 
 export function setCSRF(token) { csrfToken = token || ''; }
 
-async function call(method, path, body, opts = {}) {
+async function call(method, path, body, opts = {}, retried = false) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (csrfToken && method !== 'GET') headers['X-CSRF-Token'] = csrfToken;
@@ -30,6 +30,18 @@ async function call(method, path, body, opts = {}) {
   let data = null;
   if (text) {
     try { data = JSON.parse(text); } catch { data = { detail: text }; }
+  }
+  if (resp.status === 401 && path !== '/auth/login') {
+    // The session is gone: the app shell shows the login.
+    document.dispatchEvent(new CustomEvent('jukem-unauthorized'));
+  }
+  if (resp.status === 403 && !retried && /CSRF/.test(data?.detail || '')) {
+    // Another tab signed in again and replaced the session; take its token.
+    const sess = await fetch(base + '/auth/session', { cache: 'no-store' }).then((r) => r.json()).catch(() => null);
+    if (sess?.csrf_token) {
+      csrfToken = sess.csrf_token;
+      return call(method, path, body, opts, true);
+    }
   }
   if (!resp.ok) throw new ApiError(resp.status, data);
   return data;
