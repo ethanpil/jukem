@@ -1,0 +1,5 @@
+bootstrap 5.3.8 (MIT) dist/css/bootstrap.min.css, dist/js/bootstrap.bundle.min.js
+bootstrap-icons 1.13.1 (MIT) font/bootstrap-icons.min.css, font/fonts/*
+sortablejs 1.15.6 (MIT) Sortable.min.js
+
+Source: https://cdn.jsdelivr.net/npm/<package>@<version>/

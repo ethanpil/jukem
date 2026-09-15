@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "jukem-dev",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./cmd/jukem", "serve", "--config", "/nonexistent.yaml"],
+      "port": 18080,
+      "env": { "JUKEM_DATA_DIR": "C:/tmp/jk", "JUKEM_LOG_FILE": "", "JUKEM_LISTEN": "127.0.0.1:18080" }
+    }
+  ]
+}

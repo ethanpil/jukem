@@ -11,7 +11,10 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"jukem/internal/audio"
 	"jukem/internal/config"
+	"jukem/internal/events"
+	"jukem/internal/player"
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
 )
@@ -22,7 +25,8 @@ const csp = "default-src 'self'; img-src 'self' data:; media-src 'self'; connect
 
 const apiPrefix = "/api/v1"
 
-// Options configures the normal server.
+// Options configures the normal server. The function fields are the
+// application operations that touch more than one component.
 type Options struct {
 	Version string
 	Static  fs.FS
@@ -30,6 +34,26 @@ type Options struct {
 	Health  func() watchdog.Report
 	// TLS marks session cookies Secure.
 	TLS bool
+
+	Player  *player.Player
+	Events  *events.Hub
+	Devices *audio.Manager
+	Mixer   *audio.Mixer
+	// Owner reports who decides playback now.
+	Owner func() player.Owner
+	// Transport runs play, pause or stop for a caller, creating an override
+	// when the scheduler is on.
+	Transport func(ctx context.Context, action, source string) error
+	// PlayEntry plays from a queue entry, like Transport("play").
+	PlayEntry func(ctx context.Context, id int, source string) error
+	// QueueAction resolves the source and applies the action.
+	QueueAction func(ctx context.Context, a QueueAction, source string) (QueueResult, error)
+	// SelectOutput saves and applies an output selection.
+	SelectOutput func(ctx context.Context, id *audio.Identity) error
+	// Settings returns the current settings; UpdateSettings validates,
+	// stores and applies new ones.
+	Settings       func() store.Settings
+	UpdateSettings func(ctx context.Context, set store.Settings) error
 }
 
 // Server is the HTTP surface in normal operation.
@@ -65,6 +89,20 @@ func New(opts Options) (*Server, error) {
 	hapi := humago.NewWithPrefix(apiMux, apiPrefix, cfg)
 	s.registerSystem(hapi)
 	s.registerAuth(hapi)
+	if opts.Player != nil {
+		s.registerPlayer(hapi)
+		s.registerDevices(hapi)
+		s.registerSettings(hapi)
+	}
+	if opts.Events != nil {
+		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)
+		hapi.OpenAPI().AddOperation(&huma.Operation{
+			OperationID: "events", Method: http.MethodGet, Path: "/events", Tags: []string{"system"},
+			Summary:     "Server-Sent Events change notifications",
+			Description: "Each event is a JSON object with a type: player, queue, library, devices, schedule, alerts, settings, health or upload. Refetch the resource that changed.",
+			Responses:   map[string]*huma.Response{"200": {Description: "text/event-stream"}},
+		})
+	}
 	apiMux.Handle(apiPrefix+"/", problemHandler(http.StatusNotFound, "no such endpoint"))
 
 	mux := http.NewServeMux()

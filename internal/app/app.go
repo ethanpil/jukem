@@ -15,7 +15,9 @@ import (
 	"jukem/internal/api"
 	"jukem/internal/audio"
 	"jukem/internal/config"
+	"jukem/internal/events"
 	"jukem/internal/mpdctl"
+	"jukem/internal/player"
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
 	"jukem/web"
@@ -41,11 +43,14 @@ type App struct {
 	Mixer   *audio.Mixer
 	MPD     *mpdctl.Supervisor
 	Pool    *mpdctl.Pool
+	Player  *player.Player
+	Events  *events.Hub
 
-	mu       sync.Mutex
-	settings store.Settings
-	outputs  []mpdctl.Output
-	outputMu sync.Mutex // one applyOutput at a time
+	mu               sync.Mutex
+	settings         store.Settings
+	outputs          []mpdctl.Output
+	rescanAfterStart bool       // a music root change needs a full scan
+	outputMu         sync.Mutex // one applyOutput at a time
 
 	handler http.Handler
 	cancel  context.CancelFunc
@@ -74,6 +79,8 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Devices = audio.NewManager(log)
 	paths := mpdctl.PathsFor(cfg.DataDir)
 	a.Pool = mpdctl.NewPool(paths.Socket, 3)
+	a.Player = player.New(a.Pool, a.volumeLimits)
+	a.Events = events.New()
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
@@ -92,8 +99,14 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	// that the first scan does not act before MPD exists.
 	a.Devices.OnChange = a.onDevices
 	go a.Devices.Run(ctx)
+	go a.watchMPD(ctx)
 
-	srv, err := api.New(api.Options{Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled})
+	srv, err := api.New(api.Options{
+		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
+		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer,
+		Owner: a.Owner, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
+		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
+	})
 	if err != nil {
 		a.Close()
 		return nil, err
@@ -162,13 +175,22 @@ func (a *App) onDevices(snap audio.Snapshot) {
 	a.mu.Lock()
 	a.outputs = outputs
 	a.mu.Unlock()
+	a.Events.Publish(events.Devices, "")
 }
 
 // onMPDEvent applies the selected output each time MPD starts.
 func (a *App) onMPDEvent(ev mpdctl.Event) {
 	switch ev.Kind {
 	case mpdctl.EventStarted:
-		go a.applyOutput()
+		go func() {
+			a.applyOutput()
+			a.applyPlayerSettings()
+			a.Events.Publish(events.Player, "")
+			a.Events.Publish(events.Health, "")
+		}()
+	case mpdctl.EventExited, mpdctl.EventStopped:
+		a.Events.Publish(events.Player, "")
+		a.Events.Publish(events.Health, "")
 	case mpdctl.EventUnstable:
 		a.log.Error("mpd keeps failing", "error", ev.Err)
 	}
