@@ -1,5 +1,7 @@
 bootstrap 5.3.8 (MIT) dist/css/bootstrap.min.css, dist/js/bootstrap.bundle.min.js
 bootstrap-icons 1.13.1 (MIT) font/bootstrap-icons.min.css, font/fonts/*
 sortablejs 1.15.6 (MIT) Sortable.min.js
+@fontsource-variable/onest 5.3.1 (OFL-1.1) files/onest-{latin,latin-ext,cyrillic}-wght-normal.woff2 as fonts/onest-*.woff2
+@fontsource/ibm-plex-mono 5.3.0 (OFL-1.1) files/ibm-plex-mono-{latin,latin-ext}-{400,500}-normal.woff2 as fonts/ibm-plex-mono-*.woff2
 
 Source: https://cdn.jsdelivr.net/npm/<package>@<version>/
