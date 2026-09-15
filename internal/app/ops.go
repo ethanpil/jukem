@@ -45,8 +45,10 @@ func (a *App) watchMPD(ctx context.Context) {
 			a.Events.Publish(events.Queue, "")
 		case "update", "database":
 			a.Events.Publish(events.Library, "")
-			if st, err := a.Player.Status(); err == nil {
-				a.Files.NoteUpdate(st.Updating)
+			if a.Files.ScanPending() {
+				if st, err := a.Player.Status(); err == nil {
+					a.Files.NoteUpdate(st.Updating)
+				}
 			}
 		case "output":
 			a.Events.Publish(events.Devices, "")

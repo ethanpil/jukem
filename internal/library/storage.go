@@ -66,6 +66,9 @@ func stat(root string) Storage {
 	}
 	s.TotalBytes, s.FreeBytes = diskSpace(root)
 	s.ReadOnly = !Writable(root)
+	if s.ReadOnly {
+		s.Problem = "The music root is not writable by the service user. A read-only mount is expected to show this. For an ownership problem, Settings > Maintenance > Check library permissions gives the fix."
+	}
 	return s
 }
 

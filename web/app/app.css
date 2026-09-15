@@ -47,3 +47,6 @@ body { padding-bottom: calc(var(--now-bar-height) + env(safe-area-inset-bottom))
 .health-list dt { font-weight: 600; }
 .mono { font-family: var(--bs-font-monospace); font-size: .85em; }
 .pre-wrap { white-space: pre-wrap; }
+
+/* The upload panel needs room for its progress and buttons on a phone. */
+#upload-panel.offcanvas-bottom { --bs-offcanvas-height: 80vh; }

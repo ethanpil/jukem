@@ -68,7 +68,10 @@ document.addEventListener('library-fileop', async (e) => {
       await A.api.post('/library/folders', { path: (path ? path + '/' : '') + name.trim() });
       toast(`Folder "${name.trim()}" created`, 'success');
       reload();
-    } catch (err) { toast(err.problem?.errors?.[0]?.message ? `${err.message} ${err.problem.errors[0].message}` : err.message, 'danger', 8000); }
+    } catch (err) {
+      const e = err.problem?.errors?.[0];
+      toast(e?.message ? `${err.message} ${e.message}${e.value ? ` Command: ${e.value}` : ''}` : err.message, 'danger', 8000);
+    }
   }
 });
 

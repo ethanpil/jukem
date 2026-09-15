@@ -6,60 +6,63 @@ import * as A from './api.js';
 import { h, clear, icon, toast, fmtBytes } from './dom.js';
 
 const PARALLEL = 3;
-const RETRIES = 3;
+const ATTEMPTS = 4; // one try and three retries
+const CHECK_BATCH = 2000;
 
 const state = {
-  items: [],          // {file, rel, size, status, sent, error, attempts, xhr}
+  items: [],          // {file, rel, size, status, sent, error, attempts, xhr, exists}
   target: '',
   conflict: 'skip',
   running: false,
   paused: false,
+  checking: 0,
   startedAt: 0,
   sentBytes: 0,
   totalBytes: 0,
   scanning: false,
-  done: 0,
-  failed: 0,
-  skipped: 0,
-  panel: null,
+  scanTarget: '',
+  scanCount: 0,
+  free: null,
   wakeLock: null,
 };
 
-let offcanvas = null;
-let rendered = null;
+let ui = null; // {panel, offcanvas, summary, bar, rows, actions}
+let frame = 0;
 
 // open shows the panel targeting folder.
 export function open(folder) {
-  if (!state.running) { state.target = folder || ''; state.items = []; state.done = state.failed = state.skipped = 0; }
   buildPanel();
-  offcanvas.show();
+  if (state.running) {
+    if (folder !== state.target) toast(`A batch into ${state.target || 'the music root'} is running. Wait for it to finish.`, 'warning');
+  } else {
+    if (folder !== state.target) state.items = [];
+    state.target = folder || '';
+  }
+  ui.offcanvas.show();
   render();
 }
 
 function buildPanel() {
-  if (state.panel) return;
-  const el = h('div.offcanvas.offcanvas-end', { tabindex: '-1', id: 'upload-panel' },
+  if (ui) return;
+  const panel = h('div.offcanvas', { tabindex: '-1', id: 'upload-panel' },
     h('div.offcanvas-header', h('h5.offcanvas-title', 'Upload'), h('button.btn-close', { type: 'button', 'data-bs-dismiss': 'offcanvas', 'aria-label': 'Close' })),
     h('div.offcanvas-body'));
-  document.body.append(el);
-  state.panel = el;
+  document.body.append(panel);
   // A phone gets the panel from the bottom.
   const mq = window.matchMedia('(max-width: 767.98px)');
-  const place = () => { el.classList.toggle('offcanvas-bottom', mq.matches); el.classList.toggle('offcanvas-end', !mq.matches); };
+  const place = () => { panel.classList.toggle('offcanvas-bottom', mq.matches); panel.classList.toggle('offcanvas-end', !mq.matches); };
   mq.addEventListener('change', place);
   place();
-  offcanvas = new bootstrap.Offcanvas(el);
-  el.addEventListener('dragover', (e) => { e.preventDefault(); });
-  el.addEventListener('drop', onDrop);
+  panel.addEventListener('dragover', (e) => { e.preventDefault(); });
+  panel.addEventListener('drop', onDrop);
+  ui = { panel, offcanvas: new bootstrap.Offcanvas(panel), summary: h('div.mb-2'), bar: h('div.progress.mb-2', { role: 'progressbar' }, h('div.progress-bar')), rows: h('div.list-group.mb-3'), actions: h('div.d-flex.gap-2') };
 }
 
-function body() { return state.panel.querySelector('.offcanvas-body'); }
-
 function render() {
-  if (!state.panel) return;
-  const b = clear(body());
+  if (!ui) return;
+  const b = clear(ui.panel.querySelector('.offcanvas-body'));
   const target = h('div.mb-3', h('div.small.text-body-secondary', 'Into'), h('div.mono', state.target || '(music root)'));
-  const filePick = h('input', { type: 'file', multiple: true, class: 'd-none', accept: 'audio/*' });
+  const filePick = h('input', { type: 'file', multiple: true, class: 'd-none' });
   const dirPick = h('input', { type: 'file', multiple: true, class: 'd-none' });
   dirPick.setAttribute('webkitdirectory', '');
   filePick.addEventListener('change', () => addFiles([...filePick.files].map((f) => ({ file: f, rel: f.name }))));
@@ -70,84 +73,107 @@ function render() {
       h('button.btn.btn-sm.btn-outline-primary', { type: 'button', onclick: () => filePick.click() }, 'Choose files'),
       h('button.btn.btn-sm.btn-outline-primary.d-none.d-md-inline-block', { type: 'button', onclick: () => dirPick.click() }, 'Choose folder')),
     filePick, dirPick);
-  const conflict = h('select.form-select.form-select-sm', { onchange: (e) => { state.conflict = e.target.value; } },
+  const conflict = h('select.form-select.form-select-sm', { disabled: state.running, onchange: (e) => { state.conflict = e.target.value; renderProgress(); } },
     h('option', { value: 'skip', selected: state.conflict === 'skip' }, 'Skip files that already exist'),
     h('option', { value: 'replace', selected: state.conflict === 'replace' }, 'Replace files that already exist'));
   b.append(target, state.running ? null : dropZone, h('div.mb-3', conflict));
   if (!window.isSecureContext) b.append(h('p.small.text-body-secondary', 'Keep the screen on during a large batch. A sleeping phone pauses uploads.'));
-
-  rendered = { summary: h('div.mb-2'), bar: h('div.progress.mb-2', { role: 'progressbar' }, h('div.progress-bar')), rows: h('div.list-group.mb-3'), actions: h('div.d-flex.gap-2') };
-  b.append(rendered.summary, rendered.bar, rendered.rows, rendered.actions);
+  b.append(ui.summary, ui.bar, ui.rows, ui.actions);
   renderProgress();
 }
 
+// counts derives every figure from the items, so nothing can drift.
+function counts() {
+  const c = { pending: [], active: [], failed: [], done: [], skipped: [], unsupported: [] };
+  for (const i of state.items) {
+    if (i.status === 'uploading' || i.status === 'retrying') c.active.push(i);
+    else if (c[i.status]) c[i.status].push(i);
+  }
+  c.finished = c.done.length + c.skipped.length;
+  return c;
+}
+
+function pendingBytes() {
+  return state.items.reduce((n, i) => n + (i.status === 'pending' || i.status === 'uploading' || i.status === 'retrying' || i.status === 'done' ? i.size : 0), 0);
+}
+
+// scheduleRender coalesces the many progress events into one frame.
+function scheduleRender() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => { frame = 0; renderProgress(); });
+}
+
+function pct(a, b) { return b ? Math.round((a / b) * 100) : 100; }
+
 function renderProgress() {
-  if (!rendered || !state.panel) return;
-  const items = state.items;
-  const pending = items.filter((i) => i.status === 'pending');
-  const active = items.filter((i) => i.status === 'uploading');
-  const failed = items.filter((i) => i.status === 'failed');
-  const done = items.filter((i) => i.status === 'done' || i.status === 'skipped');
-  const s = clear(rendered.summary);
-  if (!items.length) {
+  if (!ui) return;
+  const c = counts();
+  const s = clear(ui.summary);
+  if (!state.items.length) {
     s.append(h('p.text-body-secondary.small', 'No files yet.'));
-    clear(rendered.rows); clear(rendered.actions);
-    rendered.bar.classList.add('d-none');
+    clear(ui.rows); clear(ui.actions);
+    ui.bar.classList.add('d-none');
+    renderBadge(c);
     return;
   }
-  rendered.bar.classList.remove('d-none');
-  const sent = state.sentBytes + active.reduce((n, i) => n + i.sent, 0);
-  const pct = state.totalBytes ? Math.round((sent / state.totalBytes) * 100) : 0;
-  const barEl = rendered.bar.firstChild;
-  barEl.style.width = `${pct}%`;
-  barEl.textContent = `${pct}%`;
+  ui.bar.classList.remove('d-none');
+  const sent = state.sentBytes + c.active.reduce((n, i) => n + i.sent, 0);
+  const barEl = ui.bar.firstChild;
+  barEl.style.width = `${pct(sent, state.totalBytes)}%`;
+  barEl.textContent = `${pct(sent, state.totalBytes)}%`;
   const elapsed = (Date.now() - state.startedAt) / 1000;
   const speed = state.running && elapsed > 1 ? sent / elapsed : 0;
   const remaining = speed ? (state.totalBytes - sent) / speed : 0;
-  if (state.running) {
-    s.append(h('div', `${fmtBytes(sent)} of ${fmtBytes(state.totalBytes)} · ${done.length}/${items.length} files`),
-      h('div.small.text-body-secondary', speed ? `${fmtBytes(speed)}/s · about ${Math.ceil(remaining / 60)} min left` : 'Starting…'));
+  const willSkip = state.conflict === 'skip' ? c.pending.filter((i) => i.exists).length : 0;
+  if (state.checking) {
+    s.append(h('div', icon('hourglass-split', 'me-1'), 'Checking files…'));
+  } else if (state.running) {
+    s.append(h('div', `${fmtBytes(sent)} of ${fmtBytes(state.totalBytes)} · ${c.finished}/${state.items.length} files`),
+      h('div.small.text-body-secondary', speed ? `${fmtBytes(speed)}/s · about ${Math.max(1, Math.ceil(remaining / 60))} min left` : 'Starting…'));
   } else if (state.scanning) {
     s.append(h('div', icon('arrow-repeat', 'me-1'), 'Scanning library…'));
-  } else if (done.length || failed.length) {
-    s.append(h('div', `${done.length} uploaded${state.skipped ? ` (${state.skipped} skipped)` : ''}${failed.length ? `, ${failed.length} failed` : ''}`));
+  } else if (c.done.length || c.failed.length || c.skipped.length) {
+    s.append(h('div', `${c.done.length} uploaded${c.skipped.length ? `, ${c.skipped.length} skipped` : ''}${c.failed.length ? `, ${c.failed.length} failed` : ''}`));
   } else {
-    const unsupported = items.filter((i) => i.status === 'unsupported').length;
-    const existing = items.filter((i) => i.exists).length;
-    s.append(h('div', `${items.length} files · ${fmtBytes(state.totalBytes)}`),
-      unsupported ? h('div.small.text-warning', `${unsupported} unsupported, will be skipped`) : null,
-      existing ? h('div.small.text-body-secondary', `${existing} already exist (${state.conflict})`) : null,
-      state.free !== undefined && state.free !== null && state.free > 0 && state.totalBytes > state.free ? h('div.small.text-danger', `Not enough space: ${fmtBytes(state.free)} available`) : null);
+    s.append(h('div', `${c.pending.length} files · ${fmtBytes(pendingBytes())}`),
+      c.unsupported.length ? h('div.small.text-warning', `${c.unsupported.length} unsupported, will not be sent`) : null,
+      willSkip ? h('div.small.text-body-secondary', `${willSkip} already exist and will be skipped`) : null,
+      state.free > 0 && pendingBytes() > state.free ? h('div.small.text-danger', `Not enough space: ${fmtBytes(state.free)} available`) : null);
   }
-  const rows = clear(rendered.rows);
-  for (const i of [...active, ...failed]) {
+  const rows = clear(ui.rows);
+  for (const i of [...c.active, ...c.failed]) {
     rows.append(h('div.list-group-item.small',
-      h('div.d-flex.justify-content-between', h('span.text-truncate', i.rel), h('span.text-body-secondary', i.status === 'failed' ? 'failed' : `${Math.round((i.sent / i.size) * 100)}%`)),
-      i.status === 'failed' ? h('div.text-danger', i.error) : h('div.progress', { style: 'height: 4px' }, h('div.progress-bar', { style: `width: ${Math.round((i.sent / i.size) * 100)}%` }))));
+      h('div.d-flex.justify-content-between', h('span.text-truncate', i.rel), h('span.text-body-secondary', i.status === 'failed' ? 'failed' : i.status === 'retrying' ? 'retrying' : `${pct(i.sent, i.size)}%`)),
+      i.status === 'failed' ? h('div.text-danger', i.error) : h('div.progress', { style: 'height: 4px' }, h('div.progress-bar', { style: `width: ${pct(i.sent, i.size)}%` }))));
   }
-  if (done.length) rows.append(h('div.list-group-item.small.text-body-secondary', `${done.length} finished`));
-  const acts = clear(rendered.actions);
+  if (c.finished) rows.append(h('div.list-group-item.small.text-body-secondary', `${c.finished} finished`));
+  const acts = clear(ui.actions);
   if (state.running) {
     acts.append(h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => { state.paused = !state.paused; if (!state.paused) pump(); renderProgress(); } }, state.paused ? 'Continue' : 'Pause'),
       h('button.btn.btn-outline-danger', { type: 'button', onclick: cancel }, 'Cancel'));
   } else {
-    if (pending.length) acts.append(h('button.btn.btn-primary', { type: 'button', onclick: start }, `Upload ${pending.length} file${pending.length === 1 ? '' : 's'}`));
-    if (failed.length) acts.append(h('button.btn.btn-outline-primary', { type: 'button', onclick: retryFailed }, 'Retry failed'));
-    if (items.length) acts.append(h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => { state.items = []; state.done = state.failed = state.skipped = 0; render(); } }, 'Clear'));
+    const toSend = c.pending.length - willSkip;
+    if (toSend > 0 && !state.checking) acts.append(h('button.btn.btn-primary', { type: 'button', onclick: start }, `Upload ${toSend} file${toSend === 1 ? '' : 's'}`));
+    if (c.failed.length) acts.append(h('button.btn.btn-outline-primary', { type: 'button', onclick: retryFailed }, 'Retry failed'));
+    if (state.items.length) acts.append(h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => { state.items = []; state.scanning = false; render(); } }, 'Clear'));
   }
-  renderBadge();
+  renderBadge(c);
 }
 
-// renderBadge updates the Library tab with the batch progress.
-function renderBadge() {
-  document.dispatchEvent(new CustomEvent('upload-progress', { detail: { running: state.running, done: state.done, total: state.items.length } }));
+let lastBadge = '';
+// renderBadge updates the Library tab with the batch progress, only when
+// the figures changed.
+function renderBadge(c) {
+  const key = `${state.running}:${c.finished}:${state.items.length}`;
+  if (key === lastBadge) return;
+  lastBadge = key;
+  document.dispatchEvent(new CustomEvent('upload-progress', { detail: { running: state.running, done: c.finished, total: state.items.length } }));
 }
 
 async function onDrop(e) {
   e.preventDefault();
   const entries = [];
-  const items = [...(e.dataTransfer?.items || [])];
-  for (const it of items) {
+  for (const it of [...(e.dataTransfer?.items || [])]) {
     const entry = it.webkitGetAsEntry?.();
     if (entry) entries.push(entry);
   }
@@ -182,59 +208,81 @@ function walkEntry(entry, prefix, out) {
   });
 }
 
+// addFiles adds items and checks them with the server in batches. Only the
+// new items are touched when the answer comes, so a batch that started
+// meanwhile is not disturbed.
 async function addFiles(list) {
   if (state.running) { toast('Wait for the current batch to finish.', 'warning'); return; }
   const base = state.target ? state.target + '/' : '';
+  const added = [];
   for (const { file, rel } of list) {
     const clean = rel.replace(/\\/g, '/').replace(/^\/+/, '');
     if (!clean || clean.split('/').some((s) => s.startsWith('.'))) continue;
-    state.items.push({ file, rel: base + clean, size: file.size, status: 'pending', sent: 0, attempts: 0 });
+    const item = { file, rel: base + clean, size: file.size, status: 'checking', sent: 0, attempts: 0, exists: false };
+    state.items.push(item);
+    added.push(item);
   }
-  state.totalBytes = state.items.reduce((n, i) => n + (i.status === 'pending' ? i.size : 0), 0);
+  state.checking++;
+  renderProgress();
   try {
-    const check = await A.api.post('/library/files/check', { paths: state.items.filter((i) => i.status === 'pending').map((i) => i.rel) });
-    state.free = check.free_bytes;
-    const unsupported = new Set(check.unsupported);
-    const invalid = new Set(check.invalid);
-    const existing = new Set(check.existing);
-    for (const i of state.items) {
-      if (unsupported.has(i.rel) || invalid.has(i.rel)) i.status = 'unsupported';
-      i.exists = existing.has(i.rel);
-      if (i.size > check.max_bytes) { i.status = 'failed'; i.error = `Larger than the ${fmtBytes(check.max_bytes)} limit`; }
+    for (let i = 0; i < added.length; i += CHECK_BATCH) {
+      const slice = added.slice(i, i + CHECK_BATCH);
+      const check = await A.api.post('/library/files/check', { paths: slice.map((it) => it.rel) });
+      state.free = check.free_bytes;
+      const unsupported = new Set([...check.unsupported, ...check.invalid]);
+      const existing = new Set(check.existing);
+      for (const it of slice) {
+        if (unsupported.has(it.rel)) it.status = 'unsupported';
+        else if (it.size > check.max_bytes) { it.status = 'failed'; it.error = `Larger than the ${fmtBytes(check.max_bytes)} limit`; }
+        else it.status = 'pending';
+        it.exists = existing.has(it.rel);
+      }
     }
-    state.totalBytes = state.items.reduce((n, i) => n + (i.status === 'pending' ? i.size : 0), 0);
-  } catch (err) { toast(err.message, 'danger'); }
+  } catch (err) {
+    toast(err.message, 'danger');
+    for (const it of added) if (it.status === 'checking') it.status = 'pending';
+  }
+  state.checking--;
   renderProgress();
 }
 
 async function start() {
-  if (state.running) return;
+  if (state.running || state.checking) return;
   state.running = true;
   state.paused = false;
   state.startedAt = Date.now();
   state.sentBytes = 0;
   // Files the check said exist are skipped before any byte is sent.
   for (const i of state.items) {
-    if (i.status === 'pending' && i.exists && state.conflict === 'skip') { i.status = 'skipped'; state.skipped++; }
+    if (i.status === 'pending' && i.exists && state.conflict === 'skip') i.status = 'skipped';
   }
-  state.totalBytes = state.items.reduce((n, i) => n + (i.status === 'pending' ? i.size : 0), 0);
+  state.totalBytes = pendingBytes();
   window.addEventListener('beforeunload', warnUnload);
-  if (navigator.wakeLock && window.isSecureContext) {
-    try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch { /* not granted */ }
-  }
+  document.addEventListener('visibilitychange', keepAwake);
+  keepAwake();
   render();
   pump();
 }
 
 function warnUnload(e) { e.preventDefault(); e.returnValue = ''; }
 
+// keepAwake holds a screen wake lock while a batch runs. Browsers drop it
+// when the tab is hidden, so it is requested again on return.
+async function keepAwake() {
+  if (!state.running || document.visibilityState !== 'visible' || !navigator.wakeLock || !window.isSecureContext) return;
+  try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch { /* not granted */ }
+}
+
 function pump() {
   if (!state.running || state.paused) return;
-  const active = state.items.filter((i) => i.status === 'uploading').length;
-  const next = state.items.filter((i) => i.status === 'pending').slice(0, Math.max(0, PARALLEL - active));
+  const c = counts();
+  const next = c.pending.slice(0, Math.max(0, PARALLEL - c.active.length));
   for (const item of next) send(item);
-  if (!active && !next.length) finish();
+  if (!c.active.length && !next.length) finish();
 }
+
+// permanent says whether an HTTP status will not change on a retry.
+function permanent(status) { return status < 500 || status === 507; }
 
 function send(item) {
   item.status = 'uploading';
@@ -245,7 +293,13 @@ function send(item) {
   xhr.open('PUT', `/api/v1/library/files?path=${encodeURIComponent(item.rel)}&conflict=${state.conflict}`);
   xhr.setRequestHeader('Content-Type', 'application/octet-stream');
   xhr.setRequestHeader('X-CSRF-Token', A.csrf());
-  xhr.upload.onprogress = (e) => { item.sent = e.loaded; renderProgress(); };
+  xhr.upload.onprogress = (e) => { item.sent = e.loaded; scheduleRender(); };
+  const retryLater = () => {
+    item.status = 'retrying';
+    item.sent = 0;
+    setTimeout(() => { if (item.status === 'retrying') { item.status = 'pending'; pump(); } }, 1500 * item.attempts);
+    scheduleRender();
+  };
   xhr.onload = () => {
     item.xhr = null;
     if (xhr.status === 201 || xhr.status === 200) {
@@ -253,55 +307,70 @@ function send(item) {
       item.sent = item.size;
       let res = {};
       try { res = JSON.parse(xhr.responseText); } catch { /* empty */ }
-      if (res.skipped) { item.status = 'skipped'; state.skipped++; } else { item.status = 'done'; state.done++; }
-    } else if (xhr.status >= 500 && item.attempts < RETRIES) {
-      setTimeout(() => { item.status = 'pending'; pump(); }, 1000 * item.attempts);
-      renderProgress();
+      item.status = res.skipped ? 'skipped' : 'done';
+    } else if (!permanent(xhr.status) && item.attempts < ATTEMPTS) {
+      retryLater();
       return;
     } else {
-      let detail = `HTTP ${xhr.status}`;
-      try { const p = JSON.parse(xhr.responseText); detail = p.detail || detail; if (p.fix) detail += ` ${p.fix}`; if (p.command) detail += ` Command: ${p.command}`; } catch { /* keep */ }
       item.status = 'failed';
-      item.error = detail;
-      state.failed++;
+      item.error = problemText(xhr);
     }
-    renderProgress();
+    scheduleRender();
     pump();
   };
   xhr.onerror = xhr.ontimeout = () => {
     item.xhr = null;
-    if (item.attempts < RETRIES) {
-      setTimeout(() => { item.status = 'pending'; pump(); }, 2000 * item.attempts);
-    } else {
-      item.status = 'failed';
-      item.error = 'Network error';
-      state.failed++;
-      pump();
-    }
-    renderProgress();
+    if (item.attempts < ATTEMPTS) { retryLater(); return; }
+    item.status = 'failed';
+    item.error = 'Network error';
+    scheduleRender();
+    pump();
   };
-  xhr.onabort = () => { item.xhr = null; item.status = 'pending'; item.sent = 0; renderProgress(); };
+  xhr.onabort = () => { item.xhr = null; item.status = 'pending'; item.sent = 0; scheduleRender(); };
   xhr.send(item.file);
+}
+
+// problemText reads the server's message, with the fix and command when
+// it gave them.
+function problemText(xhr) {
+  let text = `HTTP ${xhr.status}`;
+  try {
+    const p = JSON.parse(xhr.responseText);
+    text = p.detail || text;
+    const e = p.errors?.[0];
+    if (e?.message) text += ` ${e.message}`;
+    if (e?.value) text += ` Command: ${e.value}`;
+  } catch { /* keep */ }
+  return text;
 }
 
 function cancel() {
   state.paused = true;
-  for (const i of state.items) if (i.xhr) i.xhr.abort();
+  for (const i of state.items) {
+    if (i.xhr) i.xhr.abort();
+    else if (i.status === 'retrying') { i.status = 'pending'; i.sent = 0; }
+  }
   finish(true);
 }
 
 function retryFailed() {
-  for (const i of state.items) if (i.status === 'failed' && i.file) { i.status = 'pending'; i.attempts = 0; i.error = ''; state.failed--; }
-  state.totalBytes = state.items.reduce((n, i) => n + (i.status === 'pending' || i.status === 'done' ? i.size : 0), 0);
+  for (const i of state.items) if (i.status === 'failed' && i.file) { i.status = 'pending'; i.attempts = 0; i.error = ''; }
   start();
 }
 
 function finish(cancelled = false) {
   state.running = false;
   window.removeEventListener('beforeunload', warnUnload);
+  document.removeEventListener('visibilitychange', keepAwake);
   if (state.wakeLock) { state.wakeLock.release().catch(() => {}); state.wakeLock = null; }
-  const uploaded = state.items.filter((i) => i.status === 'done').length;
-  if (!cancelled && uploaded) state.scanning = true;
+  const uploaded = counts().done.length;
+  if (!cancelled && uploaded) {
+    // The figures for the toast are fixed now, because Clear or a new
+    // target can change the items before the scan ends.
+    state.scanning = true;
+    state.scanTarget = state.target;
+    state.scanCount = uploaded;
+  }
   render();
   if (cancelled) toast('Upload cancelled', 'secondary');
 }
@@ -310,9 +379,6 @@ function finish(cancelled = false) {
 document.addEventListener('jukem-upload-done', () => {
   if (!state.scanning) return;
   state.scanning = false;
-  const uploaded = state.items.filter((i) => i.status === 'done').length;
-  toast(`${uploaded} track${uploaded === 1 ? '' : 's'} added to ${state.target || 'the library'}`, 'success', 6000);
+  toast(`${state.scanCount} track${state.scanCount === 1 ? '' : 's'} added to ${state.scanTarget || 'the library'}`, 'success', 6000);
   render();
 });
-
-export function isRunning() { return state.running; }

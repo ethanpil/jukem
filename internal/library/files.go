@@ -2,8 +2,6 @@ package library
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"jukem/internal/events"
@@ -26,9 +25,9 @@ import (
 type OpError struct {
 	Status  int
 	Detail  string
-	Folder  string `json:"folder,omitempty"`
-	Fix     string `json:"fix,omitempty"`
-	Command string `json:"command,omitempty"`
+	Folder  string
+	Fix     string
+	Command string
 }
 
 func (e *OpError) Error() string { return e.Detail }
@@ -40,6 +39,9 @@ type Limits struct {
 	Extension func(name string) bool
 }
 
+// scanTimeout ends the wait for a scan whose end event never came.
+const scanTimeout = 10 * time.Minute
+
 // Files manages uploads and folders under the music root and asks MPD to
 // scan what changed.
 type Files struct {
@@ -50,12 +52,14 @@ type Files struct {
 	log     *slog.Logger
 	runtime string
 
-	mu        sync.Mutex
-	active    int
-	pending   []string // folders with new files since the last scan
-	last      time.Time
-	scanning  string // folder of the scan in progress, "" when none
-	scanCount int
+	mu       sync.Mutex
+	active   int
+	inflight int64    // bytes of uploads in progress, for the space check
+	pending  []string // folders with new files since the last scan
+	timer    *time.Timer
+	scanning bool
+	scanDir  string
+	scanAt   time.Time
 }
 
 // NewFiles creates the manager. root and limits read the current settings.
@@ -66,12 +70,9 @@ func NewFiles(root func() string, limits func() Limits, p *player.Player, ev *ev
 // Limits returns the current upload rules.
 func (f *Files) Limits() Limits { return f.limits() }
 
-// Run cleans leftover temporary files at start and every hour, and runs
-// the rescan five seconds after the last upload finished.
+// Run cleans leftover temporary files at start and every hour.
 func (f *Files) Run(ctx context.Context) {
 	f.cleanTemp()
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
 	clean := time.NewTicker(time.Hour)
 	defer clean.Stop()
 	for {
@@ -80,8 +81,6 @@ func (f *Files) Run(ctx context.Context) {
 			return
 		case <-clean.C:
 			f.cleanTemp()
-		case <-tick.C:
-			f.maybeScan()
 		}
 	}
 }
@@ -102,12 +101,26 @@ func (f *Files) cleanTemp() {
 	}
 }
 
+// resolve validates a relative path that must name something below the
+// root, never the root itself.
+func (f *Files) resolve(root, rel string) (string, string, *OpError) {
+	clean, err := CleanRel(rel)
+	if err != nil || clean == "" {
+		return "", "", &OpError{Status: http.StatusUnprocessableEntity, Detail: "that path is not allowed"}
+	}
+	abs, err := Abs(root, clean)
+	if err != nil {
+		return "", "", &OpError{Status: http.StatusUnprocessableEntity, Detail: "that path is not allowed"}
+	}
+	return abs, clean, nil
+}
+
 // CheckResult answers the pre-upload check.
 type CheckResult struct {
 	Existing    []string `json:"existing" doc:"Paths that already exist"`
 	Unsupported []string `json:"unsupported" doc:"Paths with an extension that is not allowed"`
 	Invalid     []string `json:"invalid" doc:"Paths that are not allowed"`
-	FreeBytes   int64    `json:"free_bytes" doc:"Space an upload can use after the reserve; 0 when unknown"`
+	FreeBytes   int64    `json:"free_bytes" doc:"Space an upload can use after the reserve. 0 when unknown."`
 	MaxBytes    int64    `json:"max_bytes" doc:"Largest file accepted"`
 	ReadOnly    bool     `json:"read_only"`
 }
@@ -122,8 +135,8 @@ func (f *Files) Check(paths []string) CheckResult {
 		res.FreeBytes = max(0, st.FreeBytes-lim.Reserve)
 	}
 	for _, p := range paths {
-		abs, err := Abs(root, p)
-		if err != nil || abs == filepath.Clean(root) {
+		abs, _, oe := f.resolve(root, p)
+		if oe != nil {
 			res.Invalid = append(res.Invalid, p)
 			continue
 		}
@@ -131,7 +144,7 @@ func (f *Files) Check(paths []string) CheckResult {
 			res.Unsupported = append(res.Unsupported, p)
 			continue
 		}
-		if _, err := os.Stat(abs); err == nil {
+		if _, err := os.Lstat(abs); err == nil {
 			res.Existing = append(res.Existing, p)
 		}
 	}
@@ -147,14 +160,14 @@ type UploadResult struct {
 
 // Upload stores one file from body. size is the declared length, or -1
 // when unknown. The body streams into a temporary file inside the music
-// root, is synced, and is renamed into place, so MPD never sees a partial
-// file.
+// root. The file is synced and then renamed into place, so MPD never sees
+// a partial file.
 func (f *Files) Upload(rel, conflict string, body io.Reader, size int64) (UploadResult, error) {
 	lim := f.limits()
 	root := f.root()
-	abs, err := Abs(root, rel)
-	if err != nil || abs == filepath.Clean(root) {
-		return UploadResult{}, &OpError{Status: http.StatusUnprocessableEntity, Detail: "that path is not allowed"}
+	abs, rel, oe := f.resolve(root, rel)
+	if oe != nil {
+		return UploadResult{}, oe
 	}
 	if !lim.Extension(rel) {
 		return UploadResult{}, &OpError{Status: http.StatusUnsupportedMediaType, Detail: "that file type is not allowed"}
@@ -163,76 +176,93 @@ func (f *Files) Upload(rel, conflict string, body io.Reader, size int64) (Upload
 		return UploadResult{}, &OpError{Status: http.StatusRequestEntityTooLarge, Detail: fmt.Sprintf("the file is larger than the %d MB limit", lim.MaxBytes>>20)}
 	}
 	st := Stat(root)
-	if st.ReadOnly {
-		return UploadResult{}, &OpError{Status: http.StatusForbidden, Detail: "the music root is read-only"}
+	if st.Missing {
+		return UploadResult{}, &OpError{Status: http.StatusNotFound, Detail: st.Problem}
 	}
-	if size > 0 && st.FreeBytes > 0 && size+lim.Reserve > st.FreeBytes {
-		return UploadResult{}, &OpError{Status: http.StatusInsufficientStorage, Detail: "not enough free space on the music disk"}
+	if st.ReadOnly {
+		return UploadResult{}, f.permissionError(root, root)
 	}
 	if conflict != "replace" {
 		conflict = "skip"
 	}
-	if _, err := os.Lstat(abs); err == nil && conflict == "skip" {
-		return UploadResult{Path: rel, Skipped: true}, nil
+	if info, err := os.Lstat(abs); err == nil {
+		if info.IsDir() {
+			return UploadResult{}, &OpError{Status: http.StatusConflict, Detail: "a folder with that name exists"}
+		}
+		if conflict == "skip" {
+			return UploadResult{Path: rel, Skipped: true}, nil
+		}
 	}
-	// A folder upload keeps its structure, so missing folders are created
-	// below the nearest folder that exists.
+	// A folder upload keeps its structure. The nearest existing folder
+	// must be writable; the missing folders are created after the body
+	// arrived, so a rejected upload leaves no empty folder behind.
 	destDir := filepath.Dir(abs)
 	base := nearestExisting(destDir, root)
+	if info, err := os.Lstat(base); err == nil && !info.IsDir() {
+		return UploadResult{}, &OpError{Status: http.StatusConflict, Detail: "a file is in the way of the folder path"}
+	}
 	if err := f.ensureWritable(base, root); err != nil {
 		return UploadResult{}, err
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return UploadResult{}, f.opError(err, base, root)
+	// The space check counts the uploads in flight, so a parallel batch
+	// cannot pass the same free figure three times.
+	if size > 0 && st.FreeBytes > 0 {
+		f.mu.Lock()
+		room := st.FreeBytes - lim.Reserve - f.inflight
+		if size > room {
+			f.mu.Unlock()
+			return UploadResult{}, &OpError{Status: http.StatusInsufficientStorage, Detail: "not enough free space on the music disk"}
+		}
+		f.mu.Unlock()
 	}
 
 	f.mu.Lock()
 	f.active++
+	f.inflight += max(size, 0)
 	f.mu.Unlock()
 	defer func() {
 		f.mu.Lock()
 		f.active--
-		f.last = time.Now()
+		f.inflight -= max(size, 0)
 		f.mu.Unlock()
 	}()
 
 	tmpDir := filepath.Join(root, ".jukem-tmp")
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
-		return UploadResult{}, f.permissionError(root)
+		return UploadResult{}, f.permissionError(root, root)
 	}
 	tmp, n, err := writeTemp(tmpDir, body, lim.MaxBytes)
 	if err != nil {
 		return UploadResult{}, err
 	}
 	defer os.Remove(tmp)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return UploadResult{}, f.opError(err, base, root)
+	}
 	if err := os.Rename(tmp, abs); err != nil {
 		if !isCrossDevice(err) {
 			return UploadResult{}, f.opError(err, destDir, root)
 		}
 		// A nested mount: rename cannot cross it. The file is written again
 		// as a hidden .part file in the destination folder and renamed
-		// there, which keeps the rename atomic. A copy in place would be
-		// exactly what MPD must never index.
-		if err := f.moveAcross(tmp, abs); err != nil {
+		// there, which keeps the rename atomic. A visible copy in progress
+		// is what MPD must never index.
+		if err := moveAcross(tmp, abs); err != nil {
 			return UploadResult{}, f.opError(err, destDir, root)
 		}
 	}
-	f.mu.Lock()
-	f.pending = append(f.pending, path.Dir(rel))
-	f.mu.Unlock()
+	f.noteUploaded(path.Dir(rel))
 	return UploadResult{Path: rel, Bytes: n}, nil
 }
 
 // writeTemp streams body into a new .part file, capped at limit, and
 // syncs it. It returns the file's path and size.
 func writeTemp(tmpDir string, body io.Reader, limit int64) (string, int64, error) {
-	var name [8]byte
-	rand.Read(name[:])
-	tmp := filepath.Join(tmpDir, hex.EncodeToString(name[:])+".part")
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	out, err := os.CreateTemp(tmpDir, "*.part")
 	if err != nil {
 		return "", 0, &OpError{Status: http.StatusInternalServerError, Detail: "cannot create a temporary file: " + err.Error()}
 	}
+	tmp := out.Name()
 	// One extra byte tells a body over the limit from one exactly at it.
 	n, err := io.Copy(out, io.LimitReader(body, limit+1))
 	if err == nil && n > limit {
@@ -250,81 +280,114 @@ func writeTemp(tmpDir string, body io.Reader, limit int64) (string, int64, error
 		if errors.As(err, &oe) {
 			return "", 0, oe
 		}
+		if errors.Is(err, syscall.ENOSPC) {
+			return "", 0, &OpError{Status: http.StatusInsufficientStorage, Detail: "the music disk is full"}
+		}
 		return "", 0, &OpError{Status: http.StatusInternalServerError, Detail: "upload failed: " + err.Error()}
 	}
 	return tmp, n, nil
 }
 
-// moveAcross copies src to a hidden .part file next to dst and renames it
-// into place.
-func (f *Files) moveAcross(src, dst string) error {
-	part := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".part")
+// moveAcross copies src to a hidden, uniquely named .part file next to
+// dst and renames it into place.
+func moveAcross(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	out, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*.part")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	part := out.Name()
+	defer func() {
+		if err != nil {
+			os.Remove(part)
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
 		out.Close()
-		os.Remove(part)
 		return err
 	}
-	if err := out.Sync(); err != nil {
+	if err = out.Sync(); err != nil {
 		out.Close()
-		os.Remove(part)
 		return err
 	}
-	if err := out.Close(); err != nil {
-		os.Remove(part)
+	if err = out.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(part, dst); err != nil {
-		os.Remove(part)
-		return err
-	}
-	return nil
+	return os.Rename(part, dst)
 }
 
-// maybeScan runs one MPD update once no upload has been active for five
-// seconds, on the deepest folder that covers every upload since the last
-// scan.
+// noteUploaded records the folder and arms the scan for five seconds after
+// the last upload.
+func (f *Files) noteUploaded(folder string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pending = append(f.pending, folder)
+	if f.timer == nil {
+		f.timer = time.AfterFunc(5*time.Second, f.maybeScan)
+	} else {
+		f.timer.Reset(5 * time.Second)
+	}
+}
+
+// maybeScan runs one MPD update on the deepest folder that covers every
+// upload since the last scan. It waits while uploads are active or a scan
+// runs, unless that scan is older than scanTimeout.
 func (f *Files) maybeScan() {
 	f.mu.Lock()
-	if f.active > 0 || len(f.pending) == 0 || time.Since(f.last) < 5*time.Second || f.scanning != "" {
+	if f.scanning && time.Since(f.scanAt) > scanTimeout {
+		f.log.Warn("no end event for the library scan, giving up the wait", "folder", f.scanDir)
+		f.scanning = false
+	}
+	if f.active > 0 || f.scanning || len(f.pending) == 0 {
+		if len(f.pending) > 0 {
+			f.timer.Reset(5 * time.Second)
+		}
 		f.mu.Unlock()
 		return
 	}
 	folder := commonFolder(f.pending)
-	count := len(f.pending)
 	f.pending = nil
-	f.scanning = folder
-	f.scanCount = count
+	f.scanning, f.scanDir, f.scanAt = true, folder, time.Now()
 	f.mu.Unlock()
 	if _, err := f.player.Update(folder); err != nil {
 		f.log.Warn("cannot start the library scan after uploads", "folder", folder, "error", err)
 		f.mu.Lock()
-		f.scanning = ""
+		f.scanning = false
 		f.mu.Unlock()
 		f.events.Publish(events.Upload, folder)
 	}
 }
 
-// NoteUpdate is called when MPD's database changes or an update ends.
-// When the scan that followed uploads is over, clients are told.
+// ScanPending reports whether a scan after uploads is in progress.
+func (f *Files) ScanPending() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.scanning
+}
+
+// NoteUpdate is called with MPD's updating flag after an update event.
+// When the scan that followed uploads is over, clients are told and the
+// next batch can scan.
 func (f *Files) NoteUpdate(updating bool) {
 	if updating {
 		return
 	}
 	f.mu.Lock()
-	folder := f.scanning
-	f.scanning = ""
+	if !f.scanning {
+		f.mu.Unlock()
+		return
+	}
+	folder := f.scanDir
+	f.scanning = false
+	more := len(f.pending) > 0
 	f.mu.Unlock()
-	if folder != "" || f.scanCount > 0 {
-		f.events.Publish(events.Upload, folder)
+	f.events.Publish(events.Upload, folder)
+	if more {
+		f.maybeScan()
 	}
 }
 
@@ -357,9 +420,9 @@ func commonFolder(folders []string) string {
 // NewFolder creates a folder under the root.
 func (f *Files) NewFolder(rel string) error {
 	root := f.root()
-	abs, err := Abs(root, rel)
-	if err != nil || abs == filepath.Clean(root) {
-		return &OpError{Status: http.StatusUnprocessableEntity, Detail: "that path is not allowed"}
+	abs, rel, oe := f.resolve(root, rel)
+	if oe != nil {
+		return oe
 	}
 	if _, err := os.Lstat(abs); err == nil {
 		return &OpError{Status: http.StatusConflict, Detail: "a file or folder with that name exists"}
@@ -375,7 +438,7 @@ func (f *Files) NewFolder(rel string) error {
 	return nil
 }
 
-// nearestExisting walks up from dir to the first folder that exists, and
+// nearestExisting walks up from dir to the first path that exists, and
 // never above root.
 func nearestExisting(dir, root string) string {
 	root = filepath.Clean(root)
@@ -433,8 +496,13 @@ func (f *Files) CheckPermissions(ctx context.Context) (PermissionReport, error) 
 		return rep, err
 	}
 	if len(rep.Problems) > 0 {
-		fix, cmd := f.fixText(root)
-		rep.Fix, rep.Command = fix, cmd
+		// The command names the first bad folder. With many, the root
+		// covers them all.
+		target := filepath.Join(root, filepath.FromSlash(rep.Problems[0]))
+		if len(rep.Problems) > 1 {
+			target = root
+		}
+		rep.Fix, rep.Command = f.fixText(target)
 	}
 	return rep, nil
 }
@@ -448,16 +516,12 @@ func (f *Files) ensureWritable(dir, root string) error {
 	return f.permissionError(dir, root)
 }
 
-func (f *Files) permissionError(dir string, root ...string) *OpError {
-	r := f.root()
-	if len(root) > 0 {
-		r = root[0]
-	}
-	rel, err := filepath.Rel(r, dir)
+func (f *Files) permissionError(dir, root string) *OpError {
+	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel == "." {
 		rel = ""
 	}
-	fix, cmd := f.fixText(filepath.Join(r, rel))
+	fix, cmd := f.fixText(dir)
 	return &OpError{
 		Status:  http.StatusForbidden,
 		Detail:  fmt.Sprintf("jukem cannot write to the folder %q", filepath.ToSlash(rel)),
@@ -469,46 +533,28 @@ func (f *Files) permissionError(dir string, root ...string) *OpError {
 
 // opError maps a file system error to an OpError.
 func (f *Files) opError(err error, dir, root string) error {
-	if errors.Is(err, fs.ErrPermission) {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
 		return f.permissionError(dir, root)
-	}
-	if errors.Is(err, fs.ErrNotExist) {
+	case errors.Is(err, fs.ErrNotExist):
 		return &OpError{Status: http.StatusNotFound, Detail: "no such folder"}
+	case errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR), errors.Is(err, fs.ErrExist):
+		return &OpError{Status: http.StatusConflict, Detail: "a file or folder is in the way: " + err.Error()}
+	case errors.Is(err, syscall.ENOSPC):
+		return &OpError{Status: http.StatusInsufficientStorage, Detail: "the music disk is full"}
 	}
 	return &OpError{Status: http.StatusInternalServerError, Detail: err.Error()}
 }
 
-// fixText explains how to repair ownership. The command runs on the
-// Docker host when jukem runs in a container, because the container has
-// no access to Docker.
+// fixText explains how to repair ownership of dir. Under Docker the
+// command runs on the host, on the directory that is mounted at dir, and
+// the container has no way to know that host path.
 func (f *Files) fixText(dir string) (fix, command string) {
-	note := " A recursive chown is the wrong move on a NAS mount with its own UID mapping: fix the export or the mount options instead."
+	note := " Do not run a recursive chown on a NAS mount with its own UID mapping. Change the export or the mount options instead."
 	if f.runtime == "docker" {
-		return "Run this on the Docker host, not in the container. Give the music directory to the container user, or set user: in compose.yaml to the owner of the music directory." + note,
-			"chown -R 1000:1000 /srv/jukem/music"
+		return "Run this on the Docker host, not in the container, on the host directory that is mounted at " + dir +
+				". The container user is UID 1000. The other option is to set user: in compose.yaml to the owner of the music directory." + note,
+			"chown -R 1000:1000 <host directory mounted at " + dir + ">"
 	}
 	return "Give the folder to the service user." + note, "chown -R jukem:jukem " + dir
-}
-
-// FolderCount counts the files and folders below rel, for a delete
-// confirmation.
-func (f *Files) FolderCount(rel string) (files, folders int, err error) {
-	abs, err := Abs(f.root(), rel)
-	if err != nil {
-		return 0, 0, err
-	}
-	err = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != abs {
-				folders++
-			}
-		} else {
-			files++
-		}
-		return nil
-	})
-	return files, folders, err
 }

@@ -11,21 +11,25 @@ import (
 	"jukem/internal/library"
 )
 
-// opError turns a file operation error into a problem response that keeps
-// the folder, fix and command for the UI.
+// problemFromOp turns a file operation error into the problem document
+// every endpoint uses. The fix and the command travel in errors[0], with
+// the folder as the location.
+func problemFromOp(oe *library.OpError) *huma.ErrorModel {
+	e := &huma.ErrorModel{Status: oe.Status, Title: http.StatusText(oe.Status), Detail: oe.Detail}
+	if oe.Fix != "" {
+		e.Errors = []*huma.ErrorDetail{{Message: oe.Fix, Location: "folder:" + oe.Folder, Value: oe.Command}}
+	}
+	return e
+}
+
+// opError maps a file operation error for a huma handler.
 func opError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var oe *library.OpError
 	if errors.As(err, &oe) {
-		e := huma.NewError(oe.Status, oe.Detail)
-		if oe.Fix != "" {
-			if em, ok := e.(*huma.ErrorModel); ok {
-				em.Errors = []*huma.ErrorDetail{{Message: oe.Fix, Location: oe.Folder, Value: oe.Command}}
-			}
-		}
-		return e
+		return problemFromOp(oe)
 	}
 	return libraryError(err)
 }
@@ -33,12 +37,12 @@ func opError(err error) error {
 func (s *Server) registerUpload(api huma.API, apiMux *http.ServeMux) {
 	type checkInput struct {
 		Body struct {
-			Paths []string `json:"paths" maxItems:"5000"`
+			Paths []string `json:"paths" maxItems:"2000"`
 		}
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "check-files", Method: http.MethodPost, Path: "/library/files/check", Tags: []string{"library"},
-		Summary: "Which of the given relative paths already exist or are not allowed",
+		Summary: "Which of the given relative paths already exist or are not allowed", Description: "Send at most 2000 paths per call.",
 	}, func(ctx context.Context, in *checkInput) (*struct{ Body library.CheckResult }, error) {
 		return &struct{ Body library.CheckResult }{Body: s.opts.Files.Check(in.Body.Paths)}, nil
 	})
@@ -84,20 +88,16 @@ func (s *Server) registerUpload(api huma.API, apiMux *http.ServeMux) {
 // upload streams one file into the library.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	lim := s.opts.Files.Limits()
-	size := r.ContentLength
 	// The reader is capped regardless of Content-Length, so a chunked
 	// body cannot exceed the limit either.
 	body := http.MaxBytesReader(w, r.Body, lim.MaxBytes+1)
-	res, err := s.opts.Files.Upload(r.URL.Query().Get("path"), r.URL.Query().Get("conflict"), body, size)
+	res, err := s.opts.Files.Upload(r.URL.Query().Get("path"), r.URL.Query().Get("conflict"), body, r.ContentLength)
 	if err != nil {
 		var oe *library.OpError
 		if errors.As(err, &oe) {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(oe.Status)
-			json.NewEncoder(w).Encode(map[string]any{
-				"title": http.StatusText(oe.Status), "status": oe.Status, "detail": oe.Detail,
-				"folder": oe.Folder, "fix": oe.Fix, "command": oe.Command,
-			})
+			json.NewEncoder(w).Encode(problemFromOp(oe))
 			return
 		}
 		writeProblem(w, http.StatusInternalServerError, err.Error())

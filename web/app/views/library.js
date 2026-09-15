@@ -144,11 +144,11 @@ export async function libraryView(main, rest) {
   function renderList(pg) {
     clear(listBox);
     if (!pg.entries.length) {
-      listBox.append(h('p.text-body-secondary', pg.search ? 'No tracks match.' : storage?.problem ? `${storage.problem} Check Settings > Library.` : 'This folder is empty. Upload music or copy it into the music root and rescan.'));
+      listBox.append(h('p.text-body-secondary', pg.search ? 'No tracks match.' : storage?.missing ? `${storage.problem} Check Settings > Library.` : 'This folder is empty. Upload music or copy it into the music root and rescan.'));
       return;
     }
-    if (storage?.read_only && !storage.problem && !pg.search && !path) {
-      listBox.append(h('div.alert.alert-secondary.small.py-2', 'The music root is read-only. Upload and file operations are hidden.'));
+    if (storage?.read_only && !pg.search && !path) {
+      listBox.append(h('div.alert.alert-secondary.small.py-2', storage.problem || 'The music root is read-only. Upload and file operations are hidden.'));
     }
     const list = h('div.list-group.row-list');
     for (const e of pg.entries) {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"jukem/internal/events"
 )
@@ -40,10 +41,12 @@ func TestUploadStoresFile(t *testing.T) {
 	if entries, _ := os.ReadDir(filepath.Join(root, ".jukem-tmp")); len(entries) != 0 {
 		t.Fatal("temporary file left behind")
 	}
-	// The pending folder is recorded for the scan.
-	if len(f.pending) != 1 || f.pending[0] != "Rock" {
+	// The pending folder is recorded for the scan, and the scan timer is
+	// armed.
+	if len(f.pending) != 1 || f.pending[0] != "Rock" || f.timer == nil {
 		t.Fatalf("pending %v", f.pending)
 	}
+	f.timer.Stop()
 }
 
 func TestUploadConflictPolicy(t *testing.T) {
@@ -81,7 +84,15 @@ func TestUploadRejections(t *testing.T) {
 		{"x.mp3", 5000, "a", http.StatusRequestEntityTooLarge},
 		{"big.mp3", -1, strings.Repeat("x", 1001), http.StatusRequestEntityTooLarge},
 		{".hidden/x.mp3", 1, "a", http.StatusUnprocessableEntity},
+		{"a", 1, "a", http.StatusUnsupportedMediaType},
 	}
+	os.MkdirAll(filepath.Join(f.root(), "dir.mp3"), 0o750)
+	cases = append(cases, struct {
+		rel    string
+		size   int64
+		body   string
+		status int
+	}{"dir.mp3", 1, "a", http.StatusConflict})
 	for _, c := range cases {
 		_, err := f.Upload(c.rel, "skip", strings.NewReader(c.body), c.size)
 		var oe *OpError
@@ -91,6 +102,53 @@ func TestUploadRejections(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(f.root(), ".jukem-tmp")); len(entries) != 0 {
 		t.Fatal("a rejected upload left a temporary file")
+	}
+	// A rejected body leaves no empty folder behind.
+	f.Upload("New/Album/big.mp3", "skip", strings.NewReader(strings.Repeat("x", 1001)), -1)
+	if _, err := os.Stat(filepath.Join(f.root(), "New")); err == nil {
+		t.Fatal("rejected upload created its folders")
+	}
+	for _, i := range []int{0} {
+		_ = i
+		if f.active != 0 || f.inflight != 0 {
+			t.Fatalf("counters not balanced: active=%d inflight=%d", f.active, f.inflight)
+		}
+	}
+}
+
+func TestScanTracking(t *testing.T) {
+	f, _ := newTestFiles(t)
+	hub := f.events
+	ch, unsub := hub.Subscribe()
+	defer unsub()
+	f.mu.Lock()
+	f.scanning, f.scanDir, f.scanAt = true, "Rock", time.Now()
+	f.mu.Unlock()
+	if !f.ScanPending() {
+		t.Fatal("scan should be pending")
+	}
+	f.NoteUpdate(true)
+	if !f.ScanPending() {
+		t.Fatal("a running update must not end the scan")
+	}
+	f.NoteUpdate(false)
+	if f.ScanPending() {
+		t.Fatal("scan should be over")
+	}
+	select {
+	case ev := <-ch:
+		if ev.Type != events.Upload || ev.Ref != "Rock" {
+			t.Fatalf("got %+v", ev)
+		}
+	default:
+		t.Fatal("no upload event")
+	}
+	// A second end event without a scan publishes nothing.
+	f.NoteUpdate(false)
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected event %+v", ev)
+	default:
 	}
 }
 
@@ -151,7 +209,7 @@ func TestNewFolderAndPermissions(t *testing.T) {
 		t.Fatal(fix, cmd)
 	}
 	f.runtime = "docker"
-	if fix, cmd := f.fixText(root); !strings.Contains(fix, "Docker host") || !strings.Contains(cmd, "1000:1000") {
+	if fix, cmd := f.fixText(root); !strings.Contains(fix, "Docker host") || !strings.Contains(cmd, "1000:1000") || !strings.Contains(cmd, root) {
 		t.Fatal(fix, cmd)
 	}
 }
