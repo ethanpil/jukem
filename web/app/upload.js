@@ -58,7 +58,9 @@ function buildPanel() {
   // A drop that misses the panel must not open the file in the tab.
   document.addEventListener('dragover', (e) => { e.preventDefault(); });
   document.addEventListener('drop', (e) => { if (!panel.contains(e.target)) e.preventDefault(); });
-  ui = { panel, offcanvas: new bootstrap.Offcanvas(panel), summary: h('div.mb-2'), bar: h('div.progress.mb-2', { role: 'progressbar' }, h('div.progress-bar')), rows: h('div.list-group.mb-3'), actions: h('div.d-flex.gap-2') };
+  // The batch bar shows its percentage inside the bar, so it needs the
+  // taller form.
+  ui = { panel, offcanvas: new bootstrap.Offcanvas(panel), summary: h('div.mb-2'), bar: h('div.progress.labelled.mb-2', { role: 'progressbar' }, h('div.progress-bar')), rows: h('div.upload-rows.mb-3'), actions: h('div.d-flex.gap-2') };
 }
 
 function render() {
@@ -147,11 +149,12 @@ function renderProgress() {
   }
   const rows = clear(ui.rows);
   for (const i of [...c.active, ...c.failed]) {
-    rows.append(h('div.list-group-item.small',
-      h('div.d-flex.justify-content-between', h('span.text-truncate', i.rel), h('span.text-body-secondary', i.status === 'failed' ? 'failed' : i.status === 'retrying' ? 'retrying' : `${pct(i.sent, i.size)}%`)),
-      i.status === 'failed' ? h('div.text-danger', i.error) : h('div.progress', { style: 'height: 4px' }, h('div.progress-bar', { style: `width: ${pct(i.sent, i.size)}%` }))));
+    // A file row is two lines: the name with its state, and the bar below.
+    rows.append(h('div.upload-row',
+      h('div.d-flex.justify-content-between.gap-2', h('span.text-truncate', i.rel), h('span.text-body-secondary', i.status === 'failed' ? 'failed' : i.status === 'retrying' ? 'retrying' : `${pct(i.sent, i.size)}%`)),
+      i.status === 'failed' ? h('div.text-danger', i.error) : h('div.progress.thin.mt-1', h('div.progress-bar', { style: `width: ${pct(i.sent, i.size)}%` }))));
   }
-  if (c.finished) rows.append(h('div.list-group-item.small.text-body-secondary', `${c.finished} finished`));
+  if (c.finished) rows.append(h('div.upload-row.text-body-secondary', `${c.finished} finished`));
   const acts = clear(ui.actions);
   if (state.running) {
     acts.append(h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => { state.paused = !state.paused; if (!state.paused) pump(); renderProgress(); } }, state.paused ? 'Continue' : 'Pause'),

@@ -37,7 +37,30 @@ function append(el, children) {
   return el;
 }
 
+// The rows of a list are in a card that hides what goes past its edge. A
+// menu that places itself against the window, and not against the card, is
+// not cut off by it. Bootstrap makes the menu objects itself, so the rule
+// belongs with its defaults.
+bootstrap.Dropdown.Default.popperConfig = (config) => ({ ...config, strategy: 'fixed' });
+
+// openMenu is the row menu that is open now, if there is one. A list can be
+// rebuilt while a menu in it is open, and Bootstrap keeps the listeners of a
+// menu that is removed in that state, so clear closes it first. A menu that
+// closes gives its Bootstrap object back at once, so a long list leaves
+// nothing behind.
+let openMenu = null;
+document.addEventListener('shown.bs.dropdown', (e) => { openMenu = e.target; });
+document.addEventListener('hidden.bs.dropdown', (e) => {
+  openMenu = null;
+  const menu = e.target;
+  setTimeout(() => { if (menu.getAttribute('aria-expanded') !== 'true') bootstrap.Dropdown.getInstance(menu)?.dispose(); }, 0);
+});
+
 export function clear(el) {
+  if (openMenu && el.contains(openMenu)) {
+    bootstrap.Dropdown.getInstance(openMenu)?.dispose();
+    openMenu = null;
+  }
   while (el.firstChild) el.removeChild(el.firstChild);
   return el;
 }
@@ -200,8 +223,8 @@ export function dotsMenu(label, items, cls = 'btn-ghost s30') {
   const ul = h('ul.dropdown-menu.dropdown-menu-end');
   const btn = h('button', { type: 'button', class: `btn btn-icon ${cls}`, 'data-bs-toggle': 'dropdown', 'aria-expanded': 'false', 'aria-label': label }, icon('three-dots'));
   const box = h('div.dropdown.flex-none', btn, ul);
-  if (typeof items === 'function') box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...items().flat().filter(Boolean)); });
-  else ul.append(...items.flat().filter(Boolean));
+  if (typeof items === 'function') box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...items().flat(Infinity).filter(Boolean)); });
+  else ul.append(...items.flat(Infinity).filter(Boolean));
   return box;
 }
 
