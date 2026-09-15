@@ -3,7 +3,6 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -71,10 +70,6 @@ type App struct {
 	healthMu sync.Mutex
 	healthAt time.Time
 	health   watchdog.Report
-
-	tlsMu    sync.Mutex
-	tlsCert  *tls.Certificate
-	tlsStamp string
 }
 
 // Build opens the store, discovers devices and starts MPD.
@@ -151,11 +146,11 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.runNightly(ctx)
 
 	srv, err := api.New(api.Options{
-		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: a.ServeTLS(),
+		Version: version, Static: web.Files, Store: db, Health: a.Health,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
-		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart, StoreTLS: a.StoreTLS, SelfSignedTLS: a.SelfSignedTLS,
+		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart,
 	})
 	if err != nil {
 		a.Close()

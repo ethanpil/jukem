@@ -24,10 +24,9 @@ RUN apk add --no-cache --allow-untrusted /tmp/dist/jukem-*.apk \
  && chown -R jukem:jukem /var/lib/jukem /var/log/jukem /srv/jukem
 ENV JUKEM_RUNTIME=docker \
     JUKEM_LISTEN=":8080" \
-    JUKEM_LISTEN_TLS=":8443" \
     JUKEM_LOG_FILE=""
 USER jukem
-EXPOSE 8080 8443
+EXPOSE 8080
 VOLUME /var/lib/jukem
 HEALTHCHECK --interval=30s --timeout=5s CMD ["jukem", "healthcheck"]
 ENTRYPOINT ["jukem", "serve", "--config", "/etc/jukem/config.yaml"]

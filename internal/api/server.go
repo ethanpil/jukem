@@ -35,8 +35,6 @@ type Options struct {
 	Static  fs.FS
 	Store   *store.Store
 	Health  func() watchdog.Report
-	// TLS marks session cookies Secure.
-	TLS bool
 
 	Player    *player.Player
 	Events    *events.Hub
@@ -65,11 +63,9 @@ type Options struct {
 
 	// Alerter records and dismisses alerts. The functions below are the
 	// maintenance operations of the running application.
-	Alerter       *watchdog.Alerter
-	Snapshot      func(ctx context.Context) (string, error)
-	Restart       func() error
-	StoreTLS      func(certPEM, keyPEM string) error
-	SelfSignedTLS func() error
+	Alerter  *watchdog.Alerter
+	Snapshot func(ctx context.Context) (string, error)
+	Restart  func() error
 }
 
 // Server is the HTTP surface in normal operation.
@@ -90,7 +86,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		opts:    opts,
 		store:   opts.Store,
-		auth:    &auth{store: opts.Store, secure: opts.TLS, limiter: newLoginLimiter(), hashSem: make(chan struct{}, hashSlots)},
+		auth:    &auth{store: opts.Store, limiter: newLoginLimiter(), hashSem: make(chan struct{}, hashSlots)},
 		started: time.Now(),
 	}
 
@@ -99,7 +95,7 @@ func New(opts Options) (*Server, error) {
 	cfg.Info.Description = "Jukebox appliance API. Browsers use a session cookie plus the X-CSRF-Token header; programs send Authorization: Bearer <key>."
 	cfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"apiKey":  {Type: "http", Scheme: "bearer"},
-		"session": {Type: "apiKey", In: "cookie", Name: sessionCookie},
+		"session": {Type: "apiKey", In: "cookie", Name: sessionCookieName},
 	}
 	cfg.Security = []map[string][]string{{"apiKey": {}}, {"session": {}}}
 	hapi := humago.NewWithPrefix(apiMux, apiPrefix, cfg)

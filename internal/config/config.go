@@ -14,10 +14,9 @@ import (
 
 // Config holds the bootstrap settings read from /etc/jukem/config.yaml.
 type Config struct {
-	Listen    string `yaml:"listen"`
-	ListenTLS string `yaml:"listen_tls"`
-	DataDir   string `yaml:"data_dir"`
-	LogFile   string `yaml:"log_file"`
+	Listen  string `yaml:"listen"`
+	DataDir string `yaml:"data_dir"`
+	LogFile string `yaml:"log_file"`
 }
 
 // ParseError reports a config file that does not parse. The caller shows a
@@ -33,10 +32,9 @@ func (e *ParseError) Unwrap() error { return e.Err }
 // Default returns the settings that apply when a key is missing.
 func Default() Config {
 	return Config{
-		Listen:    ":80",
-		ListenTLS: ":443",
-		DataDir:   "/var/lib/jukem",
-		LogFile:   "/var/log/jukem/jukem.log",
+		Listen:  ":80",
+		DataDir: "/var/lib/jukem",
+		LogFile: "/var/log/jukem/jukem.log",
 	}
 }
 
@@ -87,7 +85,7 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 	if root.Kind != yaml.MappingNode {
 		return nil, errors.New("top level must be a mapping")
 	}
-	known := map[string]bool{"listen": true, "listen_tls": true, "data_dir": true, "log_file": true}
+	known := map[string]bool{"listen": true, "data_dir": true, "log_file": true}
 	var warnings []string
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if k := root.Content[i].Value; !known[k] {
@@ -95,19 +93,15 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 		}
 	}
 	var typed struct {
-		Listen    *string `yaml:"listen"`
-		ListenTLS *string `yaml:"listen_tls"`
-		DataDir   *string `yaml:"data_dir"`
-		LogFile   *string `yaml:"log_file"`
+		Listen  *string `yaml:"listen"`
+		DataDir *string `yaml:"data_dir"`
+		LogFile *string `yaml:"log_file"`
 	}
 	if err := root.Decode(&typed); err != nil {
 		return nil, err
 	}
 	if typed.Listen != nil {
 		cfg.Listen = *typed.Listen
-	}
-	if typed.ListenTLS != nil {
-		cfg.ListenTLS = *typed.ListenTLS
 	}
 	if typed.DataDir != nil {
 		cfg.DataDir = *typed.DataDir
@@ -118,16 +112,12 @@ func parse(data []byte, cfg *Config) ([]string, error) {
 	return warnings, nil
 }
 
-// applyEnv applies JUKEM_LISTEN, JUKEM_LISTEN_TLS, JUKEM_DATA_DIR and
-// JUKEM_LOG_FILE. A variable
-// set to the empty string still applies: JUKEM_LOG_FILE="" selects stdout,
+// applyEnv applies JUKEM_LISTEN, JUKEM_DATA_DIR and JUKEM_LOG_FILE. A
+// variable set to the empty string still applies: JUKEM_LOG_FILE="" selects stdout,
 // which the Docker image uses.
 func applyEnv(cfg *Config) {
 	if v, ok := os.LookupEnv("JUKEM_LISTEN"); ok {
 		cfg.Listen = v
-	}
-	if v, ok := os.LookupEnv("JUKEM_LISTEN_TLS"); ok {
-		cfg.ListenTLS = v
 	}
 	if v, ok := os.LookupEnv("JUKEM_DATA_DIR"); ok {
 		cfg.DataDir = v

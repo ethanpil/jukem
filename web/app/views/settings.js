@@ -242,29 +242,6 @@ export async function settingsView(main, rest) {
       } }, name, h('button.btn.btn-outline-primary', { type: 'submit' }, 'Create key')));
     }
     loadKeys();
-    body.append(h('h3.h6.mt-4', 'HTTPS'), renderHTTPS());
-  }
-
-  function renderHTTPS() {
-    const box = h('div');
-    const enabled = h('input.form-check-input', { type: 'checkbox', checked: settings.https_enabled, id: 'set-https' });
-    const cert = h('textarea.form-control.mono', { rows: 3, placeholder: '-----BEGIN CERTIFICATE-----' });
-    const key = h('textarea.form-control.mono', { rows: 3, placeholder: '-----BEGIN PRIVATE KEY-----' });
-    box.append(h('p.small.text-body-secondary', 'HTTP on the LAN is the default. For access away from home, use Tailscale or WireGuard rather than a forwarded port. Upload a certificate and key, or generate a self-signed one (browsers warn about it).'),
-      h('div.row.g-2', h('div.col-md-6', h('label.form-label', 'Certificate (PEM)'), cert), h('div.col-md-6', h('label.form-label', 'Private key (PEM)'), key)),
-      h('div.d-flex.gap-2.align-items-center.mt-2',
-        h('button.btn.btn-outline-primary', { type: 'button', onclick: async () => {
-          try { await A.api.put('/settings/tls', { certificate: cert.value, key: key.value }); toast('Certificate stored', 'success'); } catch (e) { toast(e.message, 'danger'); }
-        } }, 'Upload'),
-        h('button.btn.btn-outline-secondary', { type: 'button', onclick: async () => {
-          try { await A.api.post('/settings/tls/self-signed'); toast('Self-signed certificate generated', 'success'); } catch (e) { toast(e.message, 'danger'); }
-        } }, 'Generate self-signed'),
-        h('div.form-check.form-switch.ms-3', enabled, h('label.form-check-label', { for: 'set-https' }, 'Serve HTTPS and redirect HTTP'))),
-      h('div.form-text', 'A stored certificate applies at once. The switch takes effect at the next service restart.'));
-    enabled.addEventListener('change', async () => {
-      if (!await save({ https_enabled: enabled.checked }, 'Saved. Restart the service to apply.')) enabled.checked = !enabled.checked;
-    });
-    return box;
   }
 
   async function renderSystem(body) {

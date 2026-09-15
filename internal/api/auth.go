@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	sessionCookie = "jukem_session"
-	csrfHeader    = "X-CSRF-Token"
-	sessionLife   = 30 * 24 * time.Hour
+	sessionCookieName = "jukem_session"
+	csrfHeader        = "X-CSRF-Token"
+	sessionLife       = 30 * 24 * time.Hour
 	// touchInterval limits how often a request records its use, so a
 	// polling client does not write to the database on every request.
 	touchInterval = time.Hour
@@ -90,7 +90,6 @@ func (p Principal) Source() string {
 // auth holds what the login and the middleware need.
 type auth struct {
 	store   *store.Store
-	secure  bool // set the Secure cookie flag
 	limiter *loginLimiter
 	hashSem chan struct{}
 }
@@ -258,7 +257,7 @@ func (a *auth) middleware(next http.Handler) http.Handler {
 		if p != nil {
 			ctx = context.WithValue(ctx, principalKey{}, *p)
 			if p.renew {
-				http.SetCookie(w, a.sessionCookie(p.Session.ID))
+				http.SetCookie(w, sessionCookie(r, p.Session.ID))
 			}
 		}
 		if isOpen(r.URL.Path) {
@@ -299,7 +298,7 @@ func (a *auth) authenticate(r *http.Request) (*Principal, error) {
 		}
 		return &Principal{Kind: KindAPIKey, Name: k.Name}, nil
 	}
-	c, err := r.Cookie(sessionCookie)
+	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
 		return nil, nil
 	}
@@ -328,24 +327,33 @@ func (a *auth) startSession(ctx context.Context, r *http.Request) (store.Session
 	if err := a.store.CreateSession(ctx, se); err != nil {
 		return se, nil, err
 	}
-	return se, a.sessionCookie(se.ID), nil
+	return se, sessionCookie(r, se.ID), nil
 }
 
-func (a *auth) sessionCookie(id string) *http.Cookie {
+// sessionCookie builds the session cookie. It is Secure when the browser
+// reached jukem over HTTPS: directly, or through a reverse proxy that says
+// so in X-Forwarded-Proto. A false header can only make the cookie
+// Secure, which a plain-HTTP browser then does not store.
+func sessionCookie(r *http.Request, id string) *http.Cookie {
 	return &http.Cookie{
-		Name:     sessionCookie,
+		Name:     sessionCookieName,
 		Value:    id,
 		Path:     "/",
 		MaxAge:   int(sessionLife.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   a.secure,
+		Secure:   isHTTPS(r),
 	}
 }
 
+// isHTTPS reports whether the request came over HTTPS.
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // clearCookie tells the browser to drop the session cookie.
-func (a *auth) clearCookie() *http.Cookie {
-	c := a.sessionCookie("")
+func clearCookie(r *http.Request) *http.Cookie {
+	c := sessionCookie(r, "")
 	c.MaxAge = -1
 	return c
 }

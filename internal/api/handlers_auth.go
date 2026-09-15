@@ -141,7 +141,7 @@ func (s *Server) registerAuth(api huma.API) {
 		if err := s.store.DeleteSession(ctx, p.Session.ID); err != nil {
 			return nil, err
 		}
-		return &cookieOutput{SetCookie: s.auth.clearCookie()}, nil
+		return &cookieOutput{SetCookie: clearCookie(requestFrom(ctx))}, nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -175,7 +175,7 @@ func (s *Server) registerAuth(api huma.API) {
 		if err := s.store.SetPasswordHash(ctx, newHash); err != nil {
 			return nil, err
 		}
-		return &cookieOutput{SetCookie: s.auth.clearCookie()}, nil
+		return &cookieOutput{SetCookie: clearCookie(requestFrom(ctx))}, nil
 	})
 
 	huma.Register(api, huma.Operation{

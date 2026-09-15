@@ -86,7 +86,7 @@ Maintenance > Check library permissions.
 | `/usr/bin/jukem` | The binary, with the web UI embedded |
 | `/etc/init.d/jukem`, `/etc/conf.d/jukem` | OpenRC service script and options |
 | `/etc/jukem/config.yaml` | Bootstrap settings: listen addresses, data directory, log file |
-| `/var/lib/jukem/` | Database, snapshots, MPD state, playlists, TLS material |
+| `/var/lib/jukem/` | Database, snapshots, MPD state, playlists |
 | `/var/log/jukem/` | Log file, capped in size |
 | `/srv/jukem/music/` | Default music root |
 
@@ -146,12 +146,10 @@ Docker uses it as the health check.
 jukem serves plain HTTP on the LAN. For access away from home, use Tailscale
 or WireGuard. Do not forward the port on the router.
 
-HTTPS is one switch in Settings > Security. Upload a certificate and key, or
-let jukem generate a self-signed certificate. Browsers warn about a
-self-signed certificate. With the switch on and a certificate in place,
-jukem serves TLS on `listen_tls` (default `:443`, `:8443` in Docker). Plain
-HTTP redirects to it. The switch takes effect at the next service restart.
-A new certificate applies at once.
+jukem serves HTTP only. For HTTPS, put a reverse proxy such as Caddy,
+nginx or Traefik in front of it. Make the proxy send `X-Forwarded-Proto:
+https`, so the session cookie is marked Secure. The proxy must not buffer
+responses on `/api/v1/events`, because that is a live event stream.
 
 ## API
 
@@ -178,13 +176,11 @@ The Health page shows the rollback steps when a migration fails.
 
 ```yaml
 listen: ":80"
-listen_tls: ":443"
 data_dir: /var/lib/jukem
 log_file: /var/log/jukem/jukem.log
 ```
 
-`JUKEM_LISTEN`, `JUKEM_LISTEN_TLS`, `JUKEM_DATA_DIR` and `JUKEM_LOG_FILE`
-override these. An empty `log_file` logs to stdout, which the Docker image
+`JUKEM_LISTEN`, `JUKEM_DATA_DIR` and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which the Docker image
 uses.
 
 ## Forgotten password

@@ -39,8 +39,7 @@ type Settings struct {
 	NightlyRescanHour int      `json:"nightly_rescan_hour" minimum:"0" maximum:"23" doc:"Hour of the nightly full rescan and trim"`
 
 	// Security
-	HTTPSEnabled bool     `json:"https_enabled" doc:"Serve TLS and redirect HTTP"`
-	CORSOrigins  []string `json:"cors_origins" doc:"Allowed origins for cross-site API use; empty disables CORS"`
+	CORSOrigins []string `json:"cors_origins" doc:"Allowed origins for cross-site API use; empty disables CORS"`
 
 	// System
 	AlertWebhookURL    string `json:"alert_webhook_url" doc:"JSON POST target for alerts; empty disables"`

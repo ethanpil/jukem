@@ -176,17 +176,17 @@ func TestLoginRateLimit(t *testing.T) {
 }
 
 func TestCookieFlags(t *testing.T) {
-	a := &auth{secure: true}
-	c := a.sessionCookie("abc")
+	proxied := httptest.NewRequest("GET", "/", nil)
+	proxied.Header.Set("X-Forwarded-Proto", "https")
+	c := sessionCookie(proxied, "abc")
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" || c.MaxAge <= 0 {
 		t.Fatalf("cookie %+v", c)
 	}
-	if cc := a.clearCookie(); cc.MaxAge != -1 || cc.Value != "" {
+	if cc := clearCookie(proxied); cc.MaxAge != -1 || cc.Value != "" {
 		t.Fatalf("clear cookie %+v", cc)
 	}
-	a.secure = false
-	if a.sessionCookie("abc").Secure {
-		t.Fatal("Secure set without TLS")
+	if sessionCookie(httptest.NewRequest("GET", "/", nil), "abc").Secure {
+		t.Fatal("Secure set for a plain HTTP request")
 	}
 }
 

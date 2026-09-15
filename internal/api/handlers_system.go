@@ -31,8 +31,8 @@ type snapshotOutput struct {
 	}
 }
 
-// registerSystemOps adds the alerts, history, maintenance and TLS
-// endpoints that need the running application.
+// registerSystemOps adds the alerts, history and maintenance endpoints
+// that need the running application.
 func (s *Server) registerSystemOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-alerts", Method: http.MethodGet, Path: "/alerts", Tags: []string{"system"},
@@ -142,34 +142,5 @@ func (s *Server) registerSystemOps(api huma.API) {
 			return nil, huma.Error503ServiceUnavailable(err.Error())
 		}
 		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "put-tls", Method: http.MethodPut, Path: "/settings/tls", Tags: []string{"settings"},
-		Summary: "Store a certificate and key in PEM form", DefaultStatus: http.StatusNoContent,
-		Description: "A running TLS listener uses the new pair at the next connection. The HTTPS switch itself applies at the next restart.",
-	}, func(ctx context.Context, in *struct {
-		Body struct {
-			Certificate string `json:"certificate" minLength:"1"`
-			Key         string `json:"key" minLength:"1"`
-		}
-	}) (*struct{}, error) {
-		if _, err := webSession(ctx); err != nil {
-			return nil, err
-		}
-		if err := s.opts.StoreTLS(in.Body.Certificate, in.Body.Key); err != nil {
-			return nil, huma.Error422UnprocessableEntity(err.Error())
-		}
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "self-signed-tls", Method: http.MethodPost, Path: "/settings/tls/self-signed", Tags: []string{"settings"},
-		Summary: "Generate and store a self-signed certificate", DefaultStatus: http.StatusNoContent,
-	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
-		if _, err := webSession(ctx); err != nil {
-			return nil, err
-		}
-		return nil, s.opts.SelfSignedTLS()
 	})
 }

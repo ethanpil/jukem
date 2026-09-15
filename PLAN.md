@@ -114,7 +114,7 @@ Two architectures, not four. 32-bit ARM doubles the CI matrix, the release artif
 | `/etc/init.d/jukem` | OpenRC service script |
 | `/etc/conf.d/jukem` | Service options, preserved on upgrade if edited |
 | `/etc/jukem/config.yaml` | Bootstrap settings, preserved on upgrade if edited |
-| `/var/lib/jukem/` | Database, database snapshots, generated `mpd.conf`, MPD database, state file and socket, playlists, TLS material. Created by post-install, owned by `jukem`, mode 0750. |
+| `/var/lib/jukem/` | Database, database snapshots, generated `mpd.conf`, MPD database, state file and socket, and playlists. Created by post-install, owned by `jukem`, mode 0750. |
 | `/var/log/jukem/` | Size-capped log file |
 | `/srv/jukem/music/` | Default music root, created only if missing |
 
@@ -259,12 +259,11 @@ supervise-daemon restarts jukem if it exits, and `respawn_max=0` removes the ret
 ```yaml
 # Bootstrap settings. Everything else is configured in the web UI.
 listen: ":80"
-listen_tls: ":443"    # used when HTTPS is switched on in Settings > Security
 data_dir: /var/lib/jukem
 log_file: /var/log/jukem/jukem.log
 ```
 
-`JUKEM_LISTEN`, `JUKEM_LISTEN_TLS`, `JUKEM_DATA_DIR`, and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which is what the Docker image uses. The music root is not here: it's chosen in the setup wizard and lives in the database, so there's only one place to change it. Unknown keys produce a warning and are ignored; missing keys fall back to these defaults.
+`JUKEM_LISTEN`, `JUKEM_DATA_DIR`, and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which is what the Docker image uses. The music root is not here: it's chosen in the setup wizard and lives in the database, so there's only one place to change it. Unknown keys produce a warning and are ignored; missing keys fall back to these defaults.
 
 ### `scripts/package.sh`
 
@@ -520,7 +519,7 @@ Refusing to start is the wrong reaction to a fatal problem when a supervisor is 
 
 ### What to back up
 
-`/var/lib/jukem` holds everything jukem owns: the database, snapshots, playlists, and TLS material. Copying that directory while the service is stopped is a complete backup; the music root is separate and usually much larger. There's no in-app export or import. A backup format is a second schema to migrate, and `cp -a` already works.
+`/var/lib/jukem` holds everything jukem owns: the database, snapshots, and playlists. Copying that directory while the service is stopped is a complete backup; the music root is separate and usually much larger. There's no in-app export or import. A backup format is a second schema to migrate, and `cp -a` already works.
 
 Nothing grows without bound on an SD card. Play history keeps 90 days or 50,000 rows, whichever is smaller; dismissed alerts are kept 30 days; both are trimmed by the nightly job, and the limits are settings.
 
@@ -825,7 +824,7 @@ When everything is done, the panel shows "Scanning library" until MPD's update f
 
 The upload manager lives in the app shell rather than a view, so changing screens doesn't interrupt it, and the page warns before a close mid-batch. It sends three files at a time, one request per file, using XMLHttpRequest because `fetch` still lacks reliable upload progress across browsers.
 
-Network errors and 5xx responses retry up to three times with backoff. 4xx responses (unsupported type, too large, no space) fail immediately with the server's message on that row. A sleeping phone suspends its uploads. The Screen Wake Lock API would prevent that, but browsers only expose it in a secure context, and the default here is plain HTTP, so it works only when HTTPS is switched on. Over HTTP the panel says to keep the screen on during a large batch. The same secure-context rule applies to `navigator.clipboard`, so the copy buttons fall back to `document.execCommand('copy')`, which still works everywhere that matters.
+Network errors and 5xx responses retry up to three times with backoff. 4xx responses (unsupported type, too large, no space) fail immediately with the server's message on that row. A sleeping phone suspends its uploads. The Screen Wake Lock API would prevent that, but browsers only expose it in a secure context, and the default here is plain HTTP, so it works only when a reverse proxy serves the page over HTTPS. Over HTTP the panel says to keep the screen on during a large batch. The same secure-context rule applies to `navigator.clipboard`, so the copy buttons fall back to `document.execCommand('copy')`, which still works everywhere that matters.
 
 A failed file restarts from the beginning. Music files are 5 to 50 MB and this is a LAN, so resumable uploads (tus, or anything like it) would be machinery built for a problem nobody has hit yet. The one-request-per-file design leaves room to add it if that ever changes.
 
@@ -932,7 +931,7 @@ Settings is one page with seven sections, not a second navigation tree:
 | Audio | Output device, hardware level |
 | Schedule | Scheduler on/off, time zone, clock status and manual set |
 | Library | Music root, upload limits, allowed extensions, free-space reserve, nightly rescan time |
-| Security | Password, API keys, HTTPS |
+| Security | Password, API keys |
 | System | Version, alerts and webhook, log file, play history |
 | Maintenance | Rescan library, check permissions, database snapshots, restart service |
 
@@ -1007,7 +1006,7 @@ Under `/api/v1`, with its OpenAPI 3.1 spec at `/api/v1/openapi.json` so a remote
 | GET | `/health` | Full health detail |
 | GET | `/system/info` | Version, schema version, uptime, runtime |
 | GET | `/system/directories?path=` | Server-side directory listing, for choosing the music root |
-| GET, PUT | `/settings` | Every setting the UI exposes: volume limits, crossfade and fades, time zone, music root, upload limits, nightly rescan hour, alert webhook, HTTPS, retention |
+| GET, PUT | `/settings` | Every setting the UI exposes: volume limits, crossfade and fades, time zone, music root, upload limits, nightly rescan hour, alert webhook, retention |
 | POST | `/auth/login`, `/auth/logout` | Start or end a web session |
 | PUT | `/auth/password` | Change the password and sign out every session (web session only) |
 | GET, POST, DELETE | `/api-keys`, `/api-keys/{id}` | List, create, revoke API keys (web session only) |
@@ -1020,7 +1019,7 @@ Under `/api/v1`, with its OpenAPI 3.1 spec at `/api/v1/openapi.json` so a remote
 
 One login: a password set in the setup wizard, no user accounts or roles, and signing in gives full control. An appliance owned by one household or one shop doesn't need RBAC, invitations, or groups.
 
-The web UI gets a session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` when TLS is on) plus a CSRF token header on state-changing requests. Lax rather than Strict: Strict drops the cookie when someone follows a link to the jukebox from elsewhere, so a signed-in person lands on the login page for no reason, and Lax already blocks cross-site POSTs. The CSRF header covers what's left. Several devices can be signed in at once; changing the password signs them all out. `jukem reset-password` on the console recovers a forgotten one. The password is hashed with argon2id and login attempts are rate-limited per IP.
+The web UI gets a session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` when the request came over HTTPS) plus a CSRF token header on state-changing requests. Lax rather than Strict: Strict drops the cookie when someone follows a link to the jukebox from elsewhere, so a signed-in person lands on the login page for no reason, and Lax already blocks cross-site POSTs. The CSRF header covers what's left. Several devices can be signed in at once; changing the password signs them all out. `jukem reset-password` on the console recovers a forgotten one. The password is hashed with argon2id and login attempts are rate-limited per IP.
 
 ### API keys
 
@@ -1040,7 +1039,7 @@ Opaque random keys checked against stored hashes revoke instantly, which JWTs ca
 
 HTTP on the LAN by default. An appliance that greets its owner with a browser certificate warning has taught them to click through warnings, which is worse than the plaintext it was protecting against, and a self-signed certificate also blocks a future mobile app.
 
-HTTPS is one switch in Settings > Security, for anyone who wants it: upload a certificate and key (from a home CA, Let's Encrypt via DNS, or Tailscale), and jukem serves TLS and redirects HTTP. It will also generate a self-signed certificate on request, with the warning about what that means in a browser. For access away from home, Tailscale or WireGuard is the recommendation rather than a forwarded port, and the README says so plainly.
+jukem serves plain HTTP and nothing else. Anyone who wants HTTPS puts a reverse proxy in front of it (Caddy, nginx, Traefik), which already handles certificates better than an appliance could; jukem marks the session cookie Secure when the proxy reports HTTPS in `X-Forwarded-Proto`. For access away from home, Tailscale or WireGuard is the recommendation rather than a forwarded port, and the README says so plainly.
 
 CORS is off by default, with an allowlist setting. The service runs as the unprivileged `jukem` user with access only to the audio devices, the music root, and its own directories. Upload hardening is described under Library and file management, and the UI's defenses against hostile tags under Untrusted text.
 
