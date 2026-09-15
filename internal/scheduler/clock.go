@@ -55,6 +55,23 @@ type Clock struct {
 
 	mu     sync.Mutex
 	manual *manualOffset
+	// The kernel probe is cached for a moment, because status, health
+	// and every tick ask for it.
+	probedAt time.Time
+	probeNTP bool
+	probeRTC bool
+}
+
+// probeCached runs the probe at most every two seconds.
+func (c *Clock) probeCached() (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Since(c.probedAt) < 2*time.Second {
+		return c.probeNTP, c.probeRTC
+	}
+	c.probeNTP, c.probeRTC = c.probe()
+	c.probedAt = time.Now()
+	return c.probeNTP, c.probeRTC
 }
 
 // NewClock loads a stored manual offset when it belongs to this boot.
@@ -86,7 +103,7 @@ func (c *Clock) Now() time.Time {
 // Status reports the source. As soon as the kernel reports
 // synchronisation, a manual offset is dropped.
 func (c *Clock) Status(ctx context.Context, zone string) ClockStatus {
-	synced, rtc := c.probe()
+	synced, rtc := c.probeCached()
 	c.mu.Lock()
 	if synced && c.manual != nil {
 		c.manual = nil

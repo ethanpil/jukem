@@ -1,5 +1,5 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox, fmtTime } from '../dom.js';
+import { h, clear, icon, confirmDialog, modal, spinner, errorBox } from '../dom.js';
 import { libraryPicker, fail } from '../fileops.js';
 
 const DAYS = [['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri', 16], ['Sat', 32], ['Sun', 64]];
@@ -13,8 +13,10 @@ export async function scheduleView(main) {
   const weekBox = h('div.mb-4');
   const rulesBox = h('div.mb-4');
   const excBox = h('div.mb-4');
-  let weekStart = startOfWeek(new Date());
+  let weekOffset = 0; // weeks from the current one
   let playlists = [];
+  let tz = 'UTC';
+  let weekGen = 0;
 
   async function loadAll() {
     try { playlists = (await A.api.get('/playlists')).playlists; } catch { playlists = []; }
@@ -25,46 +27,70 @@ export async function scheduleView(main) {
     await Promise.all([loadWeek(), loadRules(), loadExceptions()]);
   }
 
-  // Week view: seven columns, 24 hours each, intervals drawn as blocks.
+  // localDate gives the YYYY-MM-DD of an instant in the configured zone.
+  function localDate(d, zone) {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  }
+
+  // mondayOf returns the Monday on or before a YYYY-MM-DD date, shifted by
+  // weekOffset weeks. Day arithmetic runs in UTC on the date only.
+  function mondayOf(date) {
+    const d = new Date(date + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7) + weekOffset * 7);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Week view: the server returns the local day boundaries of the week,
+  // so every block is placed by minutes into its local day.
   async function loadWeek() {
+    const gen = ++weekGen;
     clear(weekBox).append(spinner());
-    const from = new Date(weekStart);
-    const to = new Date(weekStart); to.setDate(to.getDate() + 7);
     let r;
-    try { r = await A.api.get(`/schedules/intervals?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`); } catch (e) { clear(weekBox).append(errorBox(e)); return; }
-    clear(weekBox);
-    const tz = r.time_zone;
-    const fmt = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
-    const dayOf = (d) => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' }).formatToParts(d).map((x) => [x.type, x.value])); return { day: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday), minutes: Number(p.hour) * 60 + Number(p.minute) }; };
+    try {
+      const probe = tz === 'UTC' && weekOffset === 0 ? await A.api.get('/schedules/intervals') : null;
+      if (probe) tz = probe.time_zone;
+      const monday = mondayOf(localDate(new Date(), tz));
+      r = await A.api.get(`/schedules/intervals?week=${monday}`);
+    } catch (e) { if (gen === weekGen) clear(weekBox).append(weekNav(), errorBox(e)); return; }
+    if (gen !== weekGen) return;
+    tz = r.time_zone;
+    const fmt = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    const minutesOfDay = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });
+    const minutes = (d) => { const p = Object.fromEntries(minutesOfDay.formatToParts(d).map((x) => [x.type, x.value])); return Number(p.hour) * 60 + Number(p.minute); };
+    const days = r.days.map((d) => new Date(d));
+    const from = new Date(r.from);
+    const to = new Date(r.to);
     const grid = h('div.week-grid');
-    const cols = DAYS.map(([label]) => h('div.week-col', h('div.week-head', label)));
+    const cols = days.map((d) => h('div.week-col', h('div.week-head', new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', day: 'numeric' }).format(d)), h('div.week-body')));
     for (const iv of r.intervals) {
-      // An interval can span midnight; draw a block per day it touches.
-      let cur = new Date(iv.start);
-      const end = new Date(iv.end);
-      let guard = 0;
-      while (cur < end && guard++ < 10) {
-        const s = dayOf(cur);
-        const dayEndMinutes = 24 * 60;
-        let endMinutes = dayEndMinutes;
-        const e = dayOf(new Date(end.getTime() - 1));
-        if (e.day === s.day && end.getTime() - cur.getTime() < 24 * 3600 * 1000) endMinutes = e.minutes + 1;
-        const top = (s.minutes / dayEndMinutes) * 100;
-        const height = Math.max(1.5, ((endMinutes - s.minutes) / dayEndMinutes) * 100);
-        const block = h('div', { class: `week-block ${iv.exception ? 'week-exception' : ''}`, style: `top:${top}%;height:${height}%`, title: `${iv.name}\n${fmt.format(new Date(iv.start))} to ${fmt.format(end)}` }, h('span.week-block-text', iv.name));
-        if (s.day >= 0) cols[s.day].append(block);
-        cur = new Date(cur.getTime() + (dayEndMinutes - s.minutes) * 60000);
+      // Clip to the week, then draw one block per local day the interval touches.
+      const start = new Date(Math.max(new Date(iv.start).getTime(), from.getTime()));
+      const end = new Date(Math.min(new Date(iv.end).getTime(), to.getTime()));
+      for (let i = 0; i < days.length; i++) {
+        const dayStart = days[i];
+        const dayEnd = i + 1 < days.length ? days[i + 1] : to;
+        if (end <= dayStart || start >= dayEnd) continue;
+        const dayMinutes = (dayEnd.getTime() - dayStart.getTime()) / 60000;
+        const s = start > dayStart ? minutes(start) : 0;
+        const e = end < dayEnd ? minutes(end) : dayMinutes;
+        const top = (s / dayMinutes) * 100;
+        const height = Math.max(1.5, ((e - s) / dayMinutes) * 100);
+        cols[i].lastChild.append(h('div', { class: `week-block ${iv.exception ? 'week-exception' : ''}`, style: `top:${top}%;height:${height}%`, title: `${iv.name}\n${fmt.format(new Date(iv.start))} to ${fmt.format(new Date(iv.end))}` }, h('span.week-block-text', iv.name)));
       }
     }
     for (const c of cols) grid.append(c);
-    const label = `${weekStart.toLocaleDateString([], { day: 'numeric', month: 'short' })} – ${new Date(to.getTime() - 1).toLocaleDateString([], { day: 'numeric', month: 'short' })} · ${tz}`;
-    weekBox.append(h('div.d-flex.align-items-center.gap-2.mb-2',
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { weekStart.setDate(weekStart.getDate() - 7); loadWeek(); } }, icon('chevron-left')),
-      h('span.small.text-body-secondary', label),
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { weekStart.setDate(weekStart.getDate() + 7); loadWeek(); } }, icon('chevron-right')),
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { weekStart = startOfWeek(new Date()); loadWeek(); } }, 'This week')),
-      grid);
+    clear(weekBox).append(weekNav(days[0], days[days.length - 1]), grid);
     if (!r.intervals.length) weekBox.append(h('p.small.text-body-secondary.mt-2', 'Nothing scheduled this week.'));
+  }
+
+  function weekNav(first, last) {
+    const fmt = new Intl.DateTimeFormat([], { timeZone: tz, day: 'numeric', month: 'short' });
+    return h('div.d-flex.align-items-center.gap-2.mb-2',
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': 'Previous week', onclick: () => { weekOffset--; loadWeek(); } }, icon('chevron-left')),
+      h('span.small.text-body-secondary', first ? `${fmt.format(first)} – ${fmt.format(last)} · ${tz}` : tz),
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': 'Next week', onclick: () => { weekOffset++; loadWeek(); } }, icon('chevron-right')),
+      weekOffset ? h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { weekOffset = 0; loadWeek(); } }, 'This week') : null);
   }
 
   async function loadRules() {
@@ -72,7 +98,7 @@ export async function scheduleView(main) {
     let r;
     try { r = await A.api.get('/schedules'); } catch (e) { clear(rulesBox).append(errorBox(e)); return; }
     clear(rulesBox).append(h('h2.h5', 'Weekly rules'));
-    if (r.conflicts.length) rulesBox.append(h('div.alert.alert-warning.small', 'Rules overlap: ', r.conflicts.map((c) => `${c.rule_name} and ${c.other_name} (${c.at})`).join('; '), '. The earlier rule in the list plays.'));
+    if (r.conflicts.length) rulesBox.append(h('div.alert.alert-warning.small', 'Rules overlap: ', r.conflicts.map((c) => `${c.rule_name} and ${c.other_name} (${c.at})`).join('; '), '. The window that started first plays.'));
     if (!r.schedules.length) { rulesBox.append(h('p.text-body-secondary', 'No rules yet. Add one to play music on a schedule.')); return; }
     const list = h('div.list-group.row-list');
     for (const s of r.schedules) {
@@ -82,8 +108,8 @@ export async function scheduleView(main) {
       list.append(h('div.list-group-item',
         h('div.form-check.form-switch.mb-0', sw),
         h('div.row-main', h('div.row-title', s.name), h('div.small.text-body-secondary', `${dayLabel(s.days)} · ${s.start_time}–${s.end_time}${s.end_time <= s.start_time ? ' (next day)' : ''} · ${sourceLabel(s)}${s.shuffle ? ' · shuffle' : ''}${s.volume != null ? ` · vol ${s.volume}` : ''}`)),
-        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => ruleEditor(s) }, icon('pencil')),
-        h('button.btn.btn-sm.btn-outline-danger', { type: 'button', onclick: async () => {
+        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': `Edit ${s.name}`, onclick: () => ruleEditor(s) }, icon('pencil')),
+        h('button.btn.btn-sm.btn-outline-danger', { type: 'button', 'aria-label': `Delete ${s.name}`, onclick: async () => {
           if (!await confirmDialog({ title: 'Delete rule', body: `Delete "${s.name}"?`, confirmText: 'Delete', danger: true })) return;
           try { await A.api.del(`/schedules/${s.id}`); } catch (err) { fail(err); }
         } }, icon('trash'))));
@@ -126,12 +152,17 @@ export async function scheduleView(main) {
         h('div.col-sm-4', h('div.form-check', shuffle, h('label.form-check-label', 'Shuffle'))),
         h('div.col-sm-8', h('div.form-check', useVol, h('label.form-check-label', 'Set volume at the start: ', volLabel)), vol)),
     ];
-    const value = () => ({
-      source_type: type.value,
-      source_ref: type.value === 'playlist' ? pl.value : dir.value.trim().replace(/^\/+|\/+$/g, ''),
-      shuffle: shuffle.checked,
-      volume: useVol.checked ? Number(vol.value) : null,
-    });
+    // value returns the source, or an error message when it is incomplete.
+    const value = () => {
+      const v = {
+        source_type: type.value,
+        source_ref: type.value === 'playlist' ? pl.value : dir.value.trim().replace(/^\/+|\/+$/g, ''),
+        shuffle: shuffle.checked,
+        volume: useVol.checked ? Number(vol.value) : null,
+      };
+      if (v.source_type === 'playlist' && !v.source_ref) return { error: 'Choose a playlist.' };
+      return v;
+    };
     return { el, value };
   }
 
@@ -147,8 +178,9 @@ export async function scheduleView(main) {
       e.preventDefault();
       const days = dayChecks.reduce((m, [c], i) => m | (c.checked ? DAYS[i][1] : 0), 0);
       if (!days) { err.textContent = 'Choose at least one day.'; return; }
-      const body = { name: name.value.trim(), enabled: init.enabled, days, start_time: start.value, end_time: end.value, ...src.value() };
-      if (body.source_type === 'playlist' && !body.source_ref) { err.textContent = 'Choose a playlist.'; return; }
+      const source = src.value();
+      if (source.error) { err.textContent = source.error; return; }
+      const body = { name: name.value.trim(), enabled: init.enabled, days, start_time: start.value, end_time: end.value, ...source };
       try {
         if (rule) await A.api.put(`/schedules/${rule.id}`, body); else await A.api.post('/schedules', body);
         dlg.hide();
@@ -163,14 +195,14 @@ export async function scheduleView(main) {
     const dlg = modal({ title: rule ? 'Edit rule' : 'New rule', body: form, footer: h('button.btn.btn-primary', { type: 'button', onclick: () => form.requestSubmit() }, 'Save') });
   }
 
-  // Exceptions: a list of dates with add and edit.
+  // Exceptions: a list of upcoming dates with add and edit.
   async function loadExceptions() {
     clear(excBox).append(spinner());
     let r;
     try { r = await A.api.get('/schedule-exceptions'); } catch (e) { clear(excBox).append(errorBox(e)); return; }
     clear(excBox).append(h('div.d-flex.align-items-center.gap-2.mb-2', h('h2.h5.mb-0.me-auto', 'Date exceptions'),
       h('button.btn.btn-sm.btn-outline-primary', { type: 'button', onclick: () => exceptionEditor(null) }, icon('calendar-plus', 'me-1'), 'Add date')));
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDate(new Date(), tz);
     const upcoming = r.exceptions.filter((e) => e.date >= today);
     if (!upcoming.length) { excBox.append(h('p.text-body-secondary.small', 'No upcoming exceptions. Use them for holidays, closures and one-off events.')); return; }
     const list = h('div.list-group.row-list');
@@ -179,8 +211,9 @@ export async function scheduleView(main) {
       list.append(h('div.list-group-item',
         h('span.mono', e.date),
         h('div.row-main', h('div.row-title', e.note || what), e.note ? h('div.small.text-body-secondary', what) : null),
-        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => exceptionEditor(e) }, icon('pencil')),
-        h('button.btn.btn-sm.btn-outline-danger', { type: 'button', onclick: async () => {
+        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': `Edit ${e.date}`, onclick: () => exceptionEditor(e) }, icon('pencil')),
+        h('button.btn.btn-sm.btn-outline-danger', { type: 'button', 'aria-label': `Delete ${e.date}`, onclick: async () => {
+          if (!await confirmDialog({ title: 'Remove exception', body: `Remove the exception on ${e.date}?`, confirmText: 'Remove', danger: true })) return;
           try { await A.api.del(`/schedule-exceptions/${e.date}`); } catch (err) { fail(err); }
         } }, icon('trash'))));
     }
@@ -188,7 +221,7 @@ export async function scheduleView(main) {
   }
 
   function exceptionEditor(exc) {
-    const init = exc || { date: new Date().toISOString().slice(0, 10), kind: 'silent', note: '', start_time: '09:00', end_time: '17:00', source_type: 'directory', source_ref: '', shuffle: false, volume: null };
+    const init = exc || { date: localDate(new Date(), tz), kind: 'silent', note: '', start_time: '09:00', end_time: '17:00', source_type: 'directory', source_ref: '', shuffle: false, volume: null };
     const date = h('input.form-control', { type: 'date', value: init.date, required: true, disabled: !!exc });
     const note = h('input.form-control', { type: 'text', value: init.note || '', maxlength: 200, placeholder: 'Closed for the holiday' });
     const kind = h('select.form-select',
@@ -208,7 +241,11 @@ export async function scheduleView(main) {
       e.preventDefault();
       const body = { date: date.value, kind: kind.value, note: note.value.trim() };
       if (kind.value === 'hours') Object.assign(body, { start_time: start.value, end_time: end.value });
-      if (kind.value !== 'silent') Object.assign(body, src.value());
+      if (kind.value !== 'silent') {
+        const source = src.value();
+        if (source.error) { err.textContent = source.error; return; }
+        Object.assign(body, source);
+      }
       try {
         if (exc) await A.api.put(`/schedule-exceptions/${exc.date}`, body); else await A.api.post('/schedule-exceptions', body);
         dlg.hide();
@@ -226,14 +263,3 @@ export async function scheduleView(main) {
     onEvent(type) { if (type === 'schedule' || type === 'settings') { loadWeek(); loadRules(); loadExceptions(); } },
   };
 }
-
-function startOfWeek(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  const day = (x.getDay() + 6) % 7;
-  x.setDate(x.getDate() - day);
-  return x;
-}
-
-// Keep fmtTime referenced for the exception list when dates need it.
-void fmtTime;

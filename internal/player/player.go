@@ -315,8 +315,10 @@ func (p *Player) newGeneration() {
 
 // Load replaces the queue with files, in order, sets the options, and
 // starts playing. It returns the number of tracks loaded, at most
-// MaxQueue. A negative volume leaves the volume alone.
-func (p *Player) Load(files []string, shuffle bool, volume int) (int, error) {
+// MaxQueue. A negative volume leaves the volume alone. Scheduled programs
+// repeat until their window ends; a Play Now selection plays once, so it
+// can finish.
+func (p *Player) Load(files []string, shuffle bool, volume int, repeat bool) (int, error) {
 	if len(files) > MaxQueue {
 		files = files[:MaxQueue]
 	}
@@ -330,7 +332,7 @@ func (p *Player) Load(files []string, shuffle bool, volume int) (int, error) {
 		if err := c.Random(shuffle); err != nil {
 			return err
 		}
-		if err := c.Repeat(true); err != nil {
+		if err := c.Repeat(repeat); err != nil {
 			return err
 		}
 		if volume >= 0 {

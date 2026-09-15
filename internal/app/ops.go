@@ -117,13 +117,18 @@ func (a *App) QueueAction(ctx context.Context, q api.QueueAction, source string)
 			return res, err
 		}
 		res.Shuffle = st.Shuffle
-		res.Added, err = a.Player.Load(files, st.Shuffle, -1)
+		// The loop is held until the override exists, so a tick cannot
+		// replace the selection meanwhile.
+		release := a.Scheduler.Suspend()
+		res.Added, err = a.Player.Load(files, st.Shuffle, -1, false)
 		if err != nil {
+			release()
 			return res, err
 		}
 		if err := a.playNowOverride(ctx, source); err != nil {
 			a.log.Warn("cannot record the Play Now override", "error", err)
 		}
+		release()
 	case "play_next":
 		res.Added, err = a.Player.PlayNext(files)
 	case "add":

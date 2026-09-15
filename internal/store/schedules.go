@@ -21,7 +21,7 @@ const (
 
 // Schedule is one weekly rule.
 type Schedule struct {
-	ID         int64  `json:"id"`
+	ID         int64  `json:"id,omitempty" doc:"Set by the server"`
 	Name       string `json:"name" minLength:"1" maxLength:"100"`
 	Enabled    bool   `json:"enabled"`
 	Days       int    `json:"days" minimum:"1" maximum:"127" doc:"Bit mask, Monday is 1, Sunday is 64. A day is the day the window starts."`

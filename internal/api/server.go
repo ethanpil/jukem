@@ -27,10 +27,6 @@ const csp = "default-src 'self'; img-src 'self' data:; media-src 'self'; connect
 
 const apiPrefix = "/api/v1"
 
-// scheduleEvent is published after any change to rules, exceptions,
-// overrides or the scheduler switch.
-const scheduleEvent = events.Schedule
-
 // Options configures the normal server. The function fields are the
 // application operations that touch more than one component.
 type Options struct {

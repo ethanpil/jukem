@@ -32,7 +32,7 @@ func (f *fakePlayer) Status() (player.Status, error) {
 	defer f.mu.Unlock()
 	return player.Status{State: f.state, Volume: f.volume, QueueLength: 3}, nil
 }
-func (f *fakePlayer) Load(files []string, shuffle bool, volume int) (int, error) {
+func (f *fakePlayer) Load(files []string, shuffle bool, volume int, repeat bool) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.loaded = append(f.loaded, files)
@@ -366,6 +366,7 @@ func TestDeadAirReported(t *testing.T) {
 	h.p.mu.Unlock()
 	for i := 0; i < 3; i++ {
 		h.tick()
+		h.advance(time.Minute)
 	}
 	if len(problems) != 1 || problems[0] != "dead_air" {
 		t.Fatalf("problems %v", problems)
@@ -373,6 +374,7 @@ func TestDeadAirReported(t *testing.T) {
 	h.p.mu.Lock()
 	h.p.playErr = nil
 	h.p.mu.Unlock()
+	h.tick()
 	h.tick()
 	if len(problems) != 2 || problems[1] != "dead_air_cleared" {
 		t.Fatalf("problems %v", problems)
@@ -390,11 +392,13 @@ func TestClockSources(t *testing.T) {
 		t.Fatalf("got %+v", s)
 	}
 	c.probe = func() (bool, bool) { return false, true }
+	c.probedAt = time.Time{}
 	if s := c.Status(context.Background(), "UTC"); s.Source != ClockRTC || !s.Trusted {
 		t.Fatalf("got %+v", s)
 	}
 	// A dead RTC battery reports a date before the build.
 	c.buildTime = time.Now().Add(time.Hour)
+	c.probedAt = time.Time{}
 	if s := c.Status(context.Background(), "UTC"); s.Source != ClockNone {
 		t.Fatalf("got %+v", s)
 	}
@@ -414,6 +418,7 @@ func TestClockSources(t *testing.T) {
 	}
 	// NTP synchronisation drops the manual offset.
 	c.probe = func() (bool, bool) { return true, false }
+	c.probedAt = time.Time{}
 	if s := c.Status(context.Background(), "UTC"); s.Source != ClockNTP || c.manual != nil {
 		t.Fatalf("got %+v", s)
 	}

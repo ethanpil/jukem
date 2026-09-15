@@ -25,7 +25,7 @@ func TestMidnightCrossingRule(t *testing.T) {
 	// Friday 22:00 to 02:00 is a Friday rule.
 	r := rule(1, "Late", store.Friday, "22:00", "02:00")
 	from := time.Date(2026, 1, 5, 0, 0, 0, 0, loc) // Monday
-	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 7), false)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 7))
 	if len(ivs) != 1 {
 		t.Fatalf("got %d intervals: %+v", len(ivs), ivs)
 	}
@@ -43,7 +43,7 @@ func TestSpringForwardGapStartsAtTransition(t *testing.T) {
 	// 2026-03-29 01:00 GMT jumps to 02:00 BST: 01:30 does not exist.
 	r := rule(1, "Gap", store.AllDays, "01:30", "03:00")
 	from := time.Date(2026, 3, 29, 0, 0, 0, 0, loc)
-	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1), false)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 {
 		t.Fatalf("got %+v", ivs)
 	}
@@ -62,7 +62,7 @@ func TestFallBackUsesFirstOccurrence(t *testing.T) {
 	// 2026-10-25 02:00 BST falls back to 01:00 GMT: 01:30 happens twice.
 	r := rule(1, "Twice", store.AllDays, "00:30", "01:30")
 	from := time.Date(2026, 10, 25, 0, 0, 0, 0, loc)
-	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1), false)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 {
 		t.Fatalf("got %+v", ivs)
 	}
@@ -72,7 +72,7 @@ func TestFallBackUsesFirstOccurrence(t *testing.T) {
 	}
 	// A window across the transition runs an hour longer in real time.
 	r2 := rule(2, "Across", store.AllDays, "00:00", "03:00")
-	ivs = Expand([]store.Schedule{r2}, nil, loc, from, from.AddDate(0, 0, 1), false)
+	ivs = Expand([]store.Schedule{r2}, nil, loc, from, from.AddDate(0, 0, 1))
 	if ivs[0].End.Sub(ivs[0].Start) != 4*time.Hour {
 		t.Fatalf("window %s", ivs[0].End.Sub(ivs[0].Start))
 	}
@@ -83,15 +83,48 @@ func TestSouthernHemisphereTransitions(t *testing.T) {
 	// 2026-10-04 02:00 jumps to 03:00 in Sydney.
 	r := rule(1, "Gap", store.AllDays, "02:30", "04:00")
 	from := time.Date(2026, 10, 4, 0, 0, 0, 0, loc)
-	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1), false)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 || ivs[0].Start.In(loc).Hour() != 3 || ivs[0].End.Sub(ivs[0].Start) != time.Hour {
 		t.Fatalf("got %+v", ivs)
 	}
 	// 2026-04-05 03:00 falls back to 02:00.
 	r2 := rule(2, "Twice", store.AllDays, "01:00", "02:30")
 	from = time.Date(2026, 4, 5, 0, 0, 0, 0, loc)
-	ivs = Expand([]store.Schedule{r2}, nil, loc, from, from.AddDate(0, 0, 1), false)
+	ivs = Expand([]store.Schedule{r2}, nil, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 || ivs[0].End.Sub(ivs[0].Start) != 90*time.Minute {
+		t.Fatalf("got %+v", ivs)
+	}
+}
+
+func TestMonthEndOvernightWindow(t *testing.T) {
+	loc := mustLoc(t, "Europe/London")
+	r := rule(1, "Late", store.AllDays, "22:00", "02:00")
+	from := time.Date(2026, 1, 31, 12, 0, 0, 0, loc)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1))
+	if len(ivs) != 1 {
+		t.Fatalf("got %+v", ivs)
+	}
+	if ivs[0].End.In(loc).Format("Jan 2 15:04") != "Feb 1 02:00" || ivs[0].End.Sub(ivs[0].Start) != 4*time.Hour {
+		t.Fatalf("month end: %s to %s", ivs[0].Start.In(loc), ivs[0].End.In(loc))
+	}
+}
+
+func TestMidnightTransition(t *testing.T) {
+	loc := mustLoc(t, "Africa/Cairo")
+	// Cairo springs forward at 00:00 on 2026-04-24: 00:30 does not exist.
+	r := rule(1, "Early", store.AllDays, "00:30", "06:00")
+	from := time.Date(2026, 4, 23, 12, 0, 0, 0, loc)
+	ivs := Expand([]store.Schedule{r}, nil, loc, from, from.AddDate(0, 0, 1))
+	if len(ivs) != 1 {
+		t.Fatalf("got %+v", ivs)
+	}
+	if ivs[0].Start.In(loc).Format("Jan 2 15:04") != "Apr 24 01:00" || ivs[0].End.In(loc).Format("15:04") != "06:00" {
+		t.Fatalf("got %s to %s", ivs[0].Start.In(loc), ivs[0].End.In(loc))
+	}
+	// A window into the transition day ends at the next valid instant.
+	r2 := rule(2, "Late", store.AllDays, "22:00", "00:30")
+	ivs = Expand([]store.Schedule{r2}, nil, loc, from, from.AddDate(0, 0, 1))
+	if len(ivs) != 1 || ivs[0].End.In(loc).Format("Jan 2 15:04") != "Apr 24 01:00" {
 		t.Fatalf("got %+v", ivs)
 	}
 }
@@ -124,7 +157,7 @@ func TestExceptionsClipAndReplace(t *testing.T) {
 	// Saturday 2026-01-10 is closed.
 	silent := store.Exception{Date: "2026-01-10", Kind: "silent", Note: "Closed"}
 	from := time.Date(2026, 1, 9, 0, 0, 0, 0, loc)
-	ivs := Expand([]store.Schedule{fri, daily}, []store.Exception{silent}, loc, from, from.AddDate(0, 0, 2), false)
+	ivs := Expand([]store.Schedule{fri, daily}, []store.Exception{silent}, loc, from, from.AddDate(0, 0, 2))
 	var late *Interval
 	for i := range ivs {
 		if ivs[i].RuleID == 1 {
@@ -143,7 +176,7 @@ func TestExceptionsClipAndReplace(t *testing.T) {
 	st, en := "00:00", "06:00"
 	hours := store.Exception{Date: "2026-01-11", Kind: "hours", StartTime: &st, EndTime: &en, SourceType: &src, SourceRef: &ref}
 	from = time.Date(2026, 1, 11, 0, 0, 0, 0, loc)
-	ivs = Expand([]store.Schedule{daily}, []store.Exception{hours}, loc, from, from.AddDate(0, 0, 1), false)
+	ivs = Expand([]store.Schedule{daily}, []store.Exception{hours}, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 || ivs[0].Source.Ref != "7" || ivs[0].Start.In(loc).Hour() != 0 || ivs[0].Exception != "2026-01-11" {
 		t.Fatalf("got %+v", ivs)
 	}
@@ -151,7 +184,7 @@ func TestExceptionsClipAndReplace(t *testing.T) {
 	// A source exception keeps the normal hours with another source.
 	source := store.Exception{Date: "2026-01-12", Kind: "source", SourceType: &src, SourceRef: &ref}
 	from = time.Date(2026, 1, 12, 0, 0, 0, 0, loc)
-	ivs = Expand([]store.Schedule{daily}, []store.Exception{source}, loc, from, from.AddDate(0, 0, 1), false)
+	ivs = Expand([]store.Schedule{daily}, []store.Exception{source}, loc, from, from.AddDate(0, 0, 1))
 	if len(ivs) != 1 || ivs[0].Source.Ref != "7" || ivs[0].Start.In(loc).Hour() != 9 || ivs[0].RuleID != 2 {
 		t.Fatalf("got %+v", ivs)
 	}
@@ -161,7 +194,7 @@ func TestCurrentAndNextBoundary(t *testing.T) {
 	loc := mustLoc(t, "Europe/London")
 	daily := rule(1, "Daily", store.AllDays, "09:00", "17:00")
 	from := time.Date(2026, 1, 5, 0, 0, 0, 0, loc)
-	ivs := Expand([]store.Schedule{daily}, nil, loc, from, from.AddDate(0, 0, 2), false)
+	ivs := Expand([]store.Schedule{daily}, nil, loc, from, from.AddDate(0, 0, 2))
 	at := time.Date(2026, 1, 5, 12, 0, 0, 0, loc)
 	cur, ok := Current(ivs, at)
 	if !ok || cur.Name != "Daily" {
@@ -176,7 +209,7 @@ func TestCurrentAndNextBoundary(t *testing.T) {
 	}
 	// Disabled rules do not expand.
 	daily.Enabled = false
-	if ivs := Expand([]store.Schedule{daily}, nil, loc, from, from.AddDate(0, 0, 2), false); len(ivs) != 0 {
+	if ivs := Expand([]store.Schedule{daily}, nil, loc, from, from.AddDate(0, 0, 2)); len(ivs) != 0 {
 		t.Fatal("disabled rule expanded")
 	}
 }

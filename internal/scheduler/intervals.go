@@ -6,8 +6,6 @@ package scheduler
 import (
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"jukem/internal/store"
@@ -44,84 +42,64 @@ func (iv Interval) Contains(t time.Time) bool {
 
 // parseHM reads HH:MM.
 func parseHM(s string) (int, int, error) {
-	parts := strings.Split(s, ":")
-	if len(parts) != 2 {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
 		return 0, 0, fmt.Errorf("time %q is not HH:MM", s)
 	}
-	h, err1 := strconv.Atoi(parts[0])
-	m, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, 0, fmt.Errorf("time %q is not HH:MM", s)
-	}
-	return h, m, nil
+	return t.Hour(), t.Minute(), nil
 }
 
 // localTime returns the instant for a wall-clock time on a date, with the
-// daylight saving policy: a time that does not exist becomes the next
-// valid instant, and a time that happens twice is its first occurrence.
-func localTime(y int, m time.Month, d, hh, mm int, loc *time.Location) time.Time {
-	dayStart := time.Date(y, m, d, 0, 0, 0, 0, loc)
-	dayEnd := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
-	_, off1 := dayStart.Zone()
-	_, off2 := dayEnd.Zone()
+// daylight saving policy. A time that does not exist becomes the next
+// valid instant. A time that happens twice is its first occurrence. The
+// search finds the earliest instant whose local clock has reached the
+// wanted time on that date, which gives both rules at once, because local
+// time only ever jumps forward.
+func localTime(day time.Time, hh, mm int, loc *time.Location) time.Time {
+	y, m, d := day.In(loc).Date()
 	want := hh*60 + mm
-	utc := time.Date(y, m, d, hh, mm, 0, 0, time.UTC)
-	var matches []time.Time
-	for _, off := range []int{off1, off2} {
-		cand := utc.Add(-time.Duration(off) * time.Second)
-		local := cand.In(loc)
-		if local.Hour()*60+local.Minute() == want && local.Day() == d {
-			matches = append(matches, cand)
+	reached := func(t time.Time) bool {
+		lt := t.In(loc)
+		ly, lm, ld := lt.Date()
+		switch {
+		case ly != y:
+			return ly > y
+		case lm != m:
+			return lm > m
+		case ld != d:
+			return ld > d
 		}
+		return lt.Hour()*60+lt.Minute() >= want
 	}
-	switch len(matches) {
-	case 1:
-		return matches[0]
-	case 2:
-		if matches[1].Before(matches[0]) {
-			return matches[1]
-		}
-		return matches[0]
-	}
-	// The time falls in a gap. The next valid instant is the transition.
-	return transitionBetween(dayStart, dayEnd, off1)
-}
-
-// transitionBetween finds the instant where the zone offset stops being
-// off, by binary search between lo and hi.
-func transitionBetween(lo, hi time.Time, off int) time.Time {
+	// The instant lies inside a window of a day plus the largest offset
+	// change on either side.
+	lo := time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Add(-26 * time.Hour)
+	hi := lo.Add(52 * time.Hour)
 	for hi.Sub(lo) > time.Second {
 		mid := lo.Add(hi.Sub(lo) / 2)
-		if _, o := mid.Zone(); o == off {
-			lo = mid
-		} else {
+		if reached(mid) {
 			hi = mid
+		} else {
+			lo = mid
 		}
 	}
 	return hi.Truncate(time.Second)
 }
 
-// weekdayBit maps a Go weekday onto the store's Monday-first bit mask.
-func weekdayBit(d time.Weekday) int {
-	if d == time.Sunday {
-		return store.Sunday
-	}
-	return 1 << (int(d) - 1)
+// dayAt returns midnight of the date, normalised, so d+1 on the last day
+// of a month rolls over.
+func dayAt(y int, m time.Month, d int, loc *time.Location) time.Time {
+	return time.Date(y, m, d, 0, 0, 0, 0, loc)
 }
 
-// ruleWindow returns the interval of a rule on a date, or false when the
-// rule does not run that day.
-func ruleWindow(r store.Schedule, y int, m time.Month, d int, loc *time.Location) (time.Time, time.Time, bool) {
-	date := time.Date(y, m, d, 0, 0, 0, 0, loc)
-	if r.Days&weekdayBit(date.Weekday()) == 0 {
-		return time.Time{}, time.Time{}, false
-	}
-	return window(r.StartTime, r.EndTime, y, m, d, loc)
+// weekdayBit maps a Go weekday onto the store's Monday-first bit mask.
+func weekdayBit(d time.Weekday) int {
+	return 1 << ((int(d) + 6) % 7)
 }
 
 // window turns wall-clock start and end on a date into instants. An end
 // that is not after the start runs past midnight.
-func window(startHM, endHM string, y int, m time.Month, d int, loc *time.Location) (time.Time, time.Time, bool) {
+func window(startHM, endHM string, day time.Time, loc *time.Location) (time.Time, time.Time, bool) {
 	sh, sm, err := parseHM(startHM)
 	if err != nil {
 		return time.Time{}, time.Time{}, false
@@ -130,12 +108,13 @@ func window(startHM, endHM string, y int, m time.Month, d int, loc *time.Locatio
 	if err != nil {
 		return time.Time{}, time.Time{}, false
 	}
-	start := localTime(y, m, d, sh, sm, loc)
+	start := localTime(day, sh, sm, loc)
 	var end time.Time
 	if eh*60+em > sh*60+sm {
-		end = localTime(y, m, d, eh, em, loc)
+		end = localTime(day, eh, em, loc)
 	} else {
-		end = localTime(y, m, d+1, eh, em, loc)
+		y, m, d := day.In(loc).Date()
+		end = localTime(dayAt(y, m, d+1, loc), eh, em, loc)
 	}
 	if !end.After(start) {
 		return time.Time{}, time.Time{}, false
@@ -147,47 +126,47 @@ func window(startHM, endHM string, y int, m time.Month, d int, loc *time.Locatio
 // that touches [from, to). Exceptions govern their whole calendar day:
 // rule intervals that start on the day are replaced, and intervals from
 // the day before are clipped at midnight.
-func Expand(rules []store.Schedule, exceptions []store.Exception, loc *time.Location, from, to time.Time, defaultShuffle bool) []Interval {
+func Expand(rules []store.Schedule, exceptions []store.Exception, loc *time.Location, from, to time.Time) []Interval {
 	excByDate := map[string]store.Exception{}
 	for _, e := range exceptions {
 		excByDate[e.Date] = e
 	}
 	var out []Interval
-	first := from.In(loc).AddDate(0, 0, -1)
-	last := to.In(loc).AddDate(0, 0, 1)
-	for day := time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, loc); !day.After(last); day = day.AddDate(0, 0, 1) {
-		y, m, d := day.Date()
+	fy, fm, fd := from.In(loc).Date()
+	ly, lm, ld := to.In(loc).Date()
+	last := dayAt(ly, lm, ld+1, loc)
+	for day := dayAt(fy, fm, fd-1, loc); !day.After(last); day = dayAt(day.Year(), day.Month(), day.Day()+1, loc) {
 		date := day.Format("2006-01-02")
-		exc, hasExc := excByDate[date]
+		bit := weekdayBit(day.Weekday())
 		var dayIntervals []Interval
 		for _, r := range rules {
-			if !r.Enabled {
+			if !r.Enabled || r.Days&bit == 0 {
 				continue
 			}
-			start, end, ok := ruleWindow(r, y, m, d, loc)
+			start, end, ok := window(r.StartTime, r.EndTime, day, loc)
 			if !ok {
 				continue
 			}
-			iv := Interval{
+			dayIntervals = append(dayIntervals, Interval{
 				Start: start, End: end, RuleID: r.ID, Name: r.Name,
 				Source:  Source{Type: r.SourceType, Ref: r.SourceRef},
 				Options: Options{Shuffle: r.Shuffle, Volume: r.Volume},
 				Key:     fmt.Sprintf("rule:%d:%d", r.ID, start.Unix()),
-			}
-			dayIntervals = append(dayIntervals, iv)
+			})
 		}
-		if hasExc {
-			dayIntervals = applyException(exc, dayIntervals, y, m, d, loc)
+		if exc, ok := excByDate[date]; ok {
+			dayIntervals = applyException(exc, dayIntervals, day, loc)
+		}
+		// The next day's exception clips what reaches into it.
+		next := dayAt(day.Year(), day.Month(), day.Day()+1, loc)
+		if _, ok := excByDate[next.Format("2006-01-02")]; ok {
+			for i := range dayIntervals {
+				if dayIntervals[i].End.After(next) {
+					dayIntervals[i].End = next
+				}
+			}
 		}
 		out = append(out, dayIntervals...)
-	}
-	// An exception day clips what reaches into it from the day before.
-	for i := range out {
-		next := out[i].Start.In(loc).AddDate(0, 0, 1)
-		nextDate := time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, loc)
-		if _, ok := excByDate[nextDate.Format("2006-01-02")]; ok && out[i].End.After(nextDate) && out[i].Exception != nextDate.Format("2006-01-02") {
-			out[i].End = nextDate
-		}
 	}
 	// Keep only what touches the window, in start order.
 	kept := out[:0]
@@ -201,7 +180,7 @@ func Expand(rules []store.Schedule, exceptions []store.Exception, loc *time.Loca
 }
 
 // applyException replaces or changes the rule intervals of one day.
-func applyException(exc store.Exception, rules []Interval, y int, m time.Month, d int, loc *time.Location) []Interval {
+func applyException(exc store.Exception, rules []Interval, day time.Time, loc *time.Location) []Interval {
 	name := exc.Note
 	if name == "" {
 		name = "Exception " + exc.Date
@@ -213,17 +192,16 @@ func applyException(exc store.Exception, rules []Interval, y int, m time.Month, 
 		if exc.StartTime == nil || exc.EndTime == nil || exc.SourceType == nil || exc.SourceRef == nil {
 			return nil
 		}
-		start, end, ok := window(*exc.StartTime, *exc.EndTime, y, m, d, loc)
+		start, end, ok := window(*exc.StartTime, *exc.EndTime, day, loc)
 		if !ok {
 			return nil
 		}
-		iv := Interval{
+		return []Interval{{
 			Start: start, End: end, Name: name, Exception: exc.Date,
 			Source:  Source{Type: *exc.SourceType, Ref: *exc.SourceRef},
 			Options: Options{Shuffle: exc.Shuffle != nil && *exc.Shuffle, Volume: exc.Volume},
 			Key:     fmt.Sprintf("exc:%s:%d", exc.Date, start.Unix()),
-		}
-		return []Interval{iv}
+		}}
 	case "source":
 		out := make([]Interval, 0, len(rules))
 		for _, iv := range rules {
@@ -258,8 +236,9 @@ type Conflict struct {
 // Conflicts expands the rules over one full week and reports every pair
 // that overlaps. Exceptions are not rules and do not count.
 func Conflicts(rules []store.Schedule, loc *time.Location, now time.Time) []Conflict {
-	from := time.Date(now.In(loc).Year(), now.In(loc).Month(), now.In(loc).Day(), 0, 0, 0, 0, loc)
-	ivs := Expand(rules, nil, loc, from, from.AddDate(0, 0, 8), false)
+	y, m, d := now.In(loc).Date()
+	from := dayAt(y, m, d, loc)
+	ivs := Expand(rules, nil, loc, from, dayAt(y, m, d+8, loc))
 	seen := map[[2]int64]bool{}
 	var out []Conflict
 	for i := 0; i < len(ivs); i++ {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"jukem/internal/events"
 	"jukem/internal/library"
 	"jukem/internal/scheduler"
 	"jukem/internal/store"
@@ -44,13 +45,11 @@ func (s *Server) loc() *time.Location {
 	return loc
 }
 
-// ConflictBody is the 409 answer for an overlapping rule.
-type ConflictBody struct {
-	Conflicts []scheduler.Conflict `json:"conflicts"`
-}
-
-// checkConflicts reports overlaps of r with the other rules.
+// checkConflicts reports overlaps of r with the other enabled rules.
 func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
+	if !r.Enabled {
+		return nil
+	}
 	rules, err := s.store.ListSchedules(ctx)
 	if err != nil {
 		return err
@@ -60,9 +59,6 @@ func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
 		if o.ID != r.ID {
 			all = append(all, o)
 		}
-	}
-	if !r.Enabled {
-		return nil
 	}
 	var mine []scheduler.Conflict
 	for _, c := range scheduler.Conflicts(all, s.loc(), s.opts.Scheduler.Now()) {
@@ -85,6 +81,34 @@ func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
 		names += fmt.Sprintf("%s (%s)", other, c.At)
 	}
 	return huma.Error409Conflict("the rule overlaps with " + names)
+}
+
+// saveRule validates a rule, checks conflicts, and creates or replaces it.
+func (s *Server) saveRule(ctx context.Context, r store.Schedule) (*struct{ Body store.Schedule }, error) {
+	if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
+		return nil, err
+	}
+	if err := s.checkConflicts(ctx, r); err != nil {
+		return nil, err
+	}
+	if r.ID == 0 {
+		id, err := s.store.CreateSchedule(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		r.ID = id
+	} else {
+		ok, err := s.store.UpdateSchedule(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, huma.Error404NotFound("no such rule")
+		}
+	}
+	s.opts.Scheduler.Invalidate()
+	s.opts.Events.Publish(events.Schedule, "")
+	return &struct{ Body store.Schedule }{Body: r}, nil
 }
 
 func (s *Server) registerSchedule(api huma.API) {
@@ -123,20 +147,7 @@ func (s *Server) registerSchedule(api huma.API) {
 	}, func(ctx context.Context, in *ruleInput) (*struct{ Body store.Schedule }, error) {
 		r := in.Body
 		r.ID = 0
-		if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
-			return nil, err
-		}
-		if err := s.checkConflicts(ctx, r); err != nil {
-			return nil, err
-		}
-		id, err := s.store.CreateSchedule(ctx, r)
-		if err != nil {
-			return nil, err
-		}
-		r.ID = id
-		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
-		return &struct{ Body store.Schedule }{Body: r}, nil
+		return s.saveRule(ctx, r)
 	})
 
 	huma.Register(api, huma.Operation{
@@ -163,22 +174,7 @@ func (s *Server) registerSchedule(api huma.API) {
 	}, func(ctx context.Context, in *updateRuleInput) (*struct{ Body store.Schedule }, error) {
 		r := in.Body
 		r.ID = in.ID
-		if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
-			return nil, err
-		}
-		if err := s.checkConflicts(ctx, r); err != nil {
-			return nil, err
-		}
-		ok, err := s.store.UpdateSchedule(ctx, r)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, huma.Error404NotFound("no such rule")
-		}
-		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
-		return &struct{ Body store.Schedule }{Body: r}, nil
+		return s.saveRule(ctx, r)
 	})
 
 	huma.Register(api, huma.Operation{
@@ -193,18 +189,24 @@ func (s *Server) registerSchedule(api huma.API) {
 			return nil, huma.Error404NotFound("no such rule")
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
+		s.opts.Events.Publish(events.Schedule, "")
 		return nil, nil
 	})
 
 	type intervalsInput struct {
 		From time.Time `query:"from" doc:"Start of the range, RFC 3339"`
 		To   time.Time `query:"to" doc:"End of the range, RFC 3339"`
+		Week string    `query:"week" doc:"A date YYYY-MM-DD in the configured zone; the range is that day and the six after it, on local day boundaries"`
 	}
 	type intervalsOutput struct {
 		Body struct {
 			Intervals []scheduler.Interval `json:"intervals"`
 			TimeZone  string               `json:"time_zone"`
+			From      time.Time            `json:"from"`
+			To        time.Time            `json:"to"`
+			// Days lists the local midnight of each day in the range, so a
+			// client draws day columns without its own zone arithmetic.
+			Days []time.Time `json:"days"`
 		}
 	}
 	huma.Register(api, huma.Operation{
@@ -212,6 +214,15 @@ func (s *Server) registerSchedule(api huma.API) {
 		Summary: "Expanded intervals for a date range, what the week view draws",
 	}, func(ctx context.Context, in *intervalsInput) (*intervalsOutput, error) {
 		from, to := in.From, in.To
+		loc := s.loc()
+		if in.Week != "" {
+			day, err := time.ParseInLocation("2006-01-02", in.Week, loc)
+			if err != nil {
+				return nil, huma.Error422UnprocessableEntity("week must be YYYY-MM-DD")
+			}
+			from = day
+			to = day.AddDate(0, 0, 7)
+		}
 		if from.IsZero() {
 			from = s.opts.Scheduler.Now()
 		}
@@ -231,6 +242,16 @@ func (s *Server) registerSchedule(api huma.API) {
 			out.Body.Intervals = []scheduler.Interval{}
 		}
 		out.Body.TimeZone = s.opts.Settings().TimeZone
+		out.Body.From, out.Body.To = from, to
+		out.Body.Days = []time.Time{}
+		y, m, d := from.In(loc).Date()
+		for i := 0; ; i++ {
+			day := time.Date(y, m, d+i, 0, 0, 0, 0, loc)
+			if !day.Before(to) {
+				break
+			}
+			out.Body.Days = append(out.Body.Days, day)
+		}
 		return out, nil
 	})
 
@@ -286,7 +307,7 @@ func (s *Server) registerSchedule(api huma.API) {
 			return err
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
+		s.opts.Events.Publish(events.Schedule, "")
 		return nil
 	}
 	huma.Register(api, huma.Operation{
@@ -327,7 +348,7 @@ func (s *Server) registerSchedule(api huma.API) {
 			return nil, huma.Error404NotFound("no exception on that date")
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
+		s.opts.Events.Publish(events.Schedule, "")
 		return nil, nil
 	})
 
@@ -473,7 +494,7 @@ func (s *Server) registerSchedule(api huma.API) {
 			}
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(scheduleEvent, "")
+		s.opts.Events.Publish(events.Schedule, "")
 		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone)}, nil
 	})
 }

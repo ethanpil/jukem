@@ -2,10 +2,10 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"jukem/internal/events"
@@ -16,7 +16,7 @@ import (
 // Player is what the reconciler needs from the player.
 type Player interface {
 	Status() (player.Status, error)
-	Load(files []string, shuffle bool, volume int) (int, error)
+	Load(files []string, shuffle bool, volume int, repeat bool) (int, error)
 	Play() error
 	Stop() error
 	Pause() error
@@ -64,19 +64,22 @@ const tickInterval = 5 * time.Second
 
 // Scheduler converges MPD on the desired state.
 type Scheduler struct {
-	d    Deps
-	kick chan struct{}
+	d         Deps
+	kick      chan struct{}
+	suspended atomic.Int32
 
-	mu       sync.Mutex
-	ivs      []Interval
-	ivsAt    time.Time
-	ivsStale bool
-	loaded   Program
-	fade     *fadeState
-	failures int
+	mu     sync.Mutex
+	ivs    []Interval
+	ivsAt  time.Time // zero when the cache is stale
+	loaded Program
+	fade   *fadeState
+	// failures counts play attempts that did not result in playback, and
+	// retryAfter spaces the attempts out.
+	failures   int
+	retryAfter time.Time
 	// restoreVolume is the level before a fade-out, for the next start.
 	restoreVolume int
-	// lastKey avoids a log line and an event on every tick.
+	// lastOwner avoids an event on every tick.
 	lastOwner player.Owner
 }
 
@@ -97,7 +100,7 @@ func New(ctx context.Context, d Deps) *Scheduler {
 	if d.OnProgram == nil {
 		d.OnProgram = func(string) {}
 	}
-	s := &Scheduler{d: d, kick: make(chan struct{}, 1), ivsStale: true}
+	s := &Scheduler{d: d, kick: make(chan struct{}, 1)}
 	var p Program
 	if ok, err := d.Store.GetState(ctx, programKey, &p); err == nil && ok {
 		s.loaded = p
@@ -116,11 +119,22 @@ func (s *Scheduler) Kick() {
 	}
 }
 
+// Suspend holds the loop while a person's action runs, so a tick cannot
+// undo it before its override exists. The returned function releases the
+// hold and reconciles.
+func (s *Scheduler) Suspend() func() {
+	s.suspended.Add(1)
+	return func() {
+		s.suspended.Add(-1)
+		s.Kick()
+	}
+}
+
 // Invalidate drops the interval cache after a rule, exception or zone
 // change, and reconciles.
 func (s *Scheduler) Invalidate() {
 	s.mu.Lock()
-	s.ivsStale = true
+	s.ivsAt = time.Time{}
 	s.mu.Unlock()
 	s.Kick()
 }
@@ -132,7 +146,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.cancelFade()
+			s.cancelFade(nil)
 			return
 		case <-tick.C:
 		case <-s.kick:
@@ -141,8 +155,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// Intervals returns the expanded intervals for a range, from the cache
-// when it covers the range.
+// Intervals returns the expanded intervals for a range.
 func (s *Scheduler) Intervals(ctx context.Context, from, to time.Time) ([]Interval, error) {
 	set := s.d.Settings()
 	loc, err := time.LoadLocation(set.TimeZone)
@@ -157,14 +170,14 @@ func (s *Scheduler) Intervals(ctx context.Context, from, to time.Time) ([]Interv
 	if err != nil {
 		return nil, err
 	}
-	return Expand(rules, excs, loc, from, to, set.DefaultShuffle), nil
+	return Expand(rules, excs, loc, from, to), nil
 }
 
 // current returns the cached rolling window, refreshed when stale or once
 // an hour, so that a new day rolls in.
 func (s *Scheduler) current(ctx context.Context, now time.Time) []Interval {
 	s.mu.Lock()
-	if !s.ivsStale && now.Sub(s.ivsAt) < time.Hour {
+	if !s.ivsAt.IsZero() && now.Sub(s.ivsAt) < time.Hour {
 		ivs := s.ivs
 		s.mu.Unlock()
 		return ivs
@@ -176,21 +189,34 @@ func (s *Scheduler) current(ctx context.Context, now time.Time) []Interval {
 		return nil
 	}
 	s.mu.Lock()
-	s.ivs, s.ivsAt, s.ivsStale = ivs, now, false
+	s.ivs, s.ivsAt = ivs, now
 	s.mu.Unlock()
 	return ivs
 }
 
-// Owner reports who decides playback now, with the reason in plain words.
-func (s *Scheduler) Owner(ctx context.Context) player.Owner {
-	now := s.d.Clock.Now()
-	set := s.d.Settings()
-	loc, _ := time.LoadLocation(set.TimeZone)
-	if loc == nil {
-		loc = time.UTC
+// view is everything one decision needs, computed once.
+type view struct {
+	now      time.Time
+	loc      *time.Location
+	set      store.Settings
+	ivs      []Interval
+	owner    player.Owner
+	override store.Override
+	hasOver  bool
+	overEnd  time.Time
+	hasEnd   bool
+}
+
+// snapshot computes the owner and the facts behind it.
+func (s *Scheduler) snapshot(ctx context.Context) view {
+	v := view{now: s.d.Clock.Now(), set: s.d.Settings()}
+	v.loc, _ = time.LoadLocation(v.set.TimeZone)
+	if v.loc == nil {
+		v.loc = time.UTC
 	}
 	if !s.d.MPDRunning() {
-		return player.Owner{State: player.OwnerUnavailable, Reason: "MPD is not running"}
+		v.owner = player.Owner{State: player.OwnerUnavailable, Reason: "MPD is not running"}
+		return v
 	}
 	warning := ""
 	if !s.d.DevicePresent() {
@@ -198,34 +224,48 @@ func (s *Scheduler) Owner(ctx context.Context) player.Owner {
 	} else if !s.d.Clock.Trusted(ctx) {
 		warning = "Clock not set"
 	}
-	if !set.SchedulerEnabled {
-		return player.Owner{State: player.OwnerManual, Reason: "Scheduler off", Warning: warning}
+	if !v.set.SchedulerEnabled {
+		v.owner = player.Owner{State: player.OwnerManual, Reason: "Scheduler off", Warning: warning}
+		return v
 	}
 	if warning != "" {
-		return player.Owner{State: player.OwnerUnavailable, Reason: warning}
+		v.owner = player.Owner{State: player.OwnerUnavailable, Reason: warning}
+		return v
 	}
-	ivs := s.current(ctx, now)
-	if o, ok := s.activeOverride(ctx, now, ivs); ok {
-		return s.overrideOwner(o, now, ivs, loc)
-	}
-	if iv, ok := Current(ivs, now); ok {
-		return player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, now, loc)), Program: iv.Name, Until: &iv.End}
-	}
-	for _, iv := range ivs {
-		if iv.Start.After(now) {
-			return player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled until " + fmtWhen(iv.Start, now, loc), Until: &iv.Start}
+	v.ivs = s.current(ctx, v.now)
+	if o, ok, err := s.d.Store.GetOverride(ctx); err == nil && ok {
+		end, hasEnd := overrideEnd(o, v.ivs)
+		if !hasEnd || v.now.Before(end) {
+			v.override, v.hasOver, v.overEnd, v.hasEnd = o, true, end, hasEnd
+			v.owner = overrideOwner(o, v.now, end, hasEnd, v.loc)
+			return v
 		}
 	}
-	return player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled this week"}
+	if iv, ok := Current(v.ivs, v.now); ok {
+		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc)), Program: iv.Name, Until: &iv.End}
+		return v
+	}
+	for _, iv := range v.ivs {
+		if iv.Start.After(v.now) {
+			v.owner = player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled until " + fmtWhen(iv.Start, v.now, v.loc), Until: &iv.Start}
+			return v
+		}
+	}
+	v.owner = player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled in the next week"}
+	return v
 }
 
-func (s *Scheduler) overrideOwner(o store.Override, now time.Time, ivs []Interval, loc *time.Location) player.Owner {
+// Owner reports who decides playback now, with the reason in plain words.
+func (s *Scheduler) Owner(ctx context.Context) player.Owner {
+	return s.snapshot(ctx).owner
+}
+
+func overrideOwner(o store.Override, now, end time.Time, hasEnd bool, loc *time.Location) player.Owner {
 	what := map[string]string{"play": "Playing", "pause": "Paused", "stop": "Stopped"}[o.Intent]
 	if o.Mode == "play_now" {
 		what = "Playing a selection"
 	}
 	reason := what + " from " + o.Source
-	end, hasEnd := overrideEnd(o, ivs)
 	if hasEnd {
 		reason += ", schedule resumes " + fmtWhen(end, now, loc)
 	} else {
@@ -240,8 +280,8 @@ func (s *Scheduler) overrideOwner(o store.Override, now time.Time, ivs []Interva
 
 // fmtWhen writes a time as HH:MM today, or with the weekday further out.
 func fmtWhen(t, now time.Time, loc *time.Location) string {
-	lt := t.In(loc)
-	if lt.YearDay() == now.In(loc).YearDay() && lt.Year() == now.In(loc).Year() {
+	lt, nl := t.In(loc), now.In(loc)
+	if lt.Format("2006-01-02") == nl.Format("2006-01-02") {
 		return lt.Format("15:04")
 	}
 	return lt.Format("Mon 15:04")
@@ -258,33 +298,22 @@ func overrideEnd(o store.Override, ivs []Interval) (time.Time, bool) {
 	return next, ok
 }
 
-// activeOverride returns the override when it has not ended.
-func (s *Scheduler) activeOverride(ctx context.Context, now time.Time, ivs []Interval) (store.Override, bool) {
-	o, ok, err := s.d.Store.GetOverride(ctx)
-	if err != nil || !ok {
-		return o, false
-	}
-	if end, has := overrideEnd(o, ivs); has && !now.Before(end) {
-		return o, false
-	}
-	return o, true
-}
-
 // CreateOverride stores an override and reconciles.
 func (s *Scheduler) CreateOverride(ctx context.Context, o store.Override) error {
 	o.CreatedAt = s.d.Clock.Now()
 	o.Generation = s.d.Player.Generation()
-	if err := s.d.Store.SetOverride(ctx, o); err != nil {
-		return err
-	}
-	s.d.Events.Publish(events.Schedule, "")
-	s.Kick()
-	return nil
+	return s.storeOverride(ctx, o)
 }
 
-// CreateOverrideKeepingEnd stores a changed override without a new
-// creation time, so a timed override keeps its end.
-func (s *Scheduler) CreateOverrideKeepingEnd(ctx context.Context, o store.Override) error {
+// UpdateOverrideIntent changes what an active override asks for and keeps
+// its end.
+func (s *Scheduler) UpdateOverrideIntent(ctx context.Context, o store.Override, intent string) error {
+	o.Intent = intent
+	o.Generation = s.d.Player.Generation()
+	return s.storeOverride(ctx, o)
+}
+
+func (s *Scheduler) storeOverride(ctx context.Context, o store.Override) error {
 	if err := s.d.Store.SetOverride(ctx, o); err != nil {
 		return err
 	}
@@ -303,18 +332,18 @@ func (s *Scheduler) ClearOverride(ctx context.Context) error {
 	return nil
 }
 
-// Override returns the active override for the API.
+// Override returns the active override for the API, with its end when
+// the schedule gives one.
 func (s *Scheduler) Override(ctx context.Context) (store.Override, *time.Time, bool) {
-	now := s.d.Clock.Now()
-	ivs := s.current(ctx, now)
-	o, ok := s.activeOverride(ctx, now, ivs)
-	if !ok {
-		return o, nil, false
+	v := s.snapshot(ctx)
+	if !v.hasOver {
+		return store.Override{}, nil, false
 	}
-	if end, has := overrideEnd(o, ivs); has {
-		return o, &end, true
+	if v.hasEnd {
+		end := v.overEnd
+		return v.override, &end, true
 	}
-	return o, nil, true
+	return v.override, nil, true
 }
 
 // Loaded returns the loaded program.
@@ -326,28 +355,27 @@ func (s *Scheduler) Loaded() Program {
 
 // Tick runs one reconciliation.
 func (s *Scheduler) Tick(ctx context.Context) {
-	owner := s.Owner(ctx)
+	if s.suspended.Load() > 0 {
+		return
+	}
+	v := s.snapshot(ctx)
 	s.mu.Lock()
-	changed := owner.State != s.lastOwner.State || owner.Reason != s.lastOwner.Reason
-	s.lastOwner = owner
+	changed := v.owner.State != s.lastOwner.State || v.owner.Reason != s.lastOwner.Reason
+	s.lastOwner = v.owner
 	fade := s.fade
 	s.mu.Unlock()
 	if changed {
 		s.d.Events.Publish(events.Player, "")
 	}
-	if owner.State == player.OwnerManual || owner.State == player.OwnerUnavailable {
-		if fade != nil {
-			s.cancelFade()
-		}
+	if v.owner.State == player.OwnerManual || v.owner.State == player.OwnerUnavailable {
+		s.cancelFade(fade)
 		return
 	}
 	st, err := s.d.Player.Status()
 	if err != nil {
 		return
 	}
-	now := s.d.Clock.Now()
-	ivs := s.current(ctx, now)
-	want, hasWant := Current(ivs, now)
+	want, hasWant := Current(v.ivs, v.now)
 
 	// A fade is a state the loop knows about. While one runs, the only
 	// question is whether its reason still holds.
@@ -355,18 +383,18 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		hold := false
 		switch fade.kind {
 		case "out":
-			hold = owner.State == player.OwnerScheduled && (!hasWant || want.Key != fade.key)
+			hold = v.owner.State == player.OwnerScheduled && (!hasWant || want.Key != fade.key)
 		case "in":
-			hold = owner.State == player.OwnerScheduled && hasWant && want.Key == fade.key
+			hold = v.owner.State == player.OwnerScheduled && hasWant && want.Key == fade.key
 		}
 		if !hold {
-			s.cancelFade()
+			s.cancelFade(fade)
 		}
 		return
 	}
 
-	if owner.State == player.OwnerOverridden {
-		s.enforceOverride(ctx, st)
+	if v.owner.State == player.OwnerOverridden {
+		s.enforceOverride(ctx, v.override, st)
 		return
 	}
 
@@ -386,7 +414,8 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			return
 		}
 		if st.State == "play" {
-			s.startFade(ctx, "out", want.Key, func(fctx context.Context) {
+			// The fade belongs to the program that ends.
+			s.startFade(ctx, "out", loaded.Key, func(fctx context.Context) {
 				s.fadeOutStop(fctx)
 				if fctx.Err() == nil {
 					s.loadAndPlay(fctx, want)
@@ -396,22 +425,32 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		}
 		s.loadAndPlay(ctx, want)
 	case st.State != "play":
-		if err := s.d.Player.Play(); err != nil {
-			s.notePlayFailure(err.Error())
-			return
-		}
-		s.resetFailures()
+		s.tryPlay(v.now, st)
 	default:
 		s.resetFailures()
 	}
 }
 
-// enforceOverride keeps MPD in the state the person asked for.
-func (s *Scheduler) enforceOverride(ctx context.Context, st player.Status) {
-	o, ok, err := s.d.Store.GetOverride(ctx)
-	if err != nil || !ok {
+// tryPlay presses play when the schedule says so, spaced out after
+// failures. A stop with an MPD error counts as a failure too, because
+// MPD accepts play and then stops when the output cannot open.
+func (s *Scheduler) tryPlay(now time.Time, st player.Status) {
+	s.mu.Lock()
+	wait := now.Before(s.retryAfter)
+	s.mu.Unlock()
+	if wait {
 		return
 	}
+	if st.Error != "" {
+		s.notePlayFailure(now, "MPD reports: "+st.Error)
+	}
+	if err := s.d.Player.Play(); err != nil {
+		s.notePlayFailure(now, err.Error())
+	}
+}
+
+// enforceOverride keeps MPD in the state the person asked for.
+func (s *Scheduler) enforceOverride(ctx context.Context, o store.Override, st player.Status) {
 	switch o.Intent {
 	case "play":
 		if o.Mode == "play_now" && s.d.Player.Finished(st) {
@@ -420,9 +459,7 @@ func (s *Scheduler) enforceOverride(ctx context.Context, st player.Status) {
 			return
 		}
 		if st.State != "play" && o.Generation == s.d.Player.Generation() && !s.d.Player.Finished(st) {
-			if err := s.d.Player.Play(); err != nil {
-				s.notePlayFailure(err.Error())
-			}
+			s.tryPlay(s.d.Clock.Now(), st)
 		}
 	case "pause":
 		if st.State == "play" {
@@ -436,32 +473,34 @@ func (s *Scheduler) enforceOverride(ctx context.Context, st player.Status) {
 }
 
 // loadAndPlay resolves and loads a program, applies its volume and starts
-// it with a fade-in.
+// it, with a fade-in when one is configured.
 func (s *Scheduler) loadAndPlay(ctx context.Context, want Interval) {
+	now := s.d.Clock.Now()
 	files, truncated, err := s.d.Resolve(ctx, want.Source)
 	if err != nil || len(files) == 0 {
 		msg := fmt.Sprintf("%s has nothing to play", want.Name)
 		if err != nil {
 			msg = fmt.Sprintf("%s cannot be loaded: %v", want.Name, err)
 		}
-		s.notePlayFailure(msg)
+		s.notePlayFailure(now, msg)
 		return
 	}
 	if truncated {
 		s.d.Log.Warn("program truncated to the queue ceiling", "program", want.Name)
 	}
 	set := s.d.Settings()
-	volume := -1
+	target := s.currentVolume()
 	if want.Options.Volume != nil {
-		volume = clamp(*want.Options.Volume, set.VolumeMin, set.VolumeMax)
+		target = clamp(*want.Options.Volume, set.VolumeMin, set.VolumeMax)
 	}
 	fadeIn := set.FadeIn > 0
+	volume := target
 	if fadeIn {
-		// The fade sets the target itself.
-		s.d.Player.SetVolumeRaw(0)
+		// The fade sets the level itself, from silence.
+		volume = 0
 	}
-	if _, err := s.d.Player.Load(files, want.Options.Shuffle, volume); err != nil {
-		s.notePlayFailure(fmt.Sprintf("%s cannot start: %v", want.Name, err))
+	if _, err := s.d.Player.Load(files, want.Options.Shuffle, volume, true); err != nil {
+		s.notePlayFailure(now, fmt.Sprintf("%s cannot start: %v", want.Name, err))
 		return
 	}
 	s.resetFailures()
@@ -469,17 +508,21 @@ func (s *Scheduler) loadAndPlay(ctx context.Context, want Interval) {
 	s.d.Log.Info("program started", "program", want.Name, "tracks", len(files))
 	s.d.OnProgram(want.Name)
 	if fadeIn {
-		target := volume
-		if target < 0 {
-			target = s.lastVolume()
-		}
-		s.startFade(ctx, "in", want.Key, func(fctx context.Context) { s.fadeTo(fctx, 0, target, set.FadeIn) })
+		s.startFade(ctx, "in", want.Key, func(fctx context.Context) {
+			s.fadeTo(fctx, 0, target, set.FadeIn)
+			// A cancelled fade-in must not leave the music quiet.
+			s.d.Player.SetVolumeRaw(target)
+		})
 	}
 	s.d.Events.Publish(events.Player, "")
 }
 
-// lastVolume is the volume MPD had before a fade-in set it to zero.
-func (s *Scheduler) lastVolume() int {
+// currentVolume is the level to keep: MPD's current volume, or the level
+// before the last fade-out.
+func (s *Scheduler) currentVolume() int {
+	if st, err := s.d.Player.Status(); err == nil && st.Volume > 0 {
+		return st.Volume
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.restoreVolume > 0 {
@@ -513,10 +556,13 @@ func (s *Scheduler) ForgetProgram(ctx context.Context) {
 	s.setLoaded(ctx, Program{})
 }
 
-func (s *Scheduler) notePlayFailure(msg string) {
+// notePlayFailure counts a failure, spaces out the next attempt, and
+// reports dead air after three.
+func (s *Scheduler) notePlayFailure(now time.Time, msg string) {
 	s.mu.Lock()
 	s.failures++
 	n := s.failures
+	s.retryAfter = now.Add(min(time.Duration(n)*tickInterval, time.Minute))
 	s.mu.Unlock()
 	s.d.Log.Warn("cannot keep the schedule playing", "reason", msg, "failures", n)
 	if n == 3 {
@@ -526,11 +572,13 @@ func (s *Scheduler) notePlayFailure(msg string) {
 
 func (s *Scheduler) resetFailures() {
 	s.mu.Lock()
-	if s.failures >= 3 {
+	cleared := s.failures >= 3
+	s.failures = 0
+	s.retryAfter = time.Time{}
+	s.mu.Unlock()
+	if cleared {
 		s.d.OnProblem("dead_air_cleared", "")
 	}
-	s.failures = 0
-	s.mu.Unlock()
 }
 
 // startFade runs fn in a goroutine with a cancellable context and records
@@ -554,15 +602,20 @@ func (s *Scheduler) startFade(ctx context.Context, kind, key string, fn func(con
 	}()
 }
 
-// cancelFade stops the fade in progress and waits for it.
-func (s *Scheduler) cancelFade() {
+// cancelFade stops the given fade and waits for it. With nil it stops
+// whatever fade runs. A fade that already ended, or was replaced by a
+// newer one, is left alone.
+func (s *Scheduler) cancelFade(f *fadeState) {
 	s.mu.Lock()
-	f := s.fade
-	s.fade = nil
-	s.mu.Unlock()
 	if f == nil {
+		f = s.fade
+	}
+	if f == nil || s.fade != f {
+		s.mu.Unlock()
 		return
 	}
+	s.fade = nil
+	s.mu.Unlock()
 	f.cancel()
 	<-f.done
 }
@@ -616,6 +669,3 @@ func (s *Scheduler) fadeTo(ctx context.Context, from, to, seconds int) {
 		}
 	}
 }
-
-// ErrSchedulerOff reports an action that needs the scheduler on.
-var ErrSchedulerOff = errors.New("the scheduler is off")

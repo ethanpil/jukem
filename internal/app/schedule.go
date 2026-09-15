@@ -72,39 +72,29 @@ func (a *App) onSchedulerProblem(kind, message string) {
 	}
 }
 
-// manualIntent turns a transport action into an override intent.
-func manualIntent(action string) string {
-	switch action {
-	case "play":
-		return "play"
-	case "pause":
-		return "pause"
-	}
-	return "stop"
-}
-
-// holdForPerson creates an until-next override for a transport action
-// when the scheduler is on, so the schedule does not undo it five
-// seconds later. Manual mode needs no override.
+// holdForPerson records a transport action while the scheduler is on, so
+// the schedule does not undo it five seconds later. An active timed
+// override keeps its end and only changes its intent. Manual mode needs
+// no override.
 func (a *App) holdForPerson(ctx context.Context, intent, source string) error {
 	if !a.Settings().SchedulerEnabled {
 		return nil
 	}
-	o, ok, err := a.Store.GetOverride(ctx)
-	if err != nil {
-		return err
-	}
-	if ok && o.Mode == "timed" && o.Intent != intent {
-		// A timed override keeps its end; only the intent changes.
-		o.Intent = intent
-		return a.Scheduler.CreateOverrideKeepingEnd(ctx, o)
+	if o, _, active := a.Scheduler.Override(ctx); active && o.Mode == "timed" {
+		if o.Intent == intent {
+			return nil
+		}
+		return a.Scheduler.UpdateOverrideIntent(ctx, o, intent)
 	}
 	return a.Scheduler.CreateOverride(ctx, store.Override{Mode: "until_next", Intent: intent, Source: source})
 }
 
 // Transport runs play, pause or stop for a caller and records the
-// override.
+// override. The loop is held meanwhile, so a tick cannot undo the action
+// before the override exists.
 func (a *App) Transport(ctx context.Context, action, source string) error {
+	release := a.Scheduler.Suspend()
+	defer release()
 	var err error
 	switch action {
 	case "play":
@@ -119,12 +109,14 @@ func (a *App) Transport(ctx context.Context, action, source string) error {
 	if err != nil {
 		return err
 	}
-	return a.holdForPerson(ctx, manualIntent(action), source)
+	return a.holdForPerson(ctx, action, source)
 }
 
 // PlayEntry plays from a queue entry, which counts as a play for the
 // schedule.
 func (a *App) PlayEntry(ctx context.Context, id int, source string) error {
+	release := a.Scheduler.Suspend()
+	defer release()
 	if err := a.Player.PlayID(id); err != nil {
 		return err
 	}
@@ -132,7 +124,8 @@ func (a *App) PlayEntry(ctx context.Context, id int, source string) error {
 }
 
 // playNowOverride records a Play Now: the override ends when the chosen
-// tracks finish or at the next scheduled event.
+// tracks finish or at the next scheduled event. The caller holds the
+// loop.
 func (a *App) playNowOverride(ctx context.Context, source string) error {
 	a.Scheduler.ForgetProgram(ctx)
 	if !a.Settings().SchedulerEnabled {
