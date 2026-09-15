@@ -130,15 +130,14 @@ func (a *App) playlistFiles(ctx context.Context, id int64) ([]string, error) {
 	if !ok {
 		return nil, huma.Error404NotFound(fmt.Sprintf("no playlist %d", id))
 	}
-	files, err := a.Playlists.Entries(pl.Name)
+	// Entries whose file is gone are skipped: one missing file would make
+	// MPD reject the whole add command list.
+	files, err := a.Playlists.PresentEntries(pl.Name)
 	if err != nil {
 		return nil, err
 	}
 	if len(files) == 0 {
-		return nil, huma.Error404NotFound("the playlist is empty")
-	}
-	if len(files) > player.MaxQueue {
-		files = files[:player.MaxQueue]
+		return nil, huma.Error404NotFound("the playlist has no playable tracks")
 	}
 	return files, nil
 }

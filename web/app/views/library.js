@@ -198,19 +198,12 @@ export async function libraryView(main, rest) {
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: pg.page >= pg.pages - 1, onclick: () => { page++; load(); } }, 'Next')));
   }
 
-  const actionText = { play_now: 'Playing', play_next: 'Playing next', add: 'Added to the queue' };
   async function queueTarget(action, target) {
     const body = { action };
     if (target.folder) body.folder = target.folder;
     else if (target.files?.length) body.files = target.files;
     else return;
-    try {
-      const r = await A.queueAction(body);
-      let msg = `${actionText[action]}: ${r.added} track${r.added === 1 ? '' : 's'}`;
-      if (r.truncated) msg += ' (first 20,000 only)';
-      if (r.shuffle && action === 'play_next') msg += ' · shuffle is on, so they play next in random order';
-      toast(msg, 'success');
-    } catch (e) { toast(e.message, 'danger'); }
+    try { ops.queueToast(action, await A.queueAction(body)); } catch (e) { toast(e.message, 'danger'); }
   }
 
   // fileOps runs a file operation and reloads the list afterwards.

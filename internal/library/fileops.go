@@ -13,9 +13,9 @@ import (
 	"jukem/internal/store"
 )
 
-// References are the records jukem owns that point at files. A move or
-// delete updates them in the same operation, so a normal thing in the UI
-// never breaks a playlist or a schedule.
+// References are the records jukem owns that point at files. A rename,
+// move or delete updates them in the same operation, so a normal action
+// in the UI never breaks a playlist or a schedule.
 type References struct {
 	Playlists *Playlists
 	Store     *store.Store
@@ -33,7 +33,7 @@ type Inspection struct {
 func (f *Files) Inspect(ctx context.Context, refs References, paths []string) (Inspection, error) {
 	root := f.root()
 	ins := Inspection{Playlists: []string{}, Schedules: []string{}}
-	seenP, seenS := map[string]bool{}, map[string]bool{}
+	var cleaned []string
 	for _, rel := range paths {
 		abs, clean, oe := f.resolve(root, rel)
 		if oe != nil {
@@ -43,38 +43,47 @@ func (f *Files) Inspect(ctx context.Context, refs References, paths []string) (I
 		if err != nil {
 			continue
 		}
-		if info.IsDir() {
-			ins.Folders++
-			filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-				if err != nil || p == abs {
-					return nil
-				}
-				if d.IsDir() {
-					ins.Folders++
-				} else {
-					ins.Files++
-				}
-				return nil
-			})
-		} else {
+		cleaned = append(cleaned, clean)
+		if !info.IsDir() {
 			ins.Files++
+			continue
 		}
-		if refs.Playlists != nil {
-			names, _ := refs.Playlists.Referencing(ctx, clean)
-			for _, n := range names {
-				if !seenP[n] {
-					seenP[n] = true
-					ins.Playlists = append(ins.Playlists, n)
-				}
+		ins.Folders++
+		filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || p == abs {
+				return nil
+			}
+			if d.IsDir() {
+				ins.Folders++
+			} else {
+				ins.Files++
+			}
+			return nil
+		})
+	}
+	byPath, err := refs.Playlists.Referencing(ctx, cleaned)
+	if err != nil {
+		return ins, err
+	}
+	seen := map[string]bool{}
+	for _, names := range byPath {
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				ins.Playlists = append(ins.Playlists, n)
 			}
 		}
-		if refs.Store != nil {
-			names, _ := refs.Store.DirectoryReferences(ctx, clean)
-			for _, n := range names {
-				if !seenS[n] {
-					seenS[n] = true
-					ins.Schedules = append(ins.Schedules, n)
-				}
+	}
+	seen = map[string]bool{}
+	for _, clean := range cleaned {
+		names, err := refs.Store.DirectoryReferences(ctx, clean)
+		if err != nil {
+			return ins, err
+		}
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				ins.Schedules = append(ins.Schedules, n)
 			}
 		}
 	}
@@ -109,6 +118,13 @@ func (f *Files) Move(ctx context.Context, refs References, from, to string) erro
 	if err := f.ensureWritable(filepath.Dir(src), root); err != nil {
 		return err
 	}
+	// A folder that moves to another parent needs write access to itself,
+	// because its ".." entry changes.
+	if info.IsDir() && filepath.Dir(src) != filepath.Dir(dst) {
+		if err := f.ensureWritable(src, root); err != nil {
+			return err
+		}
+	}
 	destDir := filepath.Dir(dst)
 	base := nearestExisting(destDir, root)
 	if err := f.ensureWritable(base, root); err != nil {
@@ -119,25 +135,44 @@ func (f *Files) Move(ctx context.Context, refs References, from, to string) erro
 	}
 	if err := os.Rename(src, dst); err != nil {
 		if !isCrossDevice(err) {
+			removeEmptyUpTo(destDir, base)
 			return f.opError(err, filepath.Dir(src), root)
 		}
 		if info.IsDir() {
+			removeEmptyUpTo(destDir, base)
 			return &OpError{Status: http.StatusConflict, Detail: "a folder cannot move across file systems; move its files instead"}
 		}
 		if err := moveAcross(src, dst); err != nil {
+			removeEmptyUpTo(destDir, base)
 			return f.opError(err, destDir, root)
 		}
 		os.Remove(src)
 	}
-	f.updateReferences(ctx, refs, fromRel, toRel, info.IsDir(), false)
+	f.updateReferences(ctx, refs, []Change{{Old: fromRel, New: toRel, IsDir: info.IsDir()}})
 	f.noteChanged(path.Dir(fromRel), path.Dir(toRel))
 	return nil
 }
 
+// removeEmptyUpTo removes the empty folders a failed move created.
+func removeEmptyUpTo(dir, stop string) {
+	for dir != stop && dir != filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
 // Delete removes files and folders for good and drops the references.
+// Every folder in a tree is checked first, so a delete either completes
+// or changes nothing.
 func (f *Files) Delete(ctx context.Context, refs References, paths []string) error {
 	root := f.root()
-	var touched []string
+	type target struct {
+		abs, rel string
+		isDir    bool
+	}
+	var targets []target
 	for _, rel := range paths {
 		abs, clean, oe := f.resolve(root, rel)
 		if oe != nil {
@@ -150,40 +185,66 @@ func (f *Files) Delete(ctx context.Context, refs References, paths []string) err
 		if err := f.ensureWritable(filepath.Dir(abs), root); err != nil {
 			return err
 		}
-		if err := os.RemoveAll(abs); err != nil {
-			return f.opError(err, filepath.Dir(abs), root)
+		if info.IsDir() {
+			if err := f.ensureTreeWritable(abs, root); err != nil {
+				return err
+			}
 		}
-		f.updateReferences(ctx, refs, clean, "", info.IsDir(), true)
-		touched = append(touched, path.Dir(clean))
+		targets = append(targets, target{abs, clean, info.IsDir()})
 	}
+	var changes []Change
+	var touched []string
+	for _, t := range targets {
+		if err := os.RemoveAll(t.abs); err != nil {
+			f.updateReferences(ctx, refs, changes)
+			f.noteChanged(touched...)
+			return f.opError(err, filepath.Dir(t.abs), root)
+		}
+		changes = append(changes, Change{Old: t.rel, IsDir: t.isDir})
+		touched = append(touched, path.Dir(t.rel))
+	}
+	f.updateReferences(ctx, refs, changes)
 	if len(touched) > 0 {
 		f.noteChanged(touched...)
 	}
 	return nil
 }
 
-// updateReferences rewrites playlists, schedules and the do-not-play list.
-func (f *Files) updateReferences(ctx context.Context, refs References, old, new string, isDir, deleted bool) {
-	if refs.Playlists != nil {
-		if _, err := refs.Playlists.Rewrite(ctx, old, new, isDir, deleted); err != nil {
-			f.log.Warn("cannot rewrite playlist entries", "path", old, "error", err)
+// ensureTreeWritable checks every folder below dir.
+func (f *Files) ensureTreeWritable(dir, root string) error {
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return f.permissionError(filepath.Dir(p), root)
 		}
-	}
-	if refs.Store == nil {
+		if d.IsDir() && !canWrite(p) {
+			return f.permissionError(p, root)
+		}
+		return nil
+	})
+}
+
+// updateReferences rewrites playlists, schedules and the do-not-play list.
+func (f *Files) updateReferences(ctx context.Context, refs References, changes []Change) {
+	if len(changes) == 0 {
 		return
 	}
-	if deleted {
-		if err := refs.Store.DeleteDoNotPlayUnder(ctx, old); err != nil {
+	if _, err := refs.Playlists.Rewrite(ctx, changes); err != nil {
+		f.log.Warn("cannot rewrite every playlist", "error", err)
+	}
+	for _, c := range changes {
+		if c.New == "" {
+			if err := refs.Store.DeleteDoNotPlayUnder(ctx, c.Old); err != nil {
+				f.log.Warn("cannot update the do-not-play list", "error", err)
+			}
+			continue
+		}
+		if err := refs.Store.MoveDoNotPlay(ctx, c.Old, c.New, c.IsDir); err != nil {
 			f.log.Warn("cannot update the do-not-play list", "error", err)
 		}
-		return
-	}
-	if err := refs.Store.MoveDoNotPlay(ctx, old, new, isDir); err != nil {
-		f.log.Warn("cannot update the do-not-play list", "error", err)
-	}
-	if isDir {
-		if _, err := refs.Store.RepointDirectory(ctx, old, new); err != nil {
-			f.log.Warn("cannot repoint schedules", "error", err)
+		if c.IsDir {
+			if _, err := refs.Store.RepointDirectory(ctx, c.Old, c.New); err != nil {
+				f.log.Warn("cannot repoint schedules", "error", err)
+			}
 		}
 	}
 }

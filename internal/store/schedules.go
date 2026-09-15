@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -37,7 +36,7 @@ type Schedule struct {
 // Exception is a date that overrides the weekly rules.
 type Exception struct {
 	Date       string  `json:"date" pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`
-	Kind       string  `json:"kind" enum:"silent,hours,source" doc:"silent: nothing plays. hours: the given hours with the given source. source: the normal hours with a different source."`
+	Kind       string  `json:"kind" enum:"silent,hours,source" doc:"With silent, nothing plays that day. With hours, the given hours play the given source. With source, the normal hours play a different source."`
 	Note       string  `json:"note,omitempty" maxLength:"200"`
 	StartTime  *string `json:"start_time,omitempty" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
 	EndTime    *string `json:"end_time,omitempty" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
@@ -86,7 +85,8 @@ func (s *Store) GetSchedule(ctx context.Context, id int64) (Schedule, bool, erro
 	return r, err == nil, err
 }
 
-func volArg(v *int) any {
+// arg turns an optional value into a SQL argument, nil when unset.
+func arg[T any](v *T) any {
 	if v == nil {
 		return nil
 	}
@@ -97,7 +97,7 @@ func volArg(v *int) any {
 func (s *Store) CreateSchedule(ctx context.Context, r Schedule) (int64, error) {
 	res, err := s.w.ExecContext(ctx, `INSERT INTO schedules (name, enabled, days, start_time, end_time, source_type, source_ref, shuffle, volume, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Name, r.Enabled, r.Days, r.StartTime, r.EndTime, r.SourceType, r.SourceRef, r.Shuffle, volArg(r.Volume), now(), now())
+		r.Name, r.Enabled, r.Days, r.StartTime, r.EndTime, r.SourceType, r.SourceRef, r.Shuffle, arg(r.Volume), now(), now())
 	if err != nil {
 		return 0, err
 	}
@@ -107,7 +107,7 @@ func (s *Store) CreateSchedule(ctx context.Context, r Schedule) (int64, error) {
 // UpdateSchedule replaces a rule. It reports false when the id is unknown.
 func (s *Store) UpdateSchedule(ctx context.Context, r Schedule) (bool, error) {
 	res, err := s.w.ExecContext(ctx, `UPDATE schedules SET name = ?, enabled = ?, days = ?, start_time = ?, end_time = ?, source_type = ?, source_ref = ?, shuffle = ?, volume = ?, updated_at = ? WHERE id = ?`,
-		r.Name, r.Enabled, r.Days, r.StartTime, r.EndTime, r.SourceType, r.SourceRef, r.Shuffle, volArg(r.Volume), now(), r.ID)
+		r.Name, r.Enabled, r.Days, r.StartTime, r.EndTime, r.SourceType, r.SourceRef, r.Shuffle, arg(r.Volume), now(), r.ID)
 	if err != nil {
 		return false, err
 	}
@@ -192,23 +192,12 @@ func scanException(row interface{ Scan(dest ...any) error }) (Exception, error) 
 
 // PutException inserts or replaces the exception for a date.
 func (s *Store) PutException(ctx context.Context, e Exception) error {
-	var shuffle any
-	if e.Shuffle != nil {
-		shuffle = *e.Shuffle
-	}
 	_, err := s.w.ExecContext(ctx, `INSERT INTO schedule_exceptions (date, kind, note, start_time, end_time, source_type, source_ref, shuffle, volume)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(date) DO UPDATE SET kind = excluded.kind, note = excluded.note, start_time = excluded.start_time, end_time = excluded.end_time,
 		source_type = excluded.source_type, source_ref = excluded.source_ref, shuffle = excluded.shuffle, volume = excluded.volume`,
-		e.Date, e.Kind, e.Note, strArg(e.StartTime), strArg(e.EndTime), strArg(e.SourceType), strArg(e.SourceRef), shuffle, volArg(e.Volume))
+		e.Date, e.Kind, e.Note, arg(e.StartTime), arg(e.EndTime), arg(e.SourceType), arg(e.SourceRef), arg(e.Shuffle), arg(e.Volume))
 	return err
-}
-
-func strArg(v *string) any {
-	if v == nil {
-		return nil
-	}
-	return *v
 }
 
 // DeleteException removes the exception for a date.
@@ -219,51 +208,6 @@ func (s *Store) DeleteException(ctx context.Context, date string) (bool, error) 
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
-}
-
-// RepointDirectory updates rules and exceptions whose directory source is
-// old or below it, after a move. It returns the number of rows changed.
-func (s *Store) RepointDirectory(ctx context.Context, old, new string) (int64, error) {
-	var total int64
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		for _, table := range []string{"schedules", "schedule_exceptions"} {
-			res, err := tx.ExecContext(ctx, `UPDATE `+table+` SET source_ref = ? || substr(source_ref, ?) WHERE source_type = 'directory' AND (source_ref = ? OR source_ref LIKE ? ESCAPE '\')`,
-				new, len(old)+1, old, escapeLike(old)+"/%")
-			if err != nil {
-				return err
-			}
-			n, _ := res.RowsAffected()
-			total += n
-		}
-		return nil
-	})
-	return total, err
-}
-
-// DirectoryReferences returns the names of rules and exceptions whose
-// directory source is path or below it.
-func (s *Store) DirectoryReferences(ctx context.Context, path string) ([]string, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT name FROM schedules WHERE source_type = 'directory' AND (source_ref = ? OR source_ref LIKE ? ESCAPE '\')
-		UNION ALL SELECT 'Exception ' || date FROM schedule_exceptions WHERE source_type = 'directory' AND (source_ref = ? OR source_ref LIKE ? ESCAPE '\')`,
-		path, escapeLike(path)+"/%", path, escapeLike(path)+"/%")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		names = append(names, n)
-	}
-	return names, rows.Err()
-}
-
-func escapeLike(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
 }
 
 // DoNotPlayEntry is a track kept out of scheduled playback.
@@ -320,20 +264,4 @@ func (s *Store) DoNotPlaySet(ctx context.Context) (map[string]bool, error) {
 		set[e.File] = true
 	}
 	return set, nil
-}
-
-// MoveDoNotPlay follows a moved file or folder.
-func (s *Store) MoveDoNotPlay(ctx context.Context, old, new string, isDir bool) error {
-	if !isDir {
-		_, err := s.w.ExecContext(ctx, `UPDATE do_not_play SET file = ? WHERE file = ?`, new, old)
-		return err
-	}
-	_, err := s.w.ExecContext(ctx, `UPDATE do_not_play SET file = ? || substr(file, ?) WHERE file LIKE ? ESCAPE '\'`, new, len(old)+1, escapeLike(old)+"/%")
-	return err
-}
-
-// DeleteDoNotPlayUnder removes entries for a deleted file or folder.
-func (s *Store) DeleteDoNotPlayUnder(ctx context.Context, path string) error {
-	_, err := s.w.ExecContext(ctx, `DELETE FROM do_not_play WHERE file = ? OR file LIKE ? ESCAPE '\'`, path, escapeLike(path)+"/%")
-	return err
 }

@@ -37,29 +37,41 @@ func newTestPlaylists(t *testing.T) (*Playlists, *Files, string) {
 func TestPlaylistLifecycle(t *testing.T) {
 	p, _, _ := newTestPlaylists(t)
 	ctx := context.Background()
-	pl, err := p.Create(ctx, "Morning Mix")
+	pl, err := p.Create(ctx, "Morning Mix", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Create(ctx, "Morning Mix"); err == nil {
+	if _, err := p.Create(ctx, "Morning Mix", nil); err == nil {
 		t.Fatal("duplicate accepted")
 	}
-	if _, err := p.Create(ctx, "../evil"); err == nil {
+	if _, err := p.Create(ctx, "../evil", nil); err == nil {
 		t.Fatal("bad name accepted")
 	}
-	if n, err := p.Append(ctx, pl, []string{"Rock/Band/a.mp3", "Rock/Band/gone.mp3"}); err != nil || n != 2 {
-		t.Fatal(n, err)
+	if _, err := p.Create(ctx, "Bad entries", []string{"../x.mp3"}); err == nil {
+		t.Fatal("bad entry accepted")
+	}
+	if lists, _ := p.store.ListPlaylists(ctx); len(lists) != 1 {
+		t.Fatalf("a failed create left a row: %v", lists)
+	}
+	if err := p.Append(ctx, pl, []string{"Rock/Band/a.mp3", "Rock/Band/gone.mp3", "#1 Hits/x.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := p.Entries(pl.Name); len(e) != 3 || e[2] != "#1 Hits/x.mp3" {
+		t.Fatalf("hash entry lost: %v", e)
+	}
+	if present, _ := p.PresentEntries(pl.Name); len(present) != 1 || present[0] != "Rock/Band/a.mp3" {
+		t.Fatalf("present entries: %v", present)
 	}
 	entries, err := p.EntriesWithState(pl.Name)
-	if err != nil || len(entries) != 2 || entries[0].Missing || !entries[1].Missing {
+	if err != nil || len(entries) != 3 || entries[0].Missing || !entries[1].Missing {
 		t.Fatalf("got %+v %v", entries, err)
 	}
 	data, _ := os.ReadFile(p.file(pl.Name))
 	if !strings.HasPrefix(string(data), "#EXTM3U\n") || !strings.Contains(string(data), "Rock/Band/a.mp3\n") {
 		t.Fatalf("m3u content %q", data)
 	}
-	if err := p.Rename(ctx, pl, "Evening"); err != nil {
-		t.Fatal(err)
+	if name, err := p.Rename(ctx, pl, " Evening "); err != nil || name != "Evening" {
+		t.Fatal(name, err)
 	}
 	if _, err := os.Stat(p.file("Evening")); err != nil {
 		t.Fatal("file not renamed")
@@ -82,15 +94,19 @@ func TestPlaylistLifecycle(t *testing.T) {
 func TestMoveUpdatesReferences(t *testing.T) {
 	p, f, root := newTestPlaylists(t)
 	ctx := context.Background()
-	pl, _ := p.Create(ctx, "Mix")
-	p.Set(ctx, pl, []string{"Rock/Band/a.mp3", "Rock/Band/b.mp3", "Other/x.mp3"})
+	if _, err := p.Create(ctx, "Mix", []string{"Rock/Band/a.mp3", "Rock/Band/b.mp3", "Other/x.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+	// A hand-written playlist with a foreign line must not stop the rewrite.
+	os.WriteFile(p.file("Aaa"), []byte("#EXTM3U\n/mnt/nas/x.mp3\nRock/Band/a.mp3\n"), 0o644)
+	p.store.CreatePlaylist(ctx, "Aaa")
 	st := p.store
 	st.CreateSchedule(ctx, store.Schedule{Name: "Rock hour", Enabled: true, Days: store.AllDays, StartTime: "09:00", EndTime: "10:00", SourceType: "directory", SourceRef: "Rock/Band"})
 	st.AddDoNotPlay(ctx, "Rock/Band/b.mp3", "B")
 	refs := References{Playlists: p, Store: st}
 
 	ins, err := f.Inspect(ctx, refs, []string{"Rock/Band"})
-	if err != nil || ins.Files != 2 || ins.Folders != 1 || len(ins.Playlists) != 1 || len(ins.Schedules) != 1 {
+	if err != nil || ins.Files != 2 || ins.Folders != 1 || len(ins.Playlists) != 2 || len(ins.Schedules) != 1 {
 		t.Fatalf("inspect %+v %v", ins, err)
 	}
 
@@ -103,6 +119,9 @@ func TestMoveUpdatesReferences(t *testing.T) {
 	entries, _ := p.Entries("Mix")
 	if entries[0] != "Pop/TheBand/a.mp3" || entries[1] != "Pop/TheBand/b.mp3" || entries[2] != "Other/x.mp3" {
 		t.Fatalf("playlist not rewritten: %v", entries)
+	}
+	if aaa, _ := p.Entries("Aaa"); len(aaa) != 2 || aaa[0] != "/mnt/nas/x.mp3" || aaa[1] != "Pop/TheBand/a.mp3" {
+		t.Fatalf("foreign line handling: %v", aaa)
 	}
 	rules, _ := st.ListSchedules(ctx)
 	if rules[0].SourceRef != "Pop/TheBand" {

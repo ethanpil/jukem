@@ -87,14 +87,9 @@ func (s *Server) registerPlaylists(api huma.API) {
 		OperationID: "create-playlist", Method: http.MethodPost, Path: "/playlists", Tags: []string{"playlists"},
 		Summary: "Create a playlist", DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, in *createInput) (*struct{ Body PlaylistView }, error) {
-		pl, err := s.opts.Playlists.Create(ctx, in.Body.Name)
+		pl, err := s.opts.Playlists.Create(ctx, in.Body.Name, in.Body.Files)
 		if err != nil {
 			return nil, opError(err)
-		}
-		if len(in.Body.Files) > 0 {
-			if err := s.opts.Playlists.Set(ctx, pl, in.Body.Files); err != nil {
-				return nil, opError(err)
-			}
 		}
 		return s.playlistView(pl)
 	})
@@ -127,10 +122,11 @@ func (s *Server) registerPlaylists(api huma.API) {
 			return nil, err
 		}
 		if in.Body.Name != nil {
-			if err := s.opts.Playlists.Rename(ctx, pl, *in.Body.Name); err != nil {
+			name, err := s.opts.Playlists.Rename(ctx, pl, *in.Body.Name)
+			if err != nil {
 				return nil, opError(err)
 			}
-			pl.Name = *in.Body.Name
+			pl.Name = name
 		}
 		if in.Body.Entries != nil {
 			if err := s.opts.Playlists.Set(ctx, pl, *in.Body.Entries); err != nil {
@@ -138,11 +134,14 @@ func (s *Server) registerPlaylists(api huma.API) {
 			}
 		}
 		if len(in.Body.Append) > 0 {
-			if _, err := s.opts.Playlists.Append(ctx, pl, in.Body.Append); err != nil {
+			if err := s.opts.Playlists.Append(ctx, pl, in.Body.Append); err != nil {
 				return nil, opError(err)
 			}
 		}
-		pl, _ = s.playlist(ctx, in.ID)
+		pl, err = s.playlist(ctx, in.ID)
+		if err != nil {
+			return nil, err
+		}
 		return s.playlistView(pl)
 	})
 

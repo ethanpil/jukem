@@ -85,14 +85,15 @@ func (s *Store) TouchPlaylist(ctx context.Context, id int64) error {
 	return err
 }
 
-// DeletePlaylist removes the row. Schedules that point at it are deleted
-// with it, because a rule without a source cannot play.
+// DeletePlaylist removes the row. It also deletes the schedules that point
+// at it, because a rule without a source cannot play.
 func (s *Store) DeletePlaylist(ctx context.Context, id int64) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM schedules WHERE source_type = 'playlist' AND source_ref = ?`, itoa(id)); err != nil {
+		ref := strconv.FormatInt(id, 10)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM schedules WHERE source_type = 'playlist' AND source_ref = ?`, ref); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM schedule_exceptions WHERE source_type = 'playlist' AND source_ref = ?`, itoa(id)); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM schedule_exceptions WHERE source_type = 'playlist' AND source_ref = ?`, ref); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM playlists WHERE id = ?`, id)
@@ -104,5 +105,3 @@ func (s *Store) DeletePlaylist(ctx context.Context, id int64) error {
 func isUnique(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
-
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }
