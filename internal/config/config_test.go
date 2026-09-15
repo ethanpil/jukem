@@ -118,3 +118,15 @@ func TestTrustedProxies(t *testing.T) {
 		t.Fatalf("env: got %v", cfg.TrustedProxies)
 	}
 }
+
+// The config file in the package must load without warnings.
+func TestPackagedConfig(t *testing.T) {
+	cfg, warnings, err := Load(filepath.Join("..", "..", "packaging", "config.yaml"))
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err %v, warnings %v", err, warnings)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+	if !reflect.DeepEqual(cfg.TrustedProxies, want) {
+		t.Fatalf("got %v", cfg.TrustedProxies)
+	}
+}

@@ -824,7 +824,7 @@ When everything is done, the panel shows "Scanning library" until MPD's update f
 
 The upload manager lives in the app shell rather than a view, so changing screens doesn't interrupt it, and the page warns before a close mid-batch. It sends three files at a time, one request per file, using XMLHttpRequest because `fetch` still lacks reliable upload progress across browsers.
 
-Network errors and 5xx responses retry up to three times with backoff. 4xx responses (unsupported type, too large, no space) fail immediately with the server's message on that row. A sleeping phone suspends its uploads. The Screen Wake Lock API would prevent that, but browsers only expose it in a secure context, and the default here is plain HTTP, so it works only when a reverse proxy serves the page over HTTPS. Over HTTP the panel says to keep the screen on during a large batch. The same secure-context rule applies to `navigator.clipboard`, so the copy buttons fall back to `document.execCommand('copy')`, which still works everywhere that matters.
+Network errors and 5xx responses retry up to three times with backoff. 4xx responses (unsupported type, too large, no space) fail immediately with the server's message on that row. A sleeping phone suspends its uploads. The Screen Wake Lock API would prevent that, but browsers only expose it in a secure context, and jukem serves plain HTTP. It works only when a reverse proxy serves the page over HTTPS. Over HTTP the panel says to keep the screen on during a large batch. The same secure-context rule applies to `navigator.clipboard`, so the copy buttons fall back to `document.execCommand('copy')`, which still works everywhere that matters.
 
 A failed file restarts from the beginning. Music files are 5 to 50 MB and this is a LAN, so resumable uploads (tus, or anything like it) would be machinery built for a problem nobody has hit yet. The one-request-per-file design leaves room to add it if that ever changes.
 
@@ -1037,9 +1037,9 @@ Opaque random keys checked against stored hashes revoke instantly, which JWTs ca
 
 ### Transport
 
-HTTP on the LAN by default. An appliance that greets its owner with a browser certificate warning has taught them to click through warnings, which is worse than the plaintext it was protecting against, and a self-signed certificate also blocks a future mobile app.
+jukem serves plain HTTP only. A certificate warning in a browser teaches people to click through warnings. That is worse than plain HTTP on a home network.
 
-jukem serves plain HTTP and nothing else. Anyone who wants HTTPS puts a reverse proxy in front of it (Caddy, nginx, Traefik), which already handles certificates better than an appliance could; jukem marks the session cookie Secure when the proxy reports HTTPS in `X-Forwarded-Proto`. For access away from home, Tailscale or WireGuard is the recommendation rather than a forwarded port, and the README says so plainly.
+For HTTPS, a reverse proxy such as Caddy, nginx or Traefik goes in front of jukem. The proxy handles the certificates. jukem reads `X-Forwarded-For` and `X-Forwarded-Proto` only from the addresses in `trusted_proxies`. With these headers, the login limit counts each client, and the session cookie is Secure over HTTPS. For access away from home, Tailscale or WireGuard is the recommendation rather than a forwarded port, and the README says so plainly.
 
 CORS is off by default, with an allowlist setting. The service runs as the unprivileged `jukem` user with access only to the audio devices, the music root, and its own directories. Upload hardening is described under Library and file management, and the UI's defenses against hostile tags under Untrusted text.
 

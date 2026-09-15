@@ -2,3 +2,5 @@
 listen: ":80"
 data_dir: /var/lib/jukem
 log_file: /var/log/jukem/jukem.log
+# Reverse proxies that jukem trusts for X-Forwarded-For and X-Forwarded-Proto.
+trusted_proxies: ["127.0.0.1/8", "::1"]

@@ -85,7 +85,7 @@ Maintenance > Check library permissions.
 |---|---|
 | `/usr/bin/jukem` | The binary, with the web UI embedded |
 | `/etc/init.d/jukem`, `/etc/conf.d/jukem` | OpenRC service script and options |
-| `/etc/jukem/config.yaml` | Bootstrap settings: listen addresses, data directory, log file |
+| `/etc/jukem/config.yaml` | Bootstrap settings: listen address, data directory, log file, trusted proxies |
 | `/var/lib/jukem/` | Database, snapshots, MPD state, playlists |
 | `/var/log/jukem/` | Log file, capped in size |
 | `/srv/jukem/music/` | Default music root |
@@ -143,13 +143,27 @@ Docker uses it as the health check.
 
 ## Access from outside the home
 
-jukem serves plain HTTP on the LAN. For access away from home, use Tailscale
-or WireGuard. Do not forward the port on the router.
+jukem serves plain HTTP only. For access away from home, use Tailscale or
+WireGuard. Do not forward the port on the router.
 
-jukem serves HTTP only. For HTTPS, put a reverse proxy such as Caddy,
-nginx or Traefik in front of it. Make the proxy send `X-Forwarded-Proto:
-https`, so the session cookie is marked Secure. The proxy must not buffer
-responses on `/api/v1/events`, because that is a live event stream.
+For HTTPS, put a reverse proxy such as Caddy, nginx or Traefik in front of
+jukem. Set up the proxy as follows:
+
+- Send `X-Forwarded-For` and `X-Forwarded-Proto` on every request.
+- Serve jukem at the root of a host name, not under a path such as
+  `/jukem/`. The UI loads its files from `/app/` and `/api/v1/`.
+- Allow request bodies as large as the upload limit in Settings > Library.
+  nginx allows 1 MB by default, so set `client_max_body_size` there.
+- Add the address of the proxy to `trusted_proxies` in the configuration
+  file. The default trusts only a proxy on the same machine.
+
+jukem reads the forwarding headers only from a trusted proxy. With them,
+the login limit counts each client, and the session cookie is Secure over
+HTTPS.
+
+Use one address for jukem in each browser. A browser that signed in over
+HTTPS keeps a Secure cookie. That browser cannot sign in over plain HTTP on
+the same host name until the cookie expires or you clear the site data.
 
 ## API
 
@@ -178,10 +192,14 @@ The Health page shows the rollback steps when a migration fails.
 listen: ":80"
 data_dir: /var/lib/jukem
 log_file: /var/log/jukem/jukem.log
+trusted_proxies: ["127.0.0.1/8", "::1"]
 ```
 
-`JUKEM_LISTEN`, `JUKEM_DATA_DIR` and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which the Docker image
-uses.
+`JUKEM_LISTEN`, `JUKEM_DATA_DIR`, `JUKEM_LOG_FILE` and
+`JUKEM_TRUSTED_PROXIES` (a comma list) override these. An empty `log_file`
+logs to stdout. The Docker image uses that. In Docker, a proxy in another
+container has an address on the Docker network, so add that network to
+`trusted_proxies`.
 
 ## Forgotten password
 
@@ -217,6 +235,7 @@ way abuild does, with RSA-SHA256, so apk accepts it without
 
 MIT. See [LICENSE](LICENSE).
 
-The logo and favicon are the music library icon from the Solar Bold Duotone
-Icons collection, used under the CC Attribution License. The dark-mode
-version changes only the colour.
+The logo and favicon are the "Music Library 2" icon from the Solar icon set
+by 480 Design (Solar Bold Duotone Icons), under the Creative Commons
+Attribution 4.0 licence: https://creativecommons.org/licenses/by/4.0/.
+jukem changed only the colours for the light and dark themes.
