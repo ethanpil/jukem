@@ -239,3 +239,7 @@ The logo and favicon are the "Music Library 2" icon from the Solar icon set
 by 480 Design (Solar Bold Duotone Icons), under the Creative Commons
 Attribution 4.0 licence: https://creativecommons.org/licenses/by/4.0/.
 jukem changed only the colours for the light and dark themes.
+
+The interface uses the Onest and IBM Plex Mono fonts, both under the SIL
+Open Font License 1.1. The files are in `web/vendor/fonts/` with their
+licences.

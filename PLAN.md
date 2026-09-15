@@ -49,7 +49,7 @@ Four ideas carry most of the design.
 | Backend | Go 1.27, `net/http` with huma v2 | A static binary with no libc dependency, so one build per architecture runs on every Alpine release. huma generates the OpenAPI spec from handler types. |
 | MPD client | `github.com/fhs/gompd/v2/mpd` | Unix socket support and an idle-event watcher |
 | Database | SQLite via `modernc.org/sqlite` | Pure Go, which keeps `CGO_ENABLED=0` |
-| Web UI | Bootstrap 5.3.8, Bootstrap Icons, SortableJS, plain ES modules | No Node, bundler, or build step |
+| Web UI | Bootstrap 5.3.8, Bootstrap Icons, SortableJS, two vendored fonts, plain ES modules | No Node, bundler, or build step |
 | Live updates | Server-Sent Events | Change notifications flow server to client; commands and state go over REST. Browsers reconnect on their own. |
 | Packaging | nFPM, pinned as a Go tool in `go.mod` | Builds and signs apks for both architectures from one config file, on any machine, in seconds |
 
@@ -77,7 +77,7 @@ jukem/
     embed.go               go:embed of the files below
     index.html             app shell
     app/                   ES modules: router, API client, views, upload manager
-    vendor/                bootstrap, bootstrap-icons, sortablejs, VERSIONS
+    vendor/                bootstrap, bootstrap-icons, sortablejs, fonts, VERSIONS
   packaging/
     nfpm.yaml
     config.yaml            installed as /etc/jukem/config.yaml
@@ -881,9 +881,14 @@ Changing it regenerates `mpd.conf`, restarts MPD, and triggers a full rescan. Pl
 
 | Library | Why |
 |---|---|
-| Bootstrap 5.3.8, CSS and JS bundle | Responsive grid, navbar, offcanvas, modals, toasts, forms, and dark mode through `data-bs-theme`. The bundle includes Popper. |
-| Bootstrap Icons | Transport and navigation icons that match Bootstrap. Vendored as published; no trimming step, because shaving a few hundred kilobytes off a LAN appliance's first load isn't worth a build step that can break. |
+| Bootstrap 5.3.8, CSS and JS bundle | Behaviour more than looks: offcanvas, modals, menus, toasts, forms, and dark mode through `data-bs-theme`. The bundle includes Popper. Its variables take their values from the design tokens in `app.css`. |
+| Bootstrap Icons | Transport and navigation icons. Vendored as published; no trimming step, because shaving a few hundred kilobytes off a LAN appliance's first load isn't worth a build step that can break. |
 | SortableJS | Drag-to-reorder for the queue and playlists |
+| Onest and IBM Plex Mono, as woff2 | The two fonts of the interface design. Onest is the text face; IBM Plex Mono carries times, durations, paths and other figures. Both are vendored, because the content policy allows no other origin and the appliance has no internet. |
+
+### Design system
+
+`app.css` holds the tokens of the interface design: a teal accent on cool neutral surfaces, with a full set of dark values under `[data-bs-theme=dark]`. Every colour, radius and shadow in the UI comes from a token, and the Bootstrap variables are mapped onto the same tokens, so a themed component and a design component match. Above the tokens sit the parts the screens are built from: `panel` cards, `row-item` rows, `chip` labels, `btn-*` buttons, the section list of Settings and the week grid of Schedule.
 
 Everything else is browser APIs: `fetch`, `EventSource`, XMLHttpRequest for upload progress, and Wake Lock during uploads when the page is served over HTTPS. No jQuery, framework, bundler, or CDN. Vendored files are committed under `web/vendor/` with versions in `VERSIONS`, so the UI works with no internet access.
 
@@ -891,7 +896,7 @@ The UI calls the same JSON API a remote app will use, so there's one surface to 
 
 ### Structure
 
-`index.html` is a shell with a hash router (`#/library/Christmas/2026`); views are ES modules rendering into `<main>`. Navigation never reloads the page, which keeps the event stream and in-flight uploads alive. Assets are embedded in the binary and served gzipped with a long cache and a version query string; `index.html` is never cached. Bootstrap's system font stack means no web fonts.
+`index.html` is a shell with a hash router (`#/library/Christmas/2026`); views are ES modules rendering into `<main>`. Navigation never reloads the page, which keeps the event stream and in-flight uploads alive. Assets are embedded in the binary and served gzipped with a long cache and a version query string; `index.html` is never cached. The two fonts are subsets of the latin, latin extended and cyrillic ranges, about 130 KB together, and the system font stack carries every other script.
 
 ### Live updates
 
@@ -906,9 +911,9 @@ There's no event history and no `Last-Event-ID` replay, so a phone that reconnec
 
 ### Layout
 
-At Bootstrap's `lg` breakpoint and up, a top navbar holds the five sections (Now Playing, Library, Playlists, Schedule, Settings) and a now-playing bar is fixed to the bottom. On phones the sections move to a fixed bottom tab bar with icons, and the now-playing bar sits above it and expands on tap.
+Above 900 pixels a top bar holds the logo and the five sections (Now Playing, Library, Playlists, Schedule, Settings) as pill links, with the alert bell and the owner chip on the right, and a now-playing bar is fixed to the bottom. Below 900 pixels a short top bar keeps the logo, the bell and a one-word owner chip, the sections move to a fixed bottom tab bar with icons, and the now-playing bar sits above it. Both bars have a blurred, half-clear background, so the content scrolls under them.
 
-The owner badge is always visible: green for scheduled, amber for overridden, grey for manual or stopped, red for unavailable. Transport buttons are `btn-lg`, rows are at least 44px tall, and dark mode follows the device.
+The owner chip is always visible: teal for scheduled, amber for overridden, grey for manual or stopped, red for unavailable. The play button is 68 pixels across, rows are at least 44 pixels tall, and dark mode follows the device.
 
 Reordering works by dragging, with Move up, Move down, and Move to... in every row menu. Drag is the nice way; it shouldn't be the only way, particularly on a phone where dragging fights with scrolling.
 
