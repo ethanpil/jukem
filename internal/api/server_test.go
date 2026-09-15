@@ -6,21 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"jukem/internal/watchdog"
 	"jukem/web"
 )
 
-func okHealth() watchdog.Report {
-	return watchdog.Report{Status: watchdog.StatusOK, Checks: []watchdog.Check{{Name: "Service", Status: watchdog.StatusOK}}}
-}
-
 func TestHealthzAndStatic(t *testing.T) {
-	h, err := New(Options{Version: "test", Static: web.Files, Health: okHealth})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts := httptest.NewServer(h)
-	defer ts.Close()
+	ts := newTestServer(t)
 
 	resp, err := http.Get(ts.URL + "/healthz")
 	if err != nil {
@@ -57,9 +47,13 @@ func TestHealthzAndStatic(t *testing.T) {
 		t.Fatalf("asset cache: %q", resp.Header.Get("Cache-Control"))
 	}
 
+	resp, _ = http.Get(ts.URL + "/api/v1/health")
+	if resp.StatusCode != 200 {
+		t.Fatalf("health: %d", resp.StatusCode)
+	}
 	resp, _ = http.Get(ts.URL + "/api/v1/nothing")
-	if resp.StatusCode != 404 || resp.Header.Get("Content-Type") != "application/problem+json" {
-		t.Fatalf("unknown api: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	if resp.StatusCode != 401 || resp.Header.Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("unknown api without login: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }
 

@@ -93,12 +93,12 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Devices.OnChange = a.onDevices
 	go a.Devices.Run(ctx)
 
-	h, err := api.New(api.Options{Version: version, Static: web.Files, Health: a.Health})
+	srv, err := api.New(api.Options{Version: version, Static: web.Files, Store: db, Health: a.Health})
 	if err != nil {
 		a.Close()
 		return nil, err
 	}
-	a.handler = h
+	a.handler = srv.Handler()
 	return a, nil
 }
 
