@@ -4,8 +4,8 @@ import { state, refreshStatus } from '../main.js';
 
 const PAGE = 200;
 
-// nowPlayingView shows the track, transport, volume, overrides and the
-// paged queue.
+// nowPlayingView shows the track, transport, volume, overrides, the
+// tracks that played last and the paged queue from the current track on.
 export async function nowPlayingView(main) {
   clear(main);
   const trackBox = h('div.text-center.mb-3');
@@ -13,8 +13,9 @@ export async function nowPlayingView(main) {
   const seekRow = h('div.d-flex.align-items-center.gap-2.mb-3');
   const volumeRow = h('div.d-flex.align-items-center.gap-2.mb-3');
   const optionsRow = h('div.d-flex.flex-wrap.justify-content-center.gap-2.mb-4');
+  const recentBox = h('div');
   const queueBox = h('div');
-  main.append(h('div.mx-auto', { style: 'max-width: 720px' }, trackBox, transport, seekRow, volumeRow, optionsRow, h('h2.h5', 'Queue'), queueBox));
+  main.append(h('div.mx-auto', { style: 'max-width: 720px' }, trackBox, transport, seekRow, volumeRow, optionsRow, h('h2.h5', 'Queue'), recentBox, queueBox));
 
   let elapsedBase = 0;
   let elapsedAt = 0;
@@ -109,9 +110,14 @@ export async function nowPlayingView(main) {
         try { await A.setOptions({ shuffle: !p.shuffle }); } catch (e) { toast(e.message, 'danger'); }
       } }, icon('shuffle', 'me-1'), 'Shuffle'));
     if (st.owner?.state !== 'MANUAL') {
-      for (const [label, minutes] of [['15 min', 15], ['1 hour', 60], ['Until next event', 0]]) {
-        optionsRow.append(h('button.btn.btn-sm.btn-outline-warning', { type: 'button', onclick: () => override(minutes) }, label));
+      // A hold keeps what plays now (playing, paused or stopped) and stops
+      // the schedule from changing it for the chosen time.
+      const hold = h('div.btn-group.btn-group-sm', { role: 'group', 'aria-label': 'Hold the schedule' },
+        h('span.input-group-text.small', { title: 'Keep the current playback and stop the schedule from changing it' }, icon('pause-circle', 'me-1'), 'Hold schedule'));
+      for (const [label, minutes, tip] of [['15 min', 15, 'for 15 minutes'], ['1 hour', 60, 'for 1 hour'], ['Until next event', 0, 'until the next scheduled start or end']]) {
+        hold.append(h('button.btn.btn-outline-warning', { type: 'button', title: `Hold the schedule ${tip}`, onclick: () => override(minutes) }, label));
       }
+      optionsRow.append(hold);
       if (st.owner?.state === 'OVERRIDDEN') {
         optionsRow.append(h('button.btn.btn-sm.btn-warning', { type: 'button', onclick: resumeSchedule }, icon('calendar-check', 'me-1'), 'Resume schedule'));
       }
@@ -124,7 +130,7 @@ export async function nowPlayingView(main) {
   async function override(minutes) {
     try {
       await A.createOverride(minutes ? { mode: 'timed', minutes } : { mode: 'until_next' });
-      toast(minutes ? `Override for ${minutes} minutes` : 'Override until the next scheduled event', 'warning');
+      toast(minutes ? `Schedule on hold for ${minutes} minutes` : 'Schedule on hold until the next scheduled event', 'warning');
     } catch (e) { toast(e.message, 'danger'); }
   }
   async function resumeSchedule() {
@@ -147,18 +153,43 @@ export async function nowPlayingView(main) {
     elapsedLabel.textContent = fmtDuration(el);
   }, 1000);
 
-  // Queue
+  // Recently played: the last tracks from the play history, oldest first,
+  // so the newest sits just above the current track. The history holds
+  // the real play order, also when shuffle is on.
+  async function loadRecent() {
+    let r;
+    try { r = await A.api.get('/history?limit=7'); } catch { clear(recentBox); return; }
+    const current = state.status?.player?.song;
+    let rows = r.rows;
+    if (current && rows.length && rows[0].file === current.file) rows = rows.slice(1);
+    rows = rows.slice(0, 6).reverse();
+    clear(recentBox);
+    if (!rows.length) return;
+    const list = h('div.list-group.row-list.mb-1');
+    for (const row of rows) {
+      list.append(h('div.list-group-item.queue-played',
+        h('span.small.mono.text-body-secondary', { style: 'width: 3.5em' }, new Date(row.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+        h('div.row-main', h('div.row-title', row.title || row.file), h('div.small.text-body-secondary.row-title', [row.artist, row.album].filter(Boolean).join(' · ') || row.file))));
+    }
+    recentBox.append(h('div.small.text-body-secondary.mb-1', 'Recently played'), list);
+  }
+
+  // Queue. The list follows the current track: it starts at that entry,
+  // until a person pages away. "Show current" goes back.
   let offset = 0;
   let total = 0;
   let sortable = null;
   let dragging = false;
+  let followCurrent = true;
   async function loadQueue() {
     if (dragging) return;
+    const pos = state.status?.player?.song?.pos;
+    if (followCurrent && Number.isInteger(pos)) offset = pos;
     try {
       let q = await A.queue(offset, PAGE);
       if (!q.tracks.length && q.total > 0 && offset >= q.total) {
         // The queue shrank below this page: show its last page.
-        offset = Math.floor((q.total - 1) / PAGE) * PAGE;
+        offset = Math.max(0, q.total - PAGE);
         q = await A.queue(offset, PAGE);
       }
       total = q.total;
@@ -192,15 +223,17 @@ export async function nowPlayingView(main) {
             h('li', h('hr.dropdown-divider')),
             h('li', h('button.dropdown-item.text-danger', { type: 'button', onclick: () => remove(t) }, 'Remove'))))));
     }
-    queueBox.append(list);
-    if (total > PAGE) {
-      const pages = Math.ceil(total / PAGE);
-      const page = Math.floor(offset / PAGE);
-      queueBox.append(h('div.d-flex.justify-content-between.align-items-center.mt-2',
-        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: page === 0, onclick: () => { offset -= PAGE; loadQueue(); } }, 'Previous'),
-        h('span.small.text-body-secondary', `${page + 1} / ${pages} · ${total} tracks`),
-        h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: page >= pages - 1, onclick: () => { offset += PAGE; loadQueue(); } }, 'Next')));
+    if (state.status?.player?.shuffle) {
+      queueBox.append(h('div.small.text-body-secondary.mb-1', 'Shuffle is on: this is the queue order, and MPD picks the next track at random.'));
     }
+    queueBox.append(list);
+    const pageTo = (to) => { followCurrent = false; offset = Math.max(0, to); loadQueue(); };
+    const currentPos = state.status?.player?.song?.pos;
+    queueBox.append(h('div.d-flex.justify-content-between.align-items-center.mt-2.gap-2',
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: offset === 0, onclick: () => pageTo(offset - PAGE) }, 'Earlier'),
+      h('span.small.text-body-secondary', `${offset + 1}–${offset + q.tracks.length} of ${total} tracks`),
+      !followCurrent && Number.isInteger(currentPos) ? h('button.btn.btn-sm.btn-outline-primary', { type: 'button', onclick: () => { followCurrent = true; loadQueue(); } }, 'Show current') : null,
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: offset + q.tracks.length >= total, onclick: () => pageTo(offset + PAGE) }, 'Later')));
     if (window.Sortable) {
       if (sortable) sortable.destroy();
       sortable = Sortable.create(list, {
@@ -238,6 +271,7 @@ export async function nowPlayingView(main) {
   render(state.status);
   const listener = (st) => render(st);
   state.statusListeners.add(listener);
+  loadRecent();
   await loadQueue();
   if (!state.status) refreshStatus();
 
@@ -249,7 +283,7 @@ export async function nowPlayingView(main) {
       if (type === 'queue') loadQueue();
       if (type === 'player') {
         const id = state.status?.player?.song?.id;
-        if (id !== shownSongId) { shownSongId = id; loadQueue(); }
+        if (id !== shownSongId) { shownSongId = id; loadQueue(); loadRecent(); }
       }
     },
     destroy() {
