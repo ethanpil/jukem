@@ -45,8 +45,8 @@ type manualOffset struct {
 const manualOffsetKey = "clock_offset"
 
 // Clock decides whether the time can be trusted and applies a manual
-// offset. buildTime is the binary's build timestamp, the sanity floor for
-// an RTC.
+// offset. buildTime is the binary's build timestamp. A hardware clock
+// that shows an earlier date is wrong.
 type Clock struct {
 	store     *store.Store
 	buildTime time.Time
@@ -76,7 +76,11 @@ func (c *Clock) probeCached() (bool, bool) {
 
 // NewClock loads a stored manual offset when it belongs to this boot.
 func NewClock(ctx context.Context, st *store.Store, buildTime time.Time) *Clock {
-	c := &Clock{store: st, buildTime: buildTime, probe: probeClock, bootID: readBootID}
+	return newClock(ctx, st, buildTime, probeClock, readBootID)
+}
+
+func newClock(ctx context.Context, st *store.Store, buildTime time.Time, probe func() (bool, bool), bootID func() string) *Clock {
+	c := &Clock{store: st, buildTime: buildTime, probe: probe, bootID: bootID}
 	var m manualOffset
 	if ok, err := st.GetState(ctx, manualOffsetKey, &m); err == nil && ok {
 		if m.BootID != "" && m.BootID == c.bootID() {

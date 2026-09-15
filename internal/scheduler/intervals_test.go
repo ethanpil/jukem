@@ -213,3 +213,24 @@ func TestCurrentAndNextBoundary(t *testing.T) {
 		t.Fatal("disabled rule expanded")
 	}
 }
+
+// Zones west of UTC put an evening wall-clock time on the next UTC day.
+func TestWesternZonesEveningTimes(t *testing.T) {
+	for _, tc := range []struct {
+		zone   string
+		hh, mm int
+	}{
+		{"America/New_York", 22, 0},
+		{"America/Los_Angeles", 21, 30},
+		{"Pacific/Honolulu", 18, 0},
+		{"Pacific/Kiritimati", 23, 59},
+		{"Pacific/Pago_Pago", 23, 59},
+	} {
+		loc := mustLoc(t, tc.zone)
+		day := time.Date(2026, 3, 10, 12, 0, 0, 0, loc)
+		got := localTime(day, tc.hh, tc.mm, loc).In(loc)
+		if got.Year() != 2026 || got.Month() != 3 || got.Day() != 10 || got.Hour() != tc.hh || got.Minute() != tc.mm {
+			t.Errorf("%s %02d:%02d: got %v", tc.zone, tc.hh, tc.mm, got)
+		}
+	}
+}

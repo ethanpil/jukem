@@ -34,7 +34,12 @@ type Alerter struct {
 // NewAlerter creates an alerter. webhook is read at each delivery, so a
 // settings change applies at once.
 func NewAlerter(st *store.Store, ev *events.Hub, log *slog.Logger, webhook func() Webhook) *Alerter {
-	return &Alerter{store: st, events: ev, log: log, webhook: webhook, client: &http.Client{Timeout: 10 * time.Second}}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		// A redirect would turn the POST into a GET without the body.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return &Alerter{store: st, events: ev, log: log, webhook: webhook, client: client}
 }
 
 // Raise records a problem. A problem already active only updates its
@@ -135,7 +140,7 @@ func (a *Alerter) deliver(ctx context.Context, al store.Alert) error {
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook answered %s", resp.Status)
+		return fmt.Errorf("webhook answered %s; a redirect is not followed, use the final URL", resp.Status)
 	}
 	return nil
 }

@@ -410,12 +410,14 @@ func TestClockSources(t *testing.T) {
 	if d := c.Now().Sub(entered); d < -time.Second || d > time.Second {
 		t.Fatalf("offset not applied: %v", d)
 	}
-	c2 := NewClock(context.Background(), st, c.buildTime)
-	c2.bootID = func() string { return "b1" }
-	c2 = NewClock(context.Background(), st, c.buildTime)
-	if c2.manual == nil && readBootID() == "b1" {
-		t.Fatal("manual offset not reloaded")
+	c2 := newClock(context.Background(), st, c.buildTime, c.probe, func() string { return "b1" })
+	if c2.manual == nil {
+		t.Fatal("manual offset not reloaded on the same boot")
 	}
+	if c3 := newClock(context.Background(), st, c.buildTime, c.probe, func() string { return "b2" }); c3.manual != nil {
+		t.Fatal("manual offset kept across boots")
+	}
+	c.manual = c2.manual
 	// NTP synchronisation drops the manual offset.
 	c.probe = func() (bool, bool) { return true, false }
 	c.probedAt = time.Time{}
@@ -425,5 +427,29 @@ func TestClockSources(t *testing.T) {
 	var m manualOffset
 	if ok, _ := st.GetState(context.Background(), manualOffsetKey, &m); ok {
 		t.Fatal("stored offset not removed after sync")
+	}
+}
+
+func TestExpiredOverrideIsRemoved(t *testing.T) {
+	h := newHarness(t)
+	h.addRule(t, "Morning", "09:00", "11:00", "Morning")
+	h.advance(90 * time.Minute) // 09:30
+	h.tick()
+	ctx := context.Background()
+	if err := h.s.CreateOverride(ctx, store.Override{Mode: "until_next", Intent: "pause", Source: "web UI"}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	// The window ends at 11:00, and with it the override. A day later the
+	// Monday window has left the rolling cache; the override must not
+	// come back with a new end.
+	h.advance(25 * time.Hour)
+	h.s.Invalidate()
+	h.tick()
+	if _, ok, _ := h.st.GetOverride(ctx); ok {
+		t.Fatal("expired override still stored")
+	}
+	if o := h.s.Owner(ctx); o.State != player.OwnerScheduled {
+		t.Fatalf("owner %+v", o)
 	}
 }

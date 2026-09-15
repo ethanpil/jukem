@@ -51,13 +51,21 @@ func parseHM(s string) (int, int, error) {
 
 // localTime returns the instant for a wall-clock time on a date, with the
 // daylight saving policy. A time that does not exist becomes the next
-// valid instant. A time that happens twice is its first occurrence. The
-// search finds the earliest instant whose local clock has reached the
-// wanted time on that date, which gives both rules at once, because local
-// time only ever jumps forward.
+// valid instant. A time that happens twice is its first occurrence.
+//
+// The zone offset before and after the day give the candidate instants.
+// A candidate whose local clock shows the wanted time is a real
+// occurrence; the earliest wins. With no such candidate the time is in a
+// gap, and a search between the candidates finds the transition.
 func localTime(day time.Time, hh, mm int, loc *time.Location) time.Time {
 	y, m, d := day.In(loc).Date()
 	want := hh*60 + mm
+	naive := time.Date(y, m, d, hh, mm, 0, 0, time.UTC)
+	local := func(t time.Time) (sameDay bool, minutes int) {
+		lt := t.In(loc)
+		ly, lm, ld := lt.Date()
+		return ly == y && lm == m && ld == d, lt.Hour()*60 + lt.Minute()
+	}
 	reached := func(t time.Time) bool {
 		lt := t.In(loc)
 		ly, lm, ld := lt.Date()
@@ -71,10 +79,40 @@ func localTime(day time.Time, hh, mm int, loc *time.Location) time.Time {
 		}
 		return lt.Hour()*60+lt.Minute() >= want
 	}
-	// The instant lies inside a window of a day plus the largest offset
-	// change on either side.
-	lo := time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Add(-26 * time.Hour)
-	hi := lo.Add(52 * time.Hour)
+	var cands []time.Time
+	for _, probe := range []time.Time{naive.Add(-30 * time.Hour), naive, naive.Add(30 * time.Hour)} {
+		_, off := probe.In(loc).Zone()
+		c := naive.Add(-time.Duration(off) * time.Second)
+		dup := false
+		for _, o := range cands {
+			dup = dup || o.Equal(c)
+		}
+		if !dup {
+			cands = append(cands, c)
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].Before(cands[j]) })
+	for _, c := range cands {
+		if ok, mins := local(c); ok && mins == want {
+			return c
+		}
+	}
+	// A gap: the transition lies between the last candidate before the
+	// wanted time and the first one after it.
+	lo, hi := cands[0], cands[len(cands)-1]
+	for _, c := range cands {
+		if !reached(c) {
+			lo = c
+		}
+	}
+	for i := len(cands) - 1; i >= 0; i-- {
+		if reached(cands[i]) {
+			hi = cands[i]
+		}
+	}
+	if !lo.Before(hi) {
+		return hi
+	}
 	for hi.Sub(lo) > time.Second {
 		mid := lo.Add(hi.Sub(lo) / 2)
 		if reached(mid) {

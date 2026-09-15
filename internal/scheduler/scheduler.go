@@ -43,8 +43,6 @@ type Deps struct {
 	// OnProblem is told about repeated play failures and dead air, for
 	// the watchdog. It may be nil.
 	OnProblem func(kind, message string)
-	// OnProgram is told when a program starts, for history. It may be nil.
-	OnProgram func(name string)
 }
 
 // Program is what jukem loaded into MPD: the key of the occurrence, the
@@ -97,9 +95,6 @@ func New(ctx context.Context, d Deps) *Scheduler {
 	if d.OnProblem == nil {
 		d.OnProblem = func(string, string) {}
 	}
-	if d.OnProgram == nil {
-		d.OnProgram = func(string) {}
-	}
 	s := &Scheduler{d: d, kick: make(chan struct{}, 1)}
 	var p Program
 	if ok, err := d.Store.GetState(ctx, programKey, &p); err == nil && ok {
@@ -120,22 +115,25 @@ func (s *Scheduler) Kick() {
 }
 
 // Suspend holds the loop while a person's action runs, so a tick cannot
-// undo it before its override exists. The returned function releases the
-// hold and reconciles.
+// undo it before its override exists. A fade in progress is stopped too,
+// because its goroutine would stop or replace the queue. The returned
+// function releases the hold and reconciles.
 func (s *Scheduler) Suspend() func() {
 	s.suspended.Add(1)
+	s.cancelFade(nil)
 	return func() {
 		s.suspended.Add(-1)
 		s.Kick()
 	}
 }
 
-// Invalidate drops the interval cache after a rule, exception or zone
-// change, and reconciles.
+// Invalidate drops the interval cache after a rule, exception, playlist
+// or zone change, tells the clients, and reconciles.
 func (s *Scheduler) Invalidate() {
 	s.mu.Lock()
 	s.ivsAt = time.Time{}
 	s.mu.Unlock()
+	s.d.Events.Publish(events.Schedule, "")
 	s.Kick()
 }
 
@@ -158,10 +156,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 // Intervals returns the expanded intervals for a range.
 func (s *Scheduler) Intervals(ctx context.Context, from, to time.Time) ([]Interval, error) {
 	set := s.d.Settings()
-	loc, err := time.LoadLocation(set.TimeZone)
-	if err != nil {
-		return nil, err
-	}
+	loc := set.Location()
 	rules, err := s.d.Store.ListSchedules(ctx)
 	if err != nil {
 		return nil, err
@@ -185,8 +180,12 @@ func (s *Scheduler) current(ctx context.Context, now time.Time) []Interval {
 	s.mu.Unlock()
 	ivs, err := s.Intervals(ctx, now.AddDate(0, 0, -1), now.AddDate(0, 0, 8))
 	if err != nil {
+		// The last good window is better than an empty one, which would
+		// stop the music.
 		s.d.Log.Warn("cannot expand the schedule", "error", err)
-		return nil
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.ivs
 	}
 	s.mu.Lock()
 	s.ivs, s.ivsAt = ivs, now
@@ -210,9 +209,19 @@ type view struct {
 // snapshot computes the owner and the facts behind it.
 func (s *Scheduler) snapshot(ctx context.Context) view {
 	v := view{now: s.d.Clock.Now(), set: s.d.Settings()}
-	v.loc, _ = time.LoadLocation(v.set.TimeZone)
-	if v.loc == nil {
-		v.loc = time.UTC
+	v.loc = v.set.Location()
+	v.ivs = s.current(ctx, v.now)
+	// The override is read first, so a caller sees it while MPD or the
+	// device is away. An override past its end is removed at once: its
+	// end is computed from the rolling window, and a stale row would come
+	// back once its window left the cache.
+	if o, ok, err := s.d.Store.GetOverride(ctx); err == nil && ok {
+		end, hasEnd := overrideEnd(o, v.ivs)
+		if !hasEnd || v.now.Before(end) {
+			v.override, v.hasOver, v.overEnd, v.hasEnd = o, true, end, hasEnd
+		} else if err := s.d.Store.ClearOverride(ctx); err == nil {
+			s.d.Events.Publish(events.Schedule, "")
+		}
 	}
 	if !s.d.MPDRunning() {
 		v.owner = player.Owner{State: player.OwnerUnavailable, Reason: "MPD is not running"}
@@ -232,14 +241,9 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 		v.owner = player.Owner{State: player.OwnerUnavailable, Reason: warning}
 		return v
 	}
-	v.ivs = s.current(ctx, v.now)
-	if o, ok, err := s.d.Store.GetOverride(ctx); err == nil && ok {
-		end, hasEnd := overrideEnd(o, v.ivs)
-		if !hasEnd || v.now.Before(end) {
-			v.override, v.hasOver, v.overEnd, v.hasEnd = o, true, end, hasEnd
-			v.owner = overrideOwner(o, v.now, end, hasEnd, v.loc)
-			return v
-		}
+	if v.hasOver {
+		v.owner = overrideOwner(v.override, v.now, v.overEnd, v.hasEnd, v.loc)
+		return v
 	}
 	if iv, ok := Current(v.ivs, v.now); ok {
 		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc)), Program: iv.Name, Until: &iv.End}
@@ -359,6 +363,15 @@ func (s *Scheduler) PlaySource(ctx context.Context) string {
 	return "manual"
 }
 
+// Fading reports whether a fade runs. The MPD watcher then skips the
+// volume events, which would otherwise make every client refetch the
+// status twenty times.
+func (s *Scheduler) Fading() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fade != nil
+}
+
 // Loaded returns the loaded program.
 func (s *Scheduler) Loaded() Program {
 	s.mu.Lock()
@@ -466,8 +479,9 @@ func (s *Scheduler) tryPlay(now time.Time, st player.Status) {
 func (s *Scheduler) enforceOverride(ctx context.Context, o store.Override, st player.Status) {
 	switch o.Intent {
 	case "play":
-		if o.Mode == "play_now" && s.d.Player.Finished(st) {
-			// The chosen tracks finished: the override is over.
+		if o.Mode == "play_now" && (s.d.Player.Finished(st) || (st.State == "stop" && st.Error != "")) {
+			// The chosen tracks finished, or the last one failed: the
+			// override is over either way.
 			s.ClearOverride(ctx)
 			return
 		}
@@ -490,6 +504,10 @@ func (s *Scheduler) enforceOverride(ctx context.Context, o store.Override, st pl
 func (s *Scheduler) loadAndPlay(ctx context.Context, want Interval) {
 	now := s.d.Clock.Now()
 	files, truncated, err := s.d.Resolve(ctx, want.Source)
+	if ctx.Err() != nil {
+		// A cancelled fade is not a play failure.
+		return
+	}
 	if err != nil || len(files) == 0 {
 		msg := fmt.Sprintf("%s has nothing to play", want.Name)
 		if err != nil {
@@ -519,7 +537,6 @@ func (s *Scheduler) loadAndPlay(ctx context.Context, want Interval) {
 	s.resetFailures()
 	s.setLoaded(ctx, Program{Key: want.Key, Name: want.Name, Source: want.Source, Options: want.Options, Generation: s.d.Player.Generation()})
 	s.d.Log.Info("program started", "program", want.Name, "tracks", len(files))
-	s.d.OnProgram(want.Name)
 	if fadeIn {
 		s.startFade(ctx, "in", want.Key, func(fctx context.Context) {
 			s.fadeTo(fctx, 0, target, set.FadeIn)
