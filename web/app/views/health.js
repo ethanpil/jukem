@@ -1,17 +1,17 @@
 import * as A from '../api.js';
 import { h, clear, icon, spinner, errorBox, fmtTime, toast } from '../dom.js';
 
-const statusIcon = { ok: ['check-circle-fill', 'text-success'], warning: ['exclamation-triangle-fill', 'text-warning'], error: ['x-circle-fill', 'text-danger'] };
+const statusIcon = { ok: 'check-circle-fill', warning: 'exclamation-triangle-fill', error: 'x-circle-fill' };
 
 // alertCard renders one active alert with its dismiss button.
 function alertCard(a, onDismiss) {
-  return h('div.alert.alert-warning.d-flex.gap-2.align-items-start.mb-2',
-    icon('exclamation-triangle-fill', 'mt-1'),
-    h('div.flex-grow-1',
+  return h('div.alert.alert-warning.mb-0',
+    icon('exclamation-triangle-fill'),
+    h('div.flex-1',
       h('div.fw-semibold', a.message),
-      a.fix ? h('div.small', a.fix) : null,
-      h('div.small.text-body-secondary', `Since ${fmtTime(a.raised_at)}${a.count > 1 ? ` · seen ${a.count} times` : ''}`)),
-    h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: async () => {
+      a.fix ? h('div', a.fix) : null,
+      h('div.small.opacity-75.mt-1', `Since ${fmtTime(a.raised_at)}${a.count > 1 ? ` · seen ${a.count} times` : ''}`)),
+    h('button.btn.btn-sm.btn-outline-secondary.flex-none', { type: 'button', onclick: async () => {
       try { await A.dismissAlert(a.id); if (onDismiss) onDismiss(); } catch (e) { toast(e.message, 'danger'); }
     } }, 'Dismiss'));
 }
@@ -19,7 +19,7 @@ function alertCard(a, onDismiss) {
 // healthView is the plain-language system status.
 export async function healthView(main) {
   clear(main);
-  const box = h('div.mx-auto', { style: 'max-width: 720px' }, spinner());
+  const box = h('section.page.page-narrow', spinner());
   main.append(box);
   async function load() {
     try {
@@ -31,23 +31,30 @@ export async function healthView(main) {
   }
   function render(rep, info, alerts) {
     clear(box);
-    const [ic, cls] = statusIcon[rep.status] || statusIcon.error;
-    box.append(h('div.d-flex.align-items-center.gap-2.mb-3', icon(ic, `${cls} fs-3`),
-      h('h1.h3.mb-0', rep.status === 'ok' ? 'System healthy' : rep.status === 'warning' ? 'System needs attention' : 'System has a problem')));
-    if (rep.reason) box.append(h('div.alert.alert-danger', h('div.fw-semibold', rep.reason), rep.fix ? h('pre.pre-wrap.mb-0.mt-2', rep.fix) : null));
-    for (const a of alerts) box.append(alertCard(a, load));
-    const list = h('div.list-group.mb-3');
+    const status = statusIcon[rep.status] ? rep.status : 'error';
+    box.append(h('div.page-head',
+      h('div.health-hero',
+        h('div', { class: `big ${status}` }, icon(statusIcon[status])),
+        h('div',
+          h('h1.page-title', rep.status === 'ok' ? 'System healthy' : rep.status === 'warning' ? 'System needs attention' : 'System has a problem'),
+          h('div.small-note', `Checked ${new Date().toLocaleTimeString()}`)))));
+    const stack = h('div.stack');
+    box.append(stack);
+    if (rep.reason) stack.append(h('div.alert.alert-danger.mb-0', icon('x-circle-fill'), h('div.flex-1', h('div.fw-semibold', rep.reason), rep.fix ? h('pre.pre-wrap.mt-2', rep.fix) : null)));
+    for (const a of alerts) stack.append(alertCard(a, load));
+    const checks = h('div.panel.clip', h('div.panel-head', h('h2.panel-title', 'Checks')));
     for (const c of rep.checks || []) {
-      const [ci, ccls] = statusIcon[c.status] || statusIcon.error;
-      list.append(h('div.list-group-item',
-        h('div.d-flex.align-items-center.gap-2', icon(ci, ccls), h('span.fw-semibold', { style: 'min-width: 8em' }, c.name), h('span', c.summary)),
-        c.fix ? h('pre.pre-wrap.small.text-body-secondary.mb-0.mt-1.ms-4', c.fix) : null));
+      const cs = statusIcon[c.status] ? c.status : 'error';
+      checks.append(h('div.check-row',
+        h('div.line', icon(statusIcon[cs], `status-${cs}`), h('span.check-name', c.name), h('span.flex-1', c.summary)),
+        c.fix ? h('pre.pre-wrap', c.fix) : null));
     }
-    box.append(list);
-    if (info) {
-      box.append(h('p.small.text-body-secondary', `jukem ${info.version} · schema ${info.schema_version} · ${info.runtime} · up ${Math.floor(info.uptime_seconds / 3600)}h ${Math.floor((info.uptime_seconds % 3600) / 60)}m`));
-    }
-    box.append(h('p.small.text-body-secondary', `Checked ${new Date().toLocaleTimeString()} · `, h('a', { href: '#/history' }, 'Play history')));
+    if (!rep.checks?.length) checks.append(h('div.panel-empty', 'No checks reported.'));
+    stack.append(checks);
+    const foot = h('div.small-note.d-flex.flex-wrap.gap-3');
+    if (info) foot.append(h('span.mono', `jukem ${info.version} · schema ${info.schema_version} · ${info.runtime} · up ${Math.floor(info.uptime_seconds / 3600)}h ${Math.floor((info.uptime_seconds % 3600) / 60)}m`));
+    foot.append(h('a', { href: '#/history' }, 'Play history'));
+    stack.append(foot);
   }
   await load();
   return { onEvent(type) { if (type === 'health' || type === 'alerts' || type === 'devices') load(); } };
@@ -56,25 +63,26 @@ export async function healthView(main) {
 // historyView lists what played and when.
 export async function historyView(main) {
   clear(main);
-  const box = h('div.mx-auto', { style: 'max-width: 900px' });
+  const box = h('section.page.page-md');
   main.append(box);
-  const list = h('div.list-group.row-list');
-  const more = h('button.btn.btn-outline-secondary.mt-2', { type: 'button', onclick: () => load() }, 'Older');
+  const list = h('div.rows');
+  const more = h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => load() }, 'Older');
+  const foot = h('div.pager.tinted', more);
   let before = 0;
-  box.append(h('h1.h3', 'Play history'), list, more);
+  box.append(h('div.page-head', h('h1.page-title', 'Play history')), h('div.panel.clip', list, foot));
   async function load() {
     more.disabled = true;
     let r;
-    try { r = await A.history(before); } catch (e) { box.append(errorBox(e)); return; }
-    if (!r.rows.length && !before) list.append(h('div.list-group-item.text-body-secondary', 'Nothing played yet.'));
+    try { r = await A.history(before); } catch (e) { box.append(h('div.mt-3', errorBox(e))); return; }
+    if (!r.rows.length && !before) list.append(h('div.panel-empty', 'Nothing played yet.'));
     for (const row of r.rows) {
-      list.append(h('div.list-group-item',
-        h('span.mono.small.text-body-secondary', { style: 'min-width: 9em' }, fmtTime(row.started_at)),
-        h('div.row-main', h('div.row-title', row.title || row.file), h('div.small.text-body-secondary', [row.artist, row.album].filter(Boolean).join(' · ') || row.file)),
-        row.source ? h('span.badge.text-bg-secondary', row.source) : null));
+      list.append(h('div.row-item',
+        h('span.row-time.stamp.nowrap', fmtTime(row.started_at)),
+        h('div.row-main', h('div.row-title', row.title || row.file), h('div.row-sub', [row.artist, row.album].filter(Boolean).join(' · ') || row.file)),
+        row.source ? h('span.chip.chip-neutral', row.source) : null));
     }
     if (r.rows.length) before = r.rows[r.rows.length - 1].id;
-    more.classList.toggle('d-none', r.rows.length < 100);
+    foot.classList.toggle('hidden', r.rows.length < 100);
     more.disabled = false;
   }
   await load();

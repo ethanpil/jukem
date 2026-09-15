@@ -1,30 +1,36 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, fmtDuration, confirmDialog, spinner, errorBox } from '../dom.js';
+import { h, clear, icon, toast, fmtDuration, confirmDialog, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import { state, refreshStatus } from '../main.js';
 
 const PAGE = 200;
 
-// nowPlayingView shows the track, the transport, the volume and the holds.
-// Below them are the last tracks that played and the queue.
+// nowPlayingView shows the player card: the track, the transport, the
+// position, the volume and the holds. Below it is the queue card, with the
+// last tracks that played above the queue.
 export async function nowPlayingView(main) {
   clear(main);
-  const trackBox = h('div.text-center.mb-3');
-  const transport = h('div.transport.d-flex.justify-content-center.align-items-center.gap-2.mb-3');
-  const seekRow = h('div.d-flex.align-items-center.gap-2.mb-3');
-  const volumeRow = h('div.d-flex.align-items-center.gap-2.mb-3');
-  const optionsRow = h('div.d-flex.flex-wrap.justify-content-center.gap-2.mb-4');
+  const trackBox = h('div.player-track');
+  const transport = h('div.transport');
+  const seekRow = h('div.seek-row');
+  const volumeRow = h('div.volume-row');
+  const optionsRow = h('div.options-row');
+  const queueFig = h('span.queue-fig');
   const recentBox = h('div');
   const queueBox = h('div');
-  main.append(h('div.mx-auto', { style: 'max-width: 720px' }, trackBox, transport, seekRow, volumeRow, optionsRow, h('h2.h5', 'Queue'), recentBox, queueBox));
+  main.append(h('section.page.page-narrow.stack',
+    h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, optionsRow),
+    h('div.panel.clip',
+      h('div.panel-head', h('h2.panel-title', 'Queue'), queueFig),
+      recentBox, queueBox)));
 
   let elapsedBase = 0;
   let elapsedAt = 0;
   let playing = false;
   let seeking = false;
   let volumeDragging = false;
-  const seekInput = h('input.form-range.flex-grow-1', { type: 'range', min: 0, max: 100, value: 0, step: 1, 'aria-label': 'Position' });
-  const elapsedLabel = h('span.small.mono', '0:00');
-  const durationLabel = h('span.small.mono', '0:00');
+  const seekInput = h('input.form-range.flex-1', { type: 'range', min: 0, max: 100, value: 0, step: 1, 'aria-label': 'Position' });
+  const elapsedLabel = h('span.fig', '0:00');
+  const durationLabel = h('span.fig', '0:00');
   seekRow.append(elapsedLabel, seekInput, durationLabel);
   seekInput.addEventListener('input', () => { seeking = true; elapsedLabel.textContent = fmtDuration(Number(seekInput.value)); });
   seekInput.addEventListener('change', async () => {
@@ -34,13 +40,14 @@ export async function nowPlayingView(main) {
     try { await A.seek(elapsedBase); } catch (e) { toast(e.message, 'danger'); }
   });
 
-  const volumeInput = h('input.form-range.flex-grow-1', { type: 'range', min: 0, max: 100, value: 50, step: 1, 'aria-label': 'Volume' });
-  const volumeLabel = h('span.small.mono', { style: 'width: 3em' }, '');
+  const volumeInput = h('input.form-range.flex-1', { type: 'range', min: 0, max: 100, value: 50, step: 1, 'aria-label': 'Volume' });
+  const volumeLabel = h('span.fig', '');
   volumeRow.append(icon('volume-down'), volumeInput, icon('volume-up'), volumeLabel);
+  const showVolume = (v) => { volumeLabel.textContent = v === '' ? '' : `${v}%`; };
   let volumeTimer = null;
   volumeInput.addEventListener('input', () => {
     volumeDragging = true;
-    volumeLabel.textContent = volumeInput.value;
+    showVolume(volumeInput.value);
     clearTimeout(volumeTimer);
     volumeTimer = setTimeout(sendVolume, 150);
   });
@@ -51,7 +58,7 @@ export async function nowPlayingView(main) {
       const r = await A.setVolume(sent);
       if (r.volume !== sent && !volumeDragging) {
         volumeInput.value = r.volume;
-        volumeLabel.textContent = r.volume;
+        showVolume(r.volume);
         toast(`Volume limited to ${r.volume} by Settings > Playback`, 'warning');
       }
     } catch (e) { toast(e.message, 'danger'); }
@@ -62,7 +69,7 @@ export async function nowPlayingView(main) {
     clear(transport);
     clear(optionsRow);
     if (!st) {
-      trackBox.append(h('p.text-body-secondary', 'jukem is not reachable.'));
+      trackBox.append(h('div.art', icon('wifi-off')), h('div.flex-1', h('div.track-title', 'jukem is not reachable'), h('div.track-sub', 'The page tries again on its own.')));
       return;
     }
     const p = st.player;
@@ -71,10 +78,11 @@ export async function nowPlayingView(main) {
     elapsedBase = p.elapsed || 0;
     elapsedAt = Date.now();
     if (song) {
-      trackBox.append(
-        h('div.h4.mb-1.text-break', song.title || song.file),
-        h('div.text-body-secondary.text-break', [song.artist, song.album].filter(Boolean).join(' · ')),
-        h('div.small.text-body-secondary.mono.text-break', song.file));
+      trackBox.append(h('div.art', icon('vinyl-fill')),
+        h('div.flex-1',
+          h('div.track-title', { title: song.title || song.file }, song.title || song.file),
+          h('div.track-sub', [song.artist, song.album].filter(Boolean).join(' · ')),
+          h('div.track-file', { title: song.file }, song.file)));
       seekInput.max = Math.max(1, Math.round(song.duration || 0));
       durationLabel.textContent = fmtDuration(song.duration);
       seekInput.disabled = !song.duration;
@@ -83,49 +91,52 @@ export async function nowPlayingView(main) {
         elapsedLabel.textContent = fmtDuration(elapsedBase);
       }
     } else {
-      trackBox.append(h('div.h4.mb-1', st.mpd_running ? 'Nothing playing' : 'MPD is not running'),
-        h('div.text-body-secondary', st.owner?.reason || ''));
+      trackBox.append(h('div.art', icon(st.mpd_running ? 'vinyl' : 'exclamation-triangle')),
+        h('div.flex-1',
+          h('div.track-title', st.mpd_running ? 'Nothing playing' : 'MPD is not running'),
+          h('div.track-sub', st.mpd_running ? (p.queue_length ? `${p.queue_length} tracks in the queue` : 'The queue is empty. Add tracks from the Library.') : 'jukem restarts it on its own')));
       seekInput.max = 100; seekInput.value = 0; seekInput.disabled = true;
+      elapsedLabel.textContent = '0:00';
       durationLabel.textContent = '0:00';
     }
-    trackBox.append(h('div.mt-2', h('span.badge.text-bg-light.border', st.owner?.reason || st.owner?.state || ''), st.owner?.warning ? h('span.badge.text-bg-warning.ms-1', st.owner.warning) : null));
     if (p.volume >= 0 && !volumeDragging) {
       volumeInput.value = p.volume;
-      volumeLabel.textContent = p.volume;
+      showVolume(p.volume);
       volumeInput.disabled = false;
     } else if (p.volume < 0) {
       volumeInput.disabled = true;
-      volumeLabel.textContent = '';
+      showVolume('');
     }
     const act = (action) => async () => {
       try { await A.playerAction(action); } catch (e) { toast(e.message, 'danger'); }
     };
+    const round = (ic, label, action) => h('button.btn.btn-outline-secondary.btn-round', { type: 'button', onclick: act(action), 'aria-label': label, title: label }, icon(ic));
     transport.append(
-      h('button.btn.btn-lg.btn-outline-secondary', { type: 'button', onclick: act('previous'), 'aria-label': 'Previous' }, icon('skip-start-fill')),
-      h('button.btn.btn-lg.btn-primary.btn-play.rounded-circle', { type: 'button', onclick: act(playing ? 'pause' : 'play'), 'aria-label': playing ? 'Pause' : 'Play' }, icon(playing ? 'pause-fill' : 'play-fill')),
-      h('button.btn.btn-lg.btn-outline-secondary', { type: 'button', onclick: act('stop'), 'aria-label': 'Stop' }, icon('stop-fill')),
-      h('button.btn.btn-lg.btn-outline-secondary', { type: 'button', onclick: act('next'), 'aria-label': 'Next' }, icon('skip-end-fill')));
+      round('skip-start-fill', 'Previous', 'previous'),
+      h('button.btn.btn-primary.btn-round.btn-play', { type: 'button', onclick: act(playing ? 'pause' : 'play'), 'aria-label': playing ? 'Pause' : 'Play' }, icon(playing ? 'pause-fill' : 'play-fill')),
+      round('stop-fill', 'Stop', 'stop'),
+      round('skip-end-fill', 'Next', 'next'));
+
     optionsRow.append(
-      h('button.btn.btn-sm', { type: 'button', class: `btn btn-sm ${p.shuffle ? 'btn-secondary' : 'btn-outline-secondary'}`, onclick: async () => {
+      h('button', { type: 'button', class: `btn btn-sm ${p.shuffle ? 'btn-soft' : 'btn-outline-secondary'}`, 'aria-pressed': String(!!p.shuffle), onclick: async () => {
         try { await A.setOptions({ shuffle: !p.shuffle }); } catch (e) { toast(e.message, 'danger'); }
-      } }, icon('shuffle', 'me-1'), 'Shuffle'));
+      } }, icon('shuffle'), 'Shuffle'));
     if (st.owner?.state !== 'MANUAL') {
       // A hold keeps the music as it is now, playing or paused. The
       // schedule does not change it until the hold ends. A timed hold also
       // ends at the next scheduled start or end, when that comes first.
-      const hold = h('div.btn-group.btn-group-sm', { role: 'group', 'aria-labelledby': 'hold-label' });
-      for (const [label, minutes] of [['15 min', 15], ['1 hour', 60], ['Until next event', 0]]) {
-        hold.append(h('button.btn.btn-outline-warning', { type: 'button', onclick: () => override(minutes) }, label));
+      const why = 'A hold keeps the music as it is now. The schedule takes over again at the end of the hold or at its next start or end.';
+      const hold = h('div.seg', { role: 'group', 'aria-label': 'Hold the schedule', title: why }, h('span.seg-label', 'Hold schedule'));
+      for (const [label, minutes, tip] of [['15 min', 15, 'Hold the schedule for 15 minutes'], ['1 hour', 60, 'Hold the schedule for 1 hour'], ['Until next event', 0, 'Hold the schedule until its next start or end']]) {
+        hold.append(h('button', { type: 'button', title: tip, onclick: () => override(minutes) }, label));
       }
-      optionsRow.append(h('div.d-flex.flex-wrap.align-items-center.justify-content-center.gap-2',
-        h('span.small.text-body-secondary#hold-label', icon('pause-circle', 'me-1'), 'Hold the schedule:'), hold),
-        h('div.w-100.text-center.small.text-body-secondary', 'A hold keeps the music as it is now. The schedule takes over again at the end of the hold or at its next start or end.'));
+      optionsRow.append(hold);
       if (st.owner?.state === 'OVERRIDDEN') {
-        optionsRow.append(h('button.btn.btn-sm.btn-warning', { type: 'button', onclick: resumeSchedule }, icon('calendar-check', 'me-1'), 'Resume schedule'));
+        optionsRow.append(h('button.btn.btn-sm.btn-warning', { type: 'button', onclick: resumeSchedule }, icon('calendar-check'), 'Resume schedule'));
       }
     }
     if (song) {
-      optionsRow.append(h('button.btn.btn-sm.btn-outline-danger', { type: 'button', onclick: () => doNotPlay(song) }, icon('slash-circle', 'me-1'), 'Do not play'));
+      optionsRow.append(h('button.btn.btn-sm.btn-outline-danger.push', { type: 'button', onclick: () => doNotPlay(song) }, icon('slash-circle'), 'Do not play'));
     }
   }
 
@@ -170,17 +181,20 @@ export async function nowPlayingView(main) {
     rows = rows.slice(0, 6).reverse();
     clear(recentBox);
     if (!rows.length) return;
-    const list = h('div.list-group.row-list.mb-1');
+    recentBox.append(h('div.section-label', 'Recently played'));
     const today = new Date().toDateString();
+    // The time column is wider when a row also shows the weekday.
+    const older = rows.some((row) => new Date(row.started_at).toDateString() !== today);
     for (const row of rows) {
       const at = new Date(row.started_at);
       // A track from an earlier day also shows the weekday.
       const when = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      list.append(h('div.list-group-item',
-        h('span.small.mono.text-body-secondary.text-nowrap', { style: 'min-width: 5.5em' }, at.toDateString() === today ? when : `${at.toLocaleDateString([], { weekday: 'short' })} ${when}`),
-        h('div.row-main', h('div.row-title.text-body-secondary', row.title || row.file), h('div.small.text-body-secondary.row-title', [row.artist, row.album].filter(Boolean).join(' · ') || row.file))));
+      const label = at.toDateString() === today ? when : `${at.toLocaleDateString([], { weekday: 'short' })} ${when}`;
+      recentBox.append(h('div.row-item.plain.dim',
+        h('span', { class: `row-time nowrap ${older ? 'wide' : ''}` }, label),
+        h('div.row-main', h('div.row-title', row.title || row.file), h('div.row-sub', [row.artist, row.album].filter(Boolean).join(' · ') || row.file))));
     }
-    recentBox.append(h('div.small.text-body-secondary.mb-1', 'Recently played'), list);
+    recentBox.append(h('div.divider'));
   }
 
   // Queue. The list starts at the current track and follows it. With
@@ -215,46 +229,50 @@ export async function nowPlayingView(main) {
       total = q.total;
       renderQueue(q, off);
     } catch (e) {
-      clear(queueBox).append(e.status === 503 ? h('p.text-body-secondary', 'MPD is not running.') : errorBox(e));
+      queueFig.textContent = '';
+      clear(queueBox).append(e.status === 503 ? h('div.panel-empty', 'MPD is not running.') : h('div.panel-body', errorBox(e)));
     }
   }
   // renderQueue draws a list that starts at queue position off. A drag in
   // it counts positions from off.
   function renderQueue(q, off) {
     clear(queueBox);
+    queueFig.textContent = `${total} ${total === 1 ? 'track' : 'tracks'}`;
     const currentId = state.status?.player?.song?.id;
     if (!q.tracks.length) {
-      queueBox.append(h('p.text-body-secondary', 'The queue is empty. Add tracks from the Library.'));
+      queueBox.append(h('div.panel-empty', 'The queue is empty. Add tracks from the Library.'));
       return;
     }
-    const list = h('div.list-group.row-list');
+    const list = h('div.rows');
     for (const t of q.tracks) {
-      list.append(h('div.list-group-item', { class: `list-group-item ${t.id === currentId ? 'queue-current' : ''}`, dataset: { id: t.id } },
-        h('span.drag-handle', icon('grip-vertical')),
-        h('span.text-body-secondary.small.mono', { style: 'width: 3em' }, t.pos + 1),
-        h('div.row-main', h('div.row-title', t.title), h('div.small.text-body-secondary.row-title', [t.artist, t.album].filter(Boolean).join(' · ') || t.file)),
-        t.prio ? h('span.badge.text-bg-warning', 'next') : null,
-        h('span.small.mono.text-body-secondary', fmtDuration(t.duration)),
-        h('div.dropdown',
-          h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': 'Actions' }, icon('three-dots-vertical')),
-          h('ul.dropdown-menu.dropdown-menu-end',
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => playFrom(t) }, 'Play from here')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => move(t, t.pos - 1) }, 'Move up')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => move(t, t.pos + 1) }, 'Move down')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => moveTo(t) }, 'Move to…')),
-            h('li', h('hr.dropdown-divider')),
-            h('li', h('button.dropdown-item.text-danger', { type: 'button', onclick: () => remove(t) }, 'Remove'))))));
-    }
-    if (state.status?.player?.shuffle) {
-      queueBox.append(h('div.small.text-body-secondary.mb-1', 'Shuffle is on: this is the queue order, and MPD picks the next track at random.'));
+      const isCurrent = t.id === currentId;
+      list.append(h('div', { class: `row-item plain ${isCurrent ? 'current' : ''}`, dataset: { id: t.id } },
+        h('span.drag-handle', { title: 'Drag to move' }, icon('grip-vertical')),
+        h('span.row-pos', t.pos + 1),
+        h('div.row-main', h('div.row-title', t.title), h('div.row-sub', [t.artist, t.album].filter(Boolean).join(' · ') || t.file)),
+        isCurrent ? h('span.chip.chip-accent.only-desktop', 'now playing') : null,
+        t.prio ? h('span.chip.chip-warn', 'next') : null,
+        h('span.row-fig', fmtDuration(t.duration)),
+        dotsMenu(`Actions for ${t.title}`, [
+          h('li', h('h6.dropdown-header', t.title)),
+          menuItem('play-fill', 'Play from here', () => playFrom(t)),
+          menuItem('arrow-up', 'Move up', () => move(t, t.pos - 1)),
+          menuItem('arrow-down', 'Move down', () => move(t, t.pos + 1)),
+          menuItem('arrow-left-right', 'Move to…', () => moveTo(t)),
+          menuDivider(),
+          menuItem('x-lg', 'Remove', () => remove(t), 'text-danger'),
+        ], 'btn-ghost s28')));
     }
     queueBox.append(list);
+    if (state.status?.player?.shuffle) {
+      queueBox.append(h('div.panel-note', icon('shuffle'), 'Shuffle is on: this is the queue order, and MPD picks the next track at random.'));
+    }
     const pageTo = (to) => { followCurrent = false; offset = Math.max(0, to); loadQueue(); };
     const currentPos = state.status?.player?.song?.pos;
-    queueBox.append(h('div.d-flex.justify-content-between.align-items-center.mt-2.gap-2',
+    queueBox.append(h('div.pager',
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: off === 0, onclick: () => pageTo(off - PAGE) }, 'Earlier'),
-      h('span.small.text-body-secondary', `${off + 1}–${off + q.tracks.length} of ${total} ${total === 1 ? 'track' : 'tracks'}`),
-      !followCurrent && Number.isInteger(currentPos) ? h('button.btn.btn-sm.btn-outline-primary', { type: 'button', onclick: () => { followCurrent = true; loadQueue(); } }, 'Show current') : null,
+      h('span.fig', `${off + 1}–${off + q.tracks.length} of ${total} ${total === 1 ? 'track' : 'tracks'}`),
+      !followCurrent && Number.isInteger(currentPos) ? h('button.btn.btn-sm.btn-soft', { type: 'button', onclick: () => { followCurrent = true; loadQueue(); } }, 'Show current') : null,
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: off + q.tracks.length >= total, onclick: () => pageTo(off + PAGE) }, 'Later')));
     if (window.Sortable) {
       if (sortable) sortable.destroy();

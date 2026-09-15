@@ -1,5 +1,5 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, fmtDuration, spinner, errorBox } from '../dom.js';
+import { h, clear, icon, toast, fmtDuration, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import * as ops from '../fileops.js';
 import { state, refreshStatus } from '../main.js';
 
@@ -12,18 +12,18 @@ export async function libraryView(main, rest) {
   let query = '';
   const qi = path.indexOf('?q=');
   if (qi >= 0) { query = path.slice(qi + 3); path = path.slice(0, qi); }
-  const header = h('div.d-flex.flex-wrap.align-items-center.gap-2.mb-3');
-  const crumbs = h('nav', { 'aria-label': 'breadcrumb' }, h('ol.breadcrumb.mb-0'));
-  const searchInput = h('input.form-control', { type: 'search', value: query, placeholder: 'Search titles, artists, albums, file names', 'aria-label': 'Search' });
-  const searchForm = h('form.d-flex.gap-1.flex-grow-1', { onsubmit: (e) => { e.preventDefault(); location.hash = hashFor(path, searchInput.value.trim()); } },
-    searchInput, h('button.btn.btn-outline-secondary', { type: 'submit', 'aria-label': 'Search' }, icon('search')));
-  const tools = h('div.d-flex.gap-2');
+  const crumbs = h('nav.crumbs', { 'aria-label': 'Folder' });
+  const searchInput = h('input', { type: 'search', value: query, placeholder: 'Search titles, artists, albums, file names', 'aria-label': 'Search' });
+  const searchForm = h('form.search', { role: 'search', onsubmit: (e) => { e.preventDefault(); location.hash = hashFor(path, searchInput.value.trim()); } },
+    searchInput, h('button', { type: 'submit', 'aria-label': 'Search' }, icon('search')));
+  const tools = h('div.tools');
   const scanBox = h('div');
+  const selectBar = h('div.select-bar.hidden');
   const listBox = h('div');
-  const pager = h('div');
-  const selectBar = h('div.flex-wrap.align-items-center.gap-2.mb-2.p-2.rounded.bg-body-tertiary');
-  main.append(header, scanBox, selectBar, listBox, pager);
-  header.append(crumbs, searchForm, tools);
+  main.append(h('section.page.page-wide',
+    h('div.lib-head', crumbs, tools),
+    scanBox, selectBar,
+    h('div.panel.clip', listBox)));
 
   let page = 0;
   let current = null;       // last page or search result
@@ -40,15 +40,21 @@ export async function libraryView(main, rest) {
   }
 
   function renderCrumbs() {
-    const ol = clear(crumbs.firstChild);
-    ol.append(h('li.breadcrumb-item', h('a', { href: '#/library' }, icon('house'), ' Library')));
+    clear(crumbs);
+    const segs = path.split('/').filter(Boolean);
+    const atRoot = !segs.length && !query;
+    crumbs.append(h('a.home', { href: '#/library', 'aria-label': 'Library', title: 'Library' }, icon('house-door-fill')));
+    if (atRoot) crumbs.append(h('span.here', 'Library'));
     let acc = '';
-    for (const seg of path.split('/').filter(Boolean)) {
+    segs.forEach((seg, i) => {
       acc = acc ? `${acc}/${seg}` : seg;
-      ol.append(h('li.breadcrumb-item', h('a', { href: hashFor(acc, '') }, seg)));
-    }
-    if (query) ol.append(h('li.breadcrumb-item.active', `Search: ${query}`));
+      crumbs.append(h('span.sep', '/'));
+      crumbs.append(i === segs.length - 1 && !query ? h('span.here', seg) : h('a', { href: hashFor(acc, '') }, seg));
+    });
+    if (query) crumbs.append(h('span.sep', '/'), h('span.here', `Search: ${query}`));
   }
+
+  const writable = () => storage && !storage.read_only;
 
   // menuItems builds the action list for a target: {files} or {folder}.
   // A file row also gets the browser preview, which never uses the
@@ -56,51 +62,35 @@ export async function libraryView(main, rest) {
   function menuItems(target, entryName, entry) {
     const isDir = !!target.folder;
     const run = (fn) => (ev) => { ev.preventDefault(); fn(); };
-    const item = (ic, label, fn, cls = '') => h('li', h('button', { type: 'button', class: `dropdown-item ${cls}`.trim(), onclick: run(fn) }, icon(ic, 'me-2'), label));
     const items = [
-      entryName ? h('li', h('h6.dropdown-header.text-truncate', entryName)) : null,
-      entry ? item('headphones', preview?.path === entry.path ? 'Stop browser preview' : 'Browser preview', () => togglePreview(entry)) : null,
-      entry ? h('li', h('hr.dropdown-divider')) : null,
-      item('play-fill', 'Play Now', () => queueTarget('play_now', target)),
-      item('skip-end', 'Play Next', () => queueTarget('play_next', target)),
-      item('plus-lg', 'Add to Queue', () => queueTarget('add', target)),
-      isDir ? null : item('list-ul', 'Add to playlist', () => fileOps('add_to_playlist', target.files)),
+      entryName ? h('li', h('h6.dropdown-header', entryName)) : null,
+      entry ? menuItem('headphones', preview?.path === entry.path ? 'Stop browser preview' : 'Browser preview', run(() => togglePreview(entry))) : null,
+      entry ? menuDivider() : null,
+      menuItem('play-fill', 'Play Now', run(() => queueTarget('play_now', target)), 'accent'),
+      menuItem('skip-end-fill', 'Play Next', run(() => queueTarget('play_next', target))),
+      menuItem('plus-lg', 'Add to Queue', run(() => queueTarget('add', target))),
+      isDir ? null : menuItem('list-ul', 'Add to playlist…', run(() => fileOps('add_to_playlist', target.files))),
     ];
-    if (storage && !storage.read_only && target.paths) {
-      items.push(h('li', h('hr.dropdown-divider')),
-        item('pencil', 'Rename', () => fileOps('rename', target.paths)),
-        item('folder-symlink', 'Move', () => fileOps('move', target.paths)),
-        item('trash', 'Delete', () => fileOps('delete', target.paths), 'text-danger'));
+    if (writable() && target.paths) {
+      items.push(menuDivider(),
+        menuItem('pencil', 'Rename', run(() => fileOps('rename', target.paths))),
+        menuItem('folder-symlink', 'Move', run(() => fileOps('move', target.paths))),
+        menuItem('trash', 'Delete', run(() => fileOps('delete', target.paths)), 'text-danger'));
     }
     return items;
-  }
-
-  // menu is a row's action menu. The items are built when the menu opens,
-  // so a page of rows does not build menus that nobody opens. The preview
-  // label then also shows the current state.
-  function menu(target, entryName, label, entry) {
-    const ul = h('ul.dropdown-menu.dropdown-menu-end');
-    const box = h('div.dropdown',
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': label }, icon('three-dots-vertical')),
-      ul);
-    box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...menuItems(target, entryName, entry).filter(Boolean)); });
-    return box;
   }
 
   function renderTools() {
     clear(tools);
     tools.append(
-      h('button.btn.btn-outline-secondary', { type: 'button', onclick: rescan, title: 'Scan the whole music root for new, changed and removed files' }, icon('arrow-clockwise', 'me-1'), 'Rescan'),
-      h('button', { type: 'button', class: `btn ${selectMode ? 'btn-secondary' : 'btn-outline-secondary'}`, onclick: toggleSelect }, icon('check2-square', 'me-1'), 'Select'),
-      query ? null : h('div.dropdown',
-        h('button.btn.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': 'Folder actions' }, icon('three-dots')),
-        h('ul.dropdown-menu.dropdown-menu-end',
-          menuItems({ folder: path || '/' }, path || 'Whole library'),
-          storage && !storage.read_only ? [
-            h('li', h('hr.dropdown-divider')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => fileOps('new_folder', [path]) }, icon('folder-plus', 'me-2'), 'New folder')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => fileOps('upload', [path]) }, icon('upload', 'me-2'), 'Upload')),
-          ] : null)));
+      searchForm,
+      h('button.btn.btn-outline-secondary.btn-icon.s36', { type: 'button', onclick: rescan, 'aria-label': 'Rescan', title: 'Scan the whole music root for new, changed and removed files' }, icon('arrow-clockwise')),
+      h('button', { type: 'button', class: `btn ${selectMode ? 'btn-soft' : 'btn-outline-secondary'}`, 'aria-pressed': String(selectMode), onclick: toggleSelect }, icon('check2-square'), 'Select'),
+      query ? null : dotsMenu('Folder actions', () => [
+        menuItems({ folder: path || '/' }, path || 'Whole library'),
+        writable() ? [menuDivider(), menuItem('folder-plus', 'New folder', () => fileOps('new_folder', [path]))] : null,
+      ], 'btn-outline-secondary s36'),
+      writable() && !query ? h('button.btn.btn-primary', { type: 'button', onclick: () => fileOps('upload', [path]) }, icon('cloud-upload'), 'Upload') : null);
   }
 
   function toggleSelect() {
@@ -113,22 +103,22 @@ export async function libraryView(main, rest) {
 
   function renderSelectBar() {
     clear(selectBar);
-    selectBar.classList.toggle('d-flex', selectMode);
+    selectBar.classList.toggle('hidden', !selectMode);
     if (!selectMode) return;
     const files = () => [...selected];
-    const btn = (label, cls, fn) => h('button', { type: 'button', class: `btn btn-sm ${cls}`, disabled: !selected.size, onclick: fn }, label);
+    const btn = (label, cls, fn, ic) => h('button', { type: 'button', class: `btn btn-sm ${cls}`, disabled: !selected.size, onclick: fn }, ic ? icon(ic) : null, label);
     selectBar.append(
-      h('span.me-2', `${selected.size} selected`),
+      h('span.count', `${selected.size} selected`),
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { for (const e of current?.entries || []) if (e.type === 'file') selected.add(e.path); renderSelectBar(); renderList(current); } }, 'All on this page'),
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { selected.clear(); renderSelectBar(); renderList(current); } }, 'None'),
-      h('span.vr'),
-      btn('Play Now', 'btn-primary', () => queueTarget('play_now', { files: files() })),
-      btn('Play Next', 'btn-outline-primary', () => queueTarget('play_next', { files: files() })),
-      btn('Add to Queue', 'btn-outline-primary', () => queueTarget('add', { files: files() })),
-      btn('Add to playlist', 'btn-outline-secondary', () => fileOps('add_to_playlist', files())),
-      storage && !storage.read_only ? [
-        btn('Move', 'btn-outline-secondary', () => fileOps('move', files())),
-        btn('Delete', 'btn-outline-danger', () => fileOps('delete', files())),
+      h('span.sep'),
+      btn('Play Now', 'btn-primary', () => queueTarget('play_now', { files: files() }), 'play-fill'),
+      btn('Play Next', 'btn-outline-secondary', () => queueTarget('play_next', { files: files() }), 'skip-end-fill'),
+      btn('Add to Queue', 'btn-outline-secondary', () => queueTarget('add', { files: files() }), 'plus-lg'),
+      btn('Add to playlist', 'btn-outline-secondary', () => fileOps('add_to_playlist', files()), 'list-ul'),
+      writable() ? [
+        btn('Move', 'btn-outline-secondary', () => fileOps('move', files()), 'folder-symlink'),
+        btn('Delete', 'btn-outline-danger', () => fileOps('delete', files()), 'trash'),
       ] : null);
   }
 
@@ -139,7 +129,7 @@ export async function libraryView(main, rest) {
   // load fetches the folder or the search and swaps the list in one step,
   // so a burst of library events does not flicker a spinner.
   async function load(showSpinner = true) {
-    if (showSpinner) { clear(listBox).append(spinner()); clear(pager); }
+    if (showSpinner) clear(listBox).append(spinner());
     try {
       await loadStorage();
       // The toolbar does not need MPD, so uploads work while it restarts.
@@ -154,9 +144,8 @@ export async function libraryView(main, rest) {
         page = current.page;
       }
       renderList(current);
-      renderPager(current);
     } catch (e) {
-      clear(listBox).append(e.status === 503 ? h('p.text-body-secondary', 'MPD is not running, so the library cannot be read.') : errorBox(e));
+      clear(listBox).append(e.status === 503 ? h('div.panel-empty', 'MPD is not running, so the library cannot be read.') : h('div.panel-body', errorBox(e)));
     }
   }
 
@@ -167,57 +156,58 @@ export async function libraryView(main, rest) {
   function renderList(pg) {
     clear(listBox);
     previewButtons.clear();
+    if (storage?.read_only && !pg.search && !path) {
+      listBox.append(h('div.strip.strip-info', icon('lock'), storage.problem || 'The music root is read-only. Upload and file operations are hidden.'));
+    }
     if (!pg.entries.length) {
-      listBox.append(h('p.text-body-secondary', pg.search ? 'No tracks match.' : storage?.missing ? `${storage.problem} Check Settings > Library.` : 'This folder is empty. Upload music or copy it into the music root and rescan.'));
+      listBox.append(h('div.panel-empty', pg.search ? 'No tracks match.' : storage?.missing ? `${storage.problem} Check Settings > Library.` : 'This folder is empty. Upload music or copy it into the music root and rescan.'));
+      renderPager(pg);
       return;
     }
-    if (storage?.read_only && !pg.search && !path) {
-      listBox.append(h('div.alert.alert-secondary.small.py-2', storage.problem || 'The music root is read-only. Upload and file operations are hidden.'));
-    }
-    const list = h('div.list-group.row-list');
+    const list = h('div.rows');
     for (const e of pg.entries) {
       if (e.type === 'directory') {
         // The row is a div with a link inside, so the menu button is not
         // nested in the anchor.
-        list.append(h('div.list-group-item',
-          icon('folder-fill', 'text-warning'),
-          h('a.row-main.text-decoration-none.text-body', { href: hashFor(e.path, '') }, h('div.row-title', e.name)),
-          menu({ folder: e.path, paths: [e.path] }, e.name, `Actions for ${e.name}`)));
+        list.append(h('div.row-item',
+          icon('folder-fill', 'row-icon folder'),
+          h('div.row-main', h('div.row-title.fw-semibold', h('a', { href: hashFor(e.path, '') }, e.name))),
+          dotsMenu(`Actions for ${e.name}`, () => menuItems({ folder: e.path, paths: [e.path] }, e.name))));
       } else if (selectMode) {
         const isSel = selected.has(e.path);
-        list.append(h('button', { type: 'button', class: `list-group-item list-group-item-action text-start ${isSel ? 'active' : ''}`, role: 'checkbox', 'aria-checked': String(isSel),
+        list.append(h('button', { type: 'button', class: `row-item ${isSel ? 'selected' : ''}`, role: 'checkbox', 'aria-checked': String(isSel),
           onclick: () => { if (isSel) selected.delete(e.path); else selected.add(e.path); renderSelectBar(); renderList(pg); } },
-          icon(isSel ? 'check-square-fill' : 'square'),
+          icon(isSel ? 'check-square-fill' : 'square', 'sel-box'),
           rowText(e, pg),
-          h('span.small.mono', fmtDuration(e.duration))));
+          h('span.row-fig', fmtDuration(e.duration))));
       } else {
-        const previewBtn = h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': `Browser preview of ${e.name}`, title: 'Browser preview: play in this browser, not on the speakers' }, icon(preview?.path === e.path ? 'stop-fill' : 'headphones'));
+        const previewBtn = h('button.btn.btn-outline-secondary.btn-icon.s30', { type: 'button', 'aria-label': `Browser preview of ${e.name}`, title: 'Browser preview: play in this browser, not on the speakers' }, icon(preview?.path === e.path ? 'stop-fill' : 'headphones'));
         previewBtn.onclick = () => togglePreview(e);
         previewButtons.set(e.path, previewBtn);
-        list.append(h('div.list-group-item',
+        list.append(h('div.row-item',
           previewBtn,
           rowText(e, pg),
-          h('span.small.mono.text-body-secondary', fmtDuration(e.duration)),
-          menu({ files: [e.path], paths: [e.path] }, e.title || e.name, `Actions for ${e.name}`, e)));
+          h('span.row-fig', fmtDuration(e.duration)),
+          dotsMenu(`Actions for ${e.name}`, () => menuItems({ files: [e.path], paths: [e.path] }, e.title || e.name, e))));
       }
     }
     listBox.append(list);
+    renderPager(pg);
   }
 
   function rowText(e, pg) {
-    return h('div.row-main', h('div.row-title', e.title || e.name), h('div.small.text-body-secondary.row-title', [e.artist, e.album].filter(Boolean).join(' · ') || (pg.search ? e.path : e.name)));
+    return h('div.row-main', h('div.row-title.fw-medium', e.title || e.name), h('div.row-sub', [e.artist, e.album].filter(Boolean).join(' · ') || (pg.search ? e.path : e.name)));
   }
 
   function renderPager(pg) {
-    clear(pager);
     if (pg.search) {
-      if (pg.limited) pager.append(h('p.small.text-body-secondary', 'Only the first 500 matches are shown. Narrow the search.'));
+      if (pg.limited) listBox.append(h('div.panel-note', icon('info-circle'), 'Only the first 500 matches are shown. Narrow the search.'));
       return;
     }
     if (pg.pages <= 1) return;
-    pager.append(h('div.d-flex.justify-content-between.align-items-center.mt-2',
+    listBox.append(h('div.pager.tinted',
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: pg.page === 0, onclick: () => { page--; load(); } }, 'Previous'),
-      h('span.small.text-body-secondary', `${pg.page + 1} / ${pg.pages} · ${pg.total} entries`),
+      h('span.fig', `${pg.page + 1} / ${pg.pages} · ${pg.total} entries`),
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: pg.page >= pg.pages - 1, onclick: () => { page++; load(); } }, 'Next')));
   }
 
@@ -249,7 +239,7 @@ export async function libraryView(main, rest) {
     const audio = new Audio(`/api/v1/library/preview?path=${encodeURIComponent(e.path)}`);
     preview = { path: e.path, audio };
     const button = previewButtons.get(e.path);
-    if (button) clear(button).append(icon('stop-fill'));
+    if (button) { clear(button).append(icon('stop-fill')); button.classList.replace('btn-outline-secondary', 'btn-soft'); }
     audio.addEventListener('ended', stopPreview);
     // A pause before the first byte rejects play() with AbortError, which
     // is not a failure.
@@ -263,7 +253,7 @@ export async function libraryView(main, rest) {
     p.audio.removeAttribute('src');
     p.audio.load();
     const button = previewButtons.get(p.path);
-    if (button) clear(button).append(icon('headphones'));
+    if (button) { clear(button).append(icon('headphones')); button.classList.replace('btn-soft', 'btn-outline-secondary'); }
   }
 
   // rescan starts a full scan. The status then says a scan runs.
@@ -287,10 +277,9 @@ export async function libraryView(main, rest) {
   function onStatus(st) {
     const now = !!st?.player?.updating;
     if (now && !scanning) {
-      const time = h('span.text-body-secondary');
-      clear(scanBox).append(h('div.mb-3',
-        h('div.d-flex.justify-content-between.small.mb-1',
-          h('span', icon('arrow-repeat', 'me-1'), 'Scanning the library'), time),
+      const time = h('span.mono');
+      clear(scanBox).append(h('div.panel.scan-bar',
+        h('div.scan-text', h('span', icon('arrow-repeat', 'me-1'), 'Scanning the library'), time),
         h('div.progress', { role: 'progressbar', 'aria-label': 'Library scan in progress' },
           h('div.progress-bar.progress-bar-striped.progress-bar-animated.w-100'))));
       const tick = () => { time.textContent = fmtDuration(state.scanSince ? (Date.now() - state.scanSince) / 1000 : 0); };

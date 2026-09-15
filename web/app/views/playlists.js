@@ -1,5 +1,5 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, confirmDialog, spinner, errorBox } from '../dom.js';
+import { h, clear, icon, toast, confirmDialog, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import { navigate } from '../router.js';
 import { queueToast, libraryPicker, appendToPlaylist, fail, baseOf } from '../fileops.js';
 
@@ -7,7 +7,7 @@ import { queueToast, libraryPicker, appendToPlaylist, fail, baseOf } from '../fi
 // one playlist with reorder, removal, and a library picker to add tracks.
 export async function playlistsView(main, rest) {
   clear(main);
-  const box = h('div.mx-auto', { style: 'max-width: 800px' }, spinner());
+  const box = h('section.page.page-md', spinner());
   main.append(box);
   const id = rest ? Number(rest) : 0;
   let sortable = null;
@@ -16,70 +16,93 @@ export async function playlistsView(main, rest) {
   async function queue(action, playlist) {
     try { queueToast(action, await A.queueAction({ action, playlist })); } catch (e) { toast(e.message, 'danger'); }
   }
-  const queueButtons = (playlist, small = true) => {
-    const size = small ? 'btn-sm' : '';
-    const btn = (cls, action, ic, label) => h('button', { type: 'button', class: `btn ${size} ${cls}`, onclick: () => queue(action, playlist), 'aria-label': label }, icon(ic), small ? null : ` ${label}`);
-    return h('div.btn-group', { role: 'group' },
-      btn('btn-primary', 'play_now', 'play-fill', 'Play Now'),
-      btn('btn-outline-primary', 'play_next', 'skip-end', 'Play Next'),
-      btn('btn-outline-primary', 'add', 'plus-lg', 'Add to Queue'));
-  };
+  // queueButtons are Play Now with its label, then Play Next and Add to
+  // Queue as icons. The large form gives every button its label.
+  const queueButtons = (playlist, large = false) => h('div.row-actions',
+    h('button.btn.btn-primary', { type: 'button', class: `btn btn-primary ${large ? '' : 'btn-sm'}`, onclick: () => queue('play_now', playlist) }, icon('play-fill'), 'Play Now'),
+    large
+      ? h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => queue('play_next', playlist) }, icon('skip-end-fill'), 'Play Next')
+      : h('button.btn.btn-outline-secondary.btn-icon.s34', { type: 'button', title: 'Play Next', 'aria-label': 'Play Next', onclick: () => queue('play_next', playlist) }, icon('skip-end-fill')),
+    large
+      ? h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => queue('add', playlist) }, icon('plus-lg'), 'Add to Queue')
+      : h('button.btn.btn-outline-secondary.btn-icon.s34', { type: 'button', title: 'Add to Queue', 'aria-label': 'Add to Queue', onclick: () => queue('add', playlist) }, icon('plus-lg')));
 
   async function loadList() {
     let lists;
     try { lists = (await A.api.get('/playlists')).playlists; } catch (e) { clear(box).append(errorBox(e)); return; }
     clear(box);
-    const name = h('input.form-control', { type: 'text', placeholder: 'New playlist name', required: true, maxlength: 100 });
-    box.append(h('div.d-flex.align-items-center.justify-content-between.mb-3', h('h1.h3.mb-0', 'Playlists')),
-      h('form.d-flex.gap-2.mb-3', { onsubmit: async (e) => {
+    const name = h('input.form-control', { type: 'text', placeholder: 'New playlist name', required: true, maxlength: 100, 'aria-label': 'New playlist name' });
+    box.append(h('div.page-head', h('h1.page-title', 'Playlists'),
+      h('form.tools', { onsubmit: async (e) => {
         e.preventDefault();
         try { const pl = await A.api.post('/playlists', { name: name.value.trim() }); navigate(`#/playlists/${pl.id}`); } catch (err) { fail(err); }
-      } }, name, h('button.btn.btn-outline-primary', { type: 'submit' }, icon('plus-lg', 'me-1'), 'Create')));
-    if (!lists.length) { box.append(h('p.text-body-secondary', 'No playlists yet. Create one here, or use "Add to playlist" in the Library.')); return; }
-    const list = h('div.list-group.row-list');
-    for (const pl of lists) {
-      list.append(h('div.list-group-item',
-        icon('list-ul', 'text-body-secondary'),
-        h('a.row-main.text-decoration-none.text-body', { href: `#/playlists/${pl.id}` }, h('div.row-title', pl.name), h('div.small.text-body-secondary', `${pl.count} track${pl.count === 1 ? '' : 's'}`)),
-        queueButtons(pl.id)));
+      } }, name, h('button.btn.btn-primary', { type: 'submit' }, icon('plus-lg'), 'Create'))));
+    const card = h('div.panel.clip');
+    box.append(card);
+    if (!lists.length) {
+      card.append(h('div.panel-empty', 'No playlists yet. Create one here, or use "Add to playlist" in the Library.'));
+      return;
     }
-    box.append(list);
+    const list = h('div.rows');
+    for (const pl of lists) {
+      list.append(h('div.row-item.tall',
+        h('div.row-icon-tile', icon('music-note-list')),
+        h('div.row-main', h('div.row-title.fw-semibold', h('a', { href: `#/playlists/${pl.id}` }, pl.name)), h('div.row-sub', `${pl.count} track${pl.count === 1 ? '' : 's'}`)),
+        h('div.only-desktop', queueButtons(pl.id)),
+        dotsMenu(`More for ${pl.name}`, [
+          h('li', h('h6.dropdown-header', pl.name)),
+          // A phone has no room for the queue buttons, so the menu has them.
+          ...[
+            menuItem('play-fill', 'Play Now', () => queue('play_now', pl.id), 'accent'),
+            menuItem('skip-end-fill', 'Play Next', () => queue('play_next', pl.id)),
+            menuItem('plus-lg', 'Add to Queue', () => queue('add', pl.id)),
+            menuDivider(),
+          ].map((li) => { li.classList.add('only-mobile-menu'); return li; }),
+          menuItem('pencil-square', 'Open and edit', () => navigate(`#/playlists/${pl.id}`)),
+        ], 'btn-ghost s34')));
+    }
+    card.append(list);
+    box.append(h('p.small-note.mt-3.mb-0', 'Tip: use "Add to playlist" in the Library to put tracks into any list.'));
   }
 
   async function loadDetail() {
     let pl;
-    try { pl = await A.api.get(`/playlists/${id}`); } catch (e) { clear(box).append(e.status === 404 ? h('p', 'No such playlist. ', h('a', { href: '#/playlists' }, 'Back to playlists')) : errorBox(e)); return; }
+    try { pl = await A.api.get(`/playlists/${id}`); } catch (e) { clear(box).append(e.status === 404 ? h('div.panel.panel-empty', 'No such playlist. ', h('a', { href: '#/playlists' }, 'Back to playlists')) : errorBox(e)); return; }
     clear(box);
-    box.append(h('nav', { 'aria-label': 'breadcrumb' }, h('ol.breadcrumb', h('li.breadcrumb-item', h('a', { href: '#/playlists' }, 'Playlists')), h('li.breadcrumb-item.active', pl.name))));
-    box.append(h('div.d-flex.flex-wrap.align-items-center.gap-2.mb-3',
-      h('h1.h3.mb-0.me-auto', pl.name),
-      queueButtons(pl.id, false),
-      h('div.dropdown',
-        h('button.btn.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': 'Playlist actions' }, icon('three-dots')),
-        h('ul.dropdown-menu.dropdown-menu-end',
-          h('li', h('button.dropdown-item', { type: 'button', onclick: addTracks }, icon('plus-lg', 'me-2'), 'Add tracks')),
-          h('li', h('button.dropdown-item', { type: 'button', onclick: renamePl }, icon('pencil', 'me-2'), 'Rename')),
-          h('li', h('hr.dropdown-divider')),
-          h('li', h('button.dropdown-item.text-danger', { type: 'button', onclick: deletePl }, icon('trash', 'me-2'), 'Delete'))))));
-    if (pl.missing) box.append(h('div.alert.alert-warning', `${pl.missing} entr${pl.missing === 1 ? 'y points' : 'ies point'} at files that are gone. They are skipped when the playlist plays.`));
-    if (!pl.entries.length) { box.append(h('p.text-body-secondary', 'This playlist is empty. Add tracks here or from the Library.')); return; }
-    const list = h('div.list-group.row-list');
+    box.append(h('nav.crumbs.mb-2', { 'aria-label': 'Playlist' }, h('a', { href: '#/playlists' }, icon('arrow-left', 'me-1'), 'Playlists')));
+    box.append(h('div.page-head',
+      h('h1.page-title.text-break', pl.name),
+      h('div.tools',
+        queueButtons(pl.id, true),
+        dotsMenu('Playlist actions', [
+          menuItem('pencil', 'Rename', renamePl),
+          menuDivider(),
+          menuItem('trash', 'Delete', deletePl, 'text-danger'),
+        ], 'btn-outline-secondary s36'))));
+    const card = h('div.panel.clip');
+    box.append(card);
+    card.append(h('div.panel-head', h('h2.panel-title', 'Tracks'), h('span.queue-fig', `${pl.entries.length} track${pl.entries.length === 1 ? '' : 's'}`),
+      h('div.tools', h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: addTracks }, icon('plus-lg'), 'Add tracks'))));
+    if (pl.missing) card.append(h('div.strip.strip-warn', icon('exclamation-triangle-fill'), `${pl.missing} entr${pl.missing === 1 ? 'y points' : 'ies point'} at files that are gone. They are skipped when the playlist plays.`));
+    if (!pl.entries.length) { card.append(h('div.panel-empty', 'This playlist is empty. Add tracks here or from the Library.')); return; }
+    const list = h('div.rows');
     pl.entries.forEach((e, i) => {
       const name = baseOf(e.file);
-      list.append(h('div', { class: `list-group-item ${e.missing ? 'list-group-item-warning' : ''}` },
-        h('span.drag-handle', icon('grip-vertical')),
-        h('span.text-body-secondary.small.mono', { style: 'width: 3em' }, i + 1),
-        h('div.row-main', h('div.row-title', name), h('div.small.text-body-secondary.row-title', e.missing ? 'Missing: ' + e.file : e.file)),
-        h('div.dropdown',
-          h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': `Actions for ${name}` }, icon('three-dots-vertical')),
-          h('ul.dropdown-menu.dropdown-menu-end',
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => reorder(i, i - 1) }, 'Move up')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => reorder(i, i + 1) }, 'Move down')),
-            h('li', h('button.dropdown-item', { type: 'button', onclick: () => moveTo(i) }, 'Move to…')),
-            h('li', h('hr.dropdown-divider')),
-            h('li', h('button.dropdown-item.text-danger', { type: 'button', onclick: () => removeEntry(i) }, 'Remove'))))));
+      list.append(h('div', { class: `row-item plain ${e.missing ? 'warn' : ''}` },
+        h('span.drag-handle', { title: 'Drag to move' }, icon('grip-vertical')),
+        h('span.row-pos', i + 1),
+        h('div.row-main', h('div.row-title', name), h('div.row-sub', e.missing ? 'Missing: ' + e.file : e.file)),
+        e.missing ? h('span.chip.chip-warn', 'missing') : null,
+        dotsMenu(`Actions for ${name}`, [
+          h('li', h('h6.dropdown-header', name)),
+          menuItem('arrow-up', 'Move up', () => reorder(i, i - 1)),
+          menuItem('arrow-down', 'Move down', () => reorder(i, i + 1)),
+          menuItem('arrow-left-right', 'Move to…', () => moveTo(i)),
+          menuDivider(),
+          menuItem('x-lg', 'Remove', () => removeEntry(i), 'text-danger'),
+        ], 'btn-ghost s28')));
     });
-    box.append(list);
+    card.append(list);
     if (window.Sortable) {
       if (sortable) sortable.destroy();
       sortable = Sortable.create(list, {
