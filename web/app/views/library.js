@@ -1,5 +1,6 @@
 import * as A from '../api.js';
 import { h, clear, icon, toast, fmtDuration, spinner, errorBox } from '../dom.js';
+import * as ops from '../fileops.js';
 
 // libraryView browses folders and tracks, searches, and applies the three
 // queue actions to rows, folders or a selection. The hash carries the
@@ -212,11 +213,17 @@ export async function libraryView(main, rest) {
     } catch (e) { toast(e.message, 'danger'); }
   }
 
-  // fileOps is completed by the upload and file operation steps.
+  // fileOps runs a file operation and reloads the list afterwards.
   function fileOps(kind, paths) {
-    const ev = new CustomEvent('library-fileop', { detail: { kind, paths, path, reload: () => load(false) }, cancelable: true });
-    document.dispatchEvent(ev);
-    if (!ev.defaultPrevented) toast('This action arrives in a later build step.', 'secondary');
+    const reload = () => { selected.clear(); renderSelectBar(); load(false); };
+    switch (kind) {
+      case 'upload': ops.openUpload(path); break;
+      case 'new_folder': ops.newFolder(path, reload); break;
+      case 'rename': ops.rename(paths[0], reload); break;
+      case 'move': ops.move(paths, reload); break;
+      case 'delete': ops.remove(paths, reload); break;
+      case 'add_to_playlist': ops.addToPlaylist(paths); break;
+    }
   }
 
   // Preview plays through the browser, never the speakers.

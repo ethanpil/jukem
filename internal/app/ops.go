@@ -121,9 +121,26 @@ func (a *App) resolveSource(ctx context.Context, q api.QueueAction) ([]string, e
 	return nil, huma.Error422UnprocessableEntity("give files, a folder or a playlist")
 }
 
-// playlistFiles is completed in build step 8.
+// playlistFiles resolves a playlist to its entries in playlist order.
 func (a *App) playlistFiles(ctx context.Context, id int64) ([]string, error) {
-	return nil, huma.Error404NotFound(fmt.Sprintf("no playlist %d", id))
+	pl, ok, err := a.Store.GetPlaylist(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, huma.Error404NotFound(fmt.Sprintf("no playlist %d", id))
+	}
+	files, err := a.Playlists.Entries(pl.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, huma.Error404NotFound("the playlist is empty")
+	}
+	if len(files) > player.MaxQueue {
+		files = files[:player.MaxQueue]
+	}
+	return files, nil
 }
 
 // QueueAction applies play_now, play_next or add. Play Now keeps the

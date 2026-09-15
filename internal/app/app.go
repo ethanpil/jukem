@@ -39,15 +39,16 @@ type App struct {
 	cfg     config.Config
 	log     *slog.Logger
 
-	Store   *store.Store
-	Devices *audio.Manager
-	Mixer   *audio.Mixer
-	MPD     *mpdctl.Supervisor
-	Pool    *mpdctl.Pool
-	Player  *player.Player
-	Events  *events.Hub
-	Library *library.Browser
-	Files   *library.Files
+	Store     *store.Store
+	Devices   *audio.Manager
+	Mixer     *audio.Mixer
+	MPD       *mpdctl.Supervisor
+	Pool      *mpdctl.Pool
+	Player    *player.Player
+	Events    *events.Hub
+	Library   *library.Browser
+	Files     *library.Files
+	Playlists *library.Playlists
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -86,6 +87,7 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Player = player.New(a.Pool, a.volumeLimits)
 	a.Library = library.NewBrowser(a.Pool)
 	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
+	a.Playlists = library.NewPlaylists(paths.PlaylistDir, func() string { return a.Settings().MusicRoot }, db)
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
@@ -109,7 +111,7 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
-		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files,
+		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists,
 		Owner: a.Owner, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
 	})

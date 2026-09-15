@@ -36,12 +36,13 @@ type Options struct {
 	// TLS marks session cookies Secure.
 	TLS bool
 
-	Player  *player.Player
-	Events  *events.Hub
-	Devices *audio.Manager
-	Mixer   *audio.Mixer
-	Library *library.Browser
-	Files   *library.Files
+	Player    *player.Player
+	Events    *events.Hub
+	Devices   *audio.Manager
+	Mixer     *audio.Mixer
+	Library   *library.Browser
+	Files     *library.Files
+	Playlists *library.Playlists
 	// Owner reports who decides playback now.
 	Owner func() player.Owner
 	// Transport runs play, pause or stop for a caller, creating an override
@@ -102,6 +103,10 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Files != nil {
 		s.registerUpload(hapi, apiMux)
+	}
+	if opts.Playlists != nil {
+		s.registerPlaylists(hapi)
+		s.registerFileOps(hapi)
 	}
 	if opts.Events != nil {
 		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)

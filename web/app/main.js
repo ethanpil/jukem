@@ -12,7 +12,6 @@ import { scheduleView } from './views/schedule.js';
 import { settingsView } from './views/settings.js';
 import { healthView } from './views/health.js';
 import { wizardView } from './views/wizard.js';
-import * as upload from './upload.js';
 
 export const state = {
   session: null,
@@ -53,27 +52,6 @@ function markActive() {
   }
 }
 document.addEventListener('route', markActive);
-
-// File operations the Library view delegates to the shell.
-document.addEventListener('library-fileop', async (e) => {
-  const { kind, paths, path, reload } = e.detail;
-  if (kind === 'upload') {
-    e.preventDefault();
-    upload.open(paths?.[0] ?? path);
-  } else if (kind === 'new_folder') {
-    e.preventDefault();
-    const name = prompt('New folder name:');
-    if (!name) return;
-    try {
-      await A.api.post('/library/folders', { path: (path ? path + '/' : '') + name.trim() });
-      toast(`Folder "${name.trim()}" created`, 'success');
-      reload();
-    } catch (err) {
-      const e = err.problem?.errors?.[0];
-      toast(e?.message ? `${err.message} ${e.message}${e.value ? ` Command: ${e.value}` : ''}` : err.message, 'danger', 8000);
-    }
-  }
-});
 
 // The Library tab shows the upload progress while a batch runs.
 document.addEventListener('upload-progress', (e) => {
