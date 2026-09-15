@@ -188,7 +188,7 @@ func (s *Supervisor) loop(ctx context.Context) {
 		s.mu.Lock()
 		s.running = false
 		s.cmd = nil
-		if err != nil {
+		if err != nil && reason == exitCrashed {
 			s.lastErr = err.Error()
 		}
 		s.mu.Unlock()
@@ -196,6 +196,10 @@ func (s *Supervisor) loop(ctx context.Context) {
 		case exitCancelled:
 			return
 		case exitRequested:
+			if ctx.Err() != nil {
+				// Stop and a restart request arrived together.
+				return
+			}
 			s.log.Info("restarting mpd with the new config")
 			backoff = time.Second
 			continue
@@ -240,7 +244,8 @@ func (s *Supervisor) noteFailure() {
 // when the loop must stop or restart it.
 func (s *Supervisor) runOnce(ctx context.Context) (exitReason, error) {
 	os.Remove(s.paths.Socket)
-	cmd := exec.Command(s.binary, "--no-daemon", s.paths.ConfFile)
+	// --stderr sends MPD's log to its output, which the lineLogger reads.
+	cmd := exec.Command(s.binary, "--no-daemon", "--stderr", s.paths.ConfFile)
 	cmd.Stdout = &lineLogger{log: s.log}
 	cmd.Stderr = &lineLogger{log: s.log}
 	if err := cmd.Start(); err != nil {

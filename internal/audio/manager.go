@@ -19,7 +19,6 @@ type Snapshot struct {
 	Saved       *Identity
 	MatchRule   string
 	SysReadable bool
-	ScannedAt   time.Time
 }
 
 // Manager keeps the list of present devices current. It rescans when
@@ -110,7 +109,7 @@ func (m *Manager) Rescan(ctx context.Context) error {
 	})
 
 	m.mu.Lock()
-	snap := Snapshot{Devices: devices, Saved: m.saved, SysReadable: readable, ScannedAt: time.Now()}
+	snap := Snapshot{Devices: devices, Saved: m.saved, SysReadable: readable}
 	if m.saved != nil {
 		snap.Selected, snap.MatchRule = Match(*m.saved, devices)
 	}

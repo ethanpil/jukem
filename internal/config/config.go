@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,6 +64,12 @@ func Load(path string) (Config, []string, error) {
 	}
 
 	applyEnv(&cfg)
+	// MPD reads the socket path from the data dir, so it must be absolute.
+	if !filepath.IsAbs(cfg.DataDir) && !strings.HasPrefix(cfg.DataDir, "/") {
+		if abs, err := filepath.Abs(cfg.DataDir); err == nil {
+			cfg.DataDir = abs
+		}
+	}
 	return cfg, warnings, loadErr
 }
 

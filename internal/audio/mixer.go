@@ -26,7 +26,7 @@ var (
 // ParseMixer reads the output of amixer -c N scontents and returns the
 // controls that have a playback volume.
 func ParseMixer(out string) []MixerControl {
-	var controls []MixerControl
+	controls := []MixerControl{}
 	var cur *MixerControl
 	hasVolume, hasLevel := false, false
 	flush := func() {
@@ -53,7 +53,7 @@ func ParseMixer(out string) []MixerControl {
 			continue
 		}
 		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "Capabilities:") && strings.Contains(t, "pvolume") {
+		if strings.HasPrefix(t, "Capabilities:") && (strings.Contains(t, "pvolume") || strings.Contains(t, " volume")) {
 			hasVolume = true
 		}
 		// The first channel line sets the level; the parser skips later

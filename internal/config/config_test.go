@@ -48,12 +48,14 @@ func TestEnvOverrides(t *testing.T) {
 	os.WriteFile(p, []byte("listen: \":80\"\nlog_file: /var/log/x\n"), 0o600)
 	t.Setenv("JUKEM_LISTEN", ":9000")
 	t.Setenv("JUKEM_LOG_FILE", "")
-	t.Setenv("JUKEM_DATA_DIR", "/tmp/d")
+	t.Setenv("JUKEM_DATA_DIR", "d")
 	cfg, _, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != ":9000" || cfg.LogFile != "" || cfg.DataDir != "/tmp/d" {
+	// The data dir becomes absolute, because MPD reads the socket path
+	// from it.
+	if cfg.Listen != ":9000" || cfg.LogFile != "" || !filepath.IsAbs(cfg.DataDir) || filepath.Base(cfg.DataDir) != "d" {
 		t.Fatalf("got %+v", cfg)
 	}
 }

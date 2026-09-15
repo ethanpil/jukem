@@ -31,7 +31,7 @@ func TestTrackFrom(t *testing.T) {
 }
 
 func TestFinished(t *testing.T) {
-	p := New(nil, func() (int, int) { return 0, 100 })
+	p := New(nil, func() (int, int) { return 0, 100 }, 0, nil)
 	p.record(IntentPlay)
 	// The final track of a shuffled queue is the one with no successor,
 	// whatever its position.

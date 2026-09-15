@@ -21,7 +21,7 @@ const MaxQueue = 20000
 
 // Track is one queue entry or library file.
 type Track struct {
-	ID       int     `json:"id,omitempty" doc:"Queue entry id, stable while the entry exists"`
+	ID       int     `json:"id" doc:"Queue entry id, stable while the entry exists"`
 	Pos      int     `json:"pos" doc:"Position in the queue, from 0"`
 	File     string  `json:"file" doc:"Path relative to the music root"`
 	Title    string  `json:"title"`
@@ -61,7 +61,6 @@ const (
 type Intent struct {
 	Kind       IntentKind
 	Generation int64
-	At         time.Time
 	// LastFile is the last file MPD played, and LastWasFinal says whether
 	// MPD had no next track after it.
 	LastFile     string
@@ -77,12 +76,15 @@ type Player struct {
 	intent      Intent
 	prioritized map[int]bool // queue ids given priority by Play Next
 	limits      func() (min, max int)
+	persist     func(generation int64)
 }
 
 // New creates a player. limits returns the configured volume floor and
-// ceiling.
-func New(pool *mpdctl.Pool, limits func() (min, max int)) *Player {
-	return &Player{pool: pool, prioritized: map[int]bool{}, limits: limits}
+// ceiling. generation is the queue generation from before the restart,
+// and persist stores each new one, so an override made against the queue
+// stays valid after a restart.
+func New(pool *mpdctl.Pool, limits func() (min, max int), generation int64, persist func(int64)) *Player {
+	return &Player{pool: pool, prioritized: map[int]bool{}, limits: limits, generation: generation, persist: persist}
 }
 
 // Generation returns the queue generation, which increments each time the
@@ -105,7 +107,6 @@ func (p *Player) record(kind IntentKind) {
 	p.mu.Lock()
 	p.intent.Kind = kind
 	p.intent.Generation = p.generation
-	p.intent.At = time.Now()
 	p.mu.Unlock()
 }
 
@@ -297,18 +298,12 @@ func (p *Player) Move(id, to int) error {
 	return p.pool.Do(func(c *mpd.Client) error { return c.MoveID(id, to) })
 }
 
-// Clear empties the queue and starts a new generation.
-func (p *Player) Clear() error {
-	err := p.pool.Do(func(c *mpd.Client) error { return c.Clear() })
-	if err == nil {
-		p.newGeneration()
-	}
-	return err
-}
-
 func (p *Player) newGeneration() {
 	p.mu.Lock()
 	p.generation++
+	if p.persist != nil {
+		p.persist(p.generation)
+	}
 	p.prioritized = map[int]bool{}
 	p.mu.Unlock()
 }
@@ -388,9 +383,9 @@ func (p *Player) PlayNext(files []string) (int, error) {
 		for i, f := range files {
 			var a mpd.Attrs
 			if hasCurrent {
-				a, err = c.Command("addid %s +%d", f, i).Attrs()
+				a, err = c.Command("addid %s +%d", literal(f), i).Attrs()
 			} else {
-				a, err = c.Command("addid %s %d", f, i).Attrs()
+				a, err = c.Command("addid %s %d", literal(f), i).Attrs()
 			}
 			if err != nil {
 				return err
@@ -448,23 +443,55 @@ func (p *Player) SongChanged(currentID int) {
 }
 
 // ListFiles returns every audio file below dir, in case-insensitive path
-// order. dir "" is the whole library. listall returns paths only, so a
-// large library stays inside MPD's output buffer.
+// order. dir "" is the whole library. The search answer lists songs only,
+// so folders and playlists inside the tree do not break the parse.
 func (p *Player) ListFiles(dir string) ([]string, error) {
 	var files []string
 	err := p.pool.Do(func(c *mpd.Client) error {
+		var attrs []mpd.Attrs
 		var err error
-		files, err = c.Command("listall %s", dir).Strings("file")
-		return err
+		if dir == "" {
+			attrs, err = c.Search("file", "")
+		} else {
+			attrs, err = c.Search("base", literal(dir))
+		}
+		if err != nil {
+			return err
+		}
+		files = make([]string, 0, len(attrs))
+		for _, a := range attrs {
+			if f := a["file"]; f != "" {
+				files = append(files, f)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.SliceStable(files, func(i, j int) bool {
-		return strings.ToLower(files[i]) < strings.ToLower(files[j])
-	})
+	keys := make([]string, len(files))
+	for i, f := range files {
+		keys[i] = strings.ToLower(f)
+	}
+	sort.Stable(byKey{files, keys})
 	return files, nil
 }
+
+// byKey sorts files by a precomputed key without an allocation per
+// comparison.
+type byKey struct{ files, keys []string }
+
+func (b byKey) Len() int           { return len(b.files) }
+func (b byKey) Less(i, j int) bool { return b.keys[i] < b.keys[j] }
+func (b byKey) Swap(i, j int) {
+	b.files[i], b.files[j] = b.files[j], b.files[i]
+	b.keys[i], b.keys[j] = b.keys[j], b.keys[i]
+}
+
+// literal prepares a string for a gompd command that reads an answer:
+// gompd sends the assembled command through Fprintf, so a percent sign in
+// a file name must be doubled.
+func literal(s string) string { return strings.ReplaceAll(s, "%", "%%") }
 
 // Update asks MPD to scan a path ("" for everything). It returns the job id.
 func (p *Player) Update(path string) (int, error) {
@@ -492,11 +519,6 @@ func (p *Player) Stats() (songs int, dbUpdate time.Time, err error) {
 		return nil
 	})
 	return songs, dbUpdate, err
-}
-
-// Ping reports whether MPD answers.
-func (p *Player) Ping() error {
-	return p.pool.Do(func(c *mpd.Client) error { return c.Ping() })
 }
 
 // Finished reports whether a stopped MPD reached the end of its queue. That

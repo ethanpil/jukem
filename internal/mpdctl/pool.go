@@ -14,15 +14,31 @@ import (
 // ErrNotRunning reports that MPD does not answer on its socket.
 var ErrNotRunning = errors.New("mpd is not running")
 
-// Pool hands out command connections. The pool pings an idle connection
-// before it reuses it, because MPD closes connections that rest past
-// connection_timeout and every restart replaces the socket.
+// ErrTimeout reports that MPD did not answer a command in time. The
+// process is alive but stuck; the watchdog restarts it.
+var ErrTimeout = errors.New("mpd did not answer in time")
+
+// commandTimeout bounds one command, and the wait for a free connection.
+const commandTimeout = 15 * time.Second
+
+// pingAfter is how long a connection may rest before the pool pings it.
+// MPD closes a connection that rests past connection_timeout (60 s).
+const pingAfter = 30 * time.Second
+
+// Pool holds the command connections. A wedged MPD must not hold every
+// caller, so a command that does not answer in time returns ErrTimeout;
+// its connection stays in use until MPD answers or is restarted.
 type Pool struct {
 	socket string
 	sem    chan struct{}
 
 	mu   sync.Mutex
-	idle []*mpd.Client
+	idle []idleConn
+}
+
+type idleConn struct {
+	c    *mpd.Client
+	used time.Time
 }
 
 // NewPool creates a pool of at most max connections to the unix socket.
@@ -33,24 +49,34 @@ func NewPool(socket string, max int) *Pool {
 // Do runs fn with a connection. After an error that is not an MPD protocol
 // error the pool discards the connection, because its state is unknown.
 func (p *Pool) Do(fn func(c *mpd.Client) error) error {
-	p.sem <- struct{}{}
-	defer func() { <-p.sem }()
-
-	c, err := p.get()
-	if err != nil {
-		return err
+	select {
+	case p.sem <- struct{}{}:
+	case <-time.After(commandTimeout):
+		return ErrTimeout
 	}
-	if err := fn(c); err != nil {
-		var mpdErr mpd.Error
-		if errors.As(err, &mpdErr) {
-			p.put(c)
-			return err
+	done := make(chan error, 1)
+	go func() {
+		defer func() { <-p.sem }()
+		c, err := p.get()
+		if err != nil {
+			done <- err
+			return
 		}
-		c.Close()
+		err = fn(c)
+		var mpdErr mpd.Error
+		if err == nil || errors.As(err, &mpdErr) {
+			p.put(c)
+		} else {
+			c.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
 		return err
+	case <-time.After(commandTimeout):
+		return ErrTimeout
 	}
-	p.put(c)
-	return nil
 }
 
 func (p *Pool) get() (*mpd.Client, error) {
@@ -60,13 +86,13 @@ func (p *Pool) get() (*mpd.Client, error) {
 			p.mu.Unlock()
 			break
 		}
-		c := p.idle[len(p.idle)-1]
+		ic := p.idle[len(p.idle)-1]
 		p.idle = p.idle[:len(p.idle)-1]
 		p.mu.Unlock()
-		if c.Ping() == nil {
-			return c, nil
+		if time.Since(ic.used) < pingAfter || ic.c.Ping() == nil {
+			return ic.c, nil
 		}
-		c.Close()
+		ic.c.Close()
 	}
 	c, err := mpd.Dial("unix", p.socket)
 	if err != nil {
@@ -79,7 +105,7 @@ func (p *Pool) put(c *mpd.Client) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.idle) < cap(p.sem) {
-		p.idle = append(p.idle, c)
+		p.idle = append(p.idle, idleConn{c: c, used: time.Now()})
 		return
 	}
 	c.Close()
@@ -89,8 +115,8 @@ func (p *Pool) put(c *mpd.Client) {
 func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, c := range p.idle {
-		c.Close()
+	for _, ic := range p.idle {
+		ic.c.Close()
 	}
 	p.idle = nil
 }
@@ -182,23 +208,35 @@ func EnableOnly(p *Pool, name string) error {
 		if err != nil {
 			return err
 		}
+		// The wanted output goes on first, so playback never sees a moment
+		// with no output.
 		found := false
 		for _, o := range outputs {
-			id, err := strconv.Atoi(o["outputid"])
-			if err != nil {
-				return errors.New("mpd output without id")
-			}
 			if o["outputname"] == name {
+				id, err := strconv.Atoi(o["outputid"])
+				if err != nil {
+					return errors.New("mpd output without id")
+				}
 				found = true
 				if err := c.EnableOutput(id); err != nil {
 					return err
 				}
-			} else if err := c.DisableOutput(id); err != nil {
-				return err
 			}
 		}
 		if !found && name != "" {
 			return errors.New("output not in config: " + name)
+		}
+		for _, o := range outputs {
+			if o["outputname"] == name {
+				continue
+			}
+			id, err := strconv.Atoi(o["outputid"])
+			if err != nil {
+				return errors.New("mpd output without id")
+			}
+			if err := c.DisableOutput(id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

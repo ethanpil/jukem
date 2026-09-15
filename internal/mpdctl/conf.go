@@ -1,5 +1,5 @@
 // Package mpdctl owns the MPD child process: it renders mpd.conf, starts
-// MPD, restarts it when it exits, and hands out client connections.
+// MPD, restarts it when it exits, and supplies client connections.
 package mpdctl
 
 import (
