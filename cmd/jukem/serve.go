@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,19 +117,22 @@ func serveHTTP(ctx context.Context, listen string, h http.Handler, logger *slog.
 }
 
 // serveTLS serves the application over TLS and redirects plain HTTP to
-// it. The plain port still answers /healthz itself, for the container
-// health check. The redirect keeps the host name. It adds the TLS port
-// when that is not 443, except in Docker, where the published port is
-// 443 and the container port is not.
+// it. The plain port opens first: when the TLS port is busy, the plain
+// port serves the application, so the switch can be turned off. The
+// plain port always answers /healthz itself, for the container health
+// check. The redirect is temporary, because the switch can go off again.
+// It keeps the host name and adds the TLS port when that is not 443,
+// except in Docker, where the published port is 443 and the container
+// port is not.
 func serveTLS(ctx context.Context, listen, listenTLS string, load func() (*tls.Certificate, error), h http.Handler, logger *slog.Logger) error {
-	tlsLn, err := listenWithRetry(ctx, listenTLS, logger)
+	plainLn, err := listenWithRetry(ctx, listen, logger)
 	if err != nil {
 		return err
 	}
-	plainLn, err := listenWithRetry(ctx, listen, logger)
+	tlsLn, err := net.Listen("tcp", listenTLS)
 	if err != nil {
-		tlsLn.Close()
-		return err
+		logger.Error("cannot listen for TLS, serving plain HTTP", "addr", listenTLS, "error", err)
+		return runServers(ctx, logger, server{ln: plainLn, h: h})
 	}
 	_, port, _ := net.SplitHostPort(tlsLn.Addr().String())
 	redirect := http.NewServeMux()
@@ -138,11 +142,14 @@ func serveTLS(ctx context.Context, listen, listenTLS string, load func() (*tls.C
 		if err != nil {
 			host = r.Host
 		}
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
 		target := "https://" + host
 		if port != "443" && config.Runtime() != "docker" {
-			target = "https://" + net.JoinHostPort(host, port)
+			target += ":" + port
 		}
-		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusPermanentRedirect)
+		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 	})
 	tlsConf := &tls.Config{
 		MinVersion: tls.VersionTLS12,

@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"jukem/internal/events"
 	"jukem/internal/player"
 	"jukem/internal/scheduler"
 	"jukem/internal/store"
@@ -134,5 +133,4 @@ func (a *App) applySchedulerSwitch(ctx context.Context, enabled bool) {
 		}
 	}
 	a.Scheduler.Invalidate()
-	a.Events.Publish(events.Schedule, "")
 }

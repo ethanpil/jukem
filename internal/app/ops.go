@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,7 +27,11 @@ func (a *App) watchMPD(ctx context.Context) {
 	for sub := range mpdctl.Watch(ctx, socket, a.log, "player", "mixer", "options", "playlist", "update", "database", "output") {
 		switch sub {
 		case "player", "mixer", "options":
-			a.Events.Publish(events.Player, "")
+			// A fade sends twenty volume steps; one event at its end is
+			// enough for the clients.
+			if sub != "mixer" || !a.Scheduler.Fading() {
+				a.Events.Publish(events.Player, "")
+			}
 			if sub == "player" {
 				st, err := a.Player.Status()
 				if err != nil || st.Song == nil {
@@ -35,7 +40,9 @@ func (a *App) watchMPD(ctx context.Context) {
 				a.Player.NoteSong(st)
 				a.Scheduler.Kick()
 				key := fmt.Sprintf("%d/%d/%s", a.MPD.Status().PID, st.Song.ID, st.Song.File)
-				if key != lastSong {
+				// A restored queue after a restart is paused; it is not a
+				// track start.
+				if key != lastSong && st.State == "play" {
 					lastSong = key
 					a.Player.SongChanged(st.Song.ID)
 					a.onSongChange(st)
@@ -114,16 +121,20 @@ func (a *App) QueueAction(ctx context.Context, q api.QueueAction, source string)
 		res.Shuffle = st.Shuffle
 		// The loop is held until the override exists, so a tick cannot
 		// replace the selection meanwhile.
-		release := a.Scheduler.Suspend()
-		res.Added, err = a.Player.Load(files, st.Shuffle, -1, false)
-		if err != nil {
-			release()
+		if err := func() error {
+			release := a.Scheduler.Suspend()
+			defer release()
+			res.Added, err = a.Player.Load(files, st.Shuffle, -1, false)
+			if err != nil {
+				return err
+			}
+			if err := a.playNowOverride(ctx, source); err != nil {
+				a.log.Warn("cannot record the Play Now override", "error", err)
+			}
+			return nil
+		}(); err != nil {
 			return res, err
 		}
-		if err := a.playNowOverride(ctx, source); err != nil {
-			a.log.Warn("cannot record the Play Now override", "error", err)
-		}
-		release()
 	case "play_next":
 		res.Added, err = a.Player.PlayNext(files)
 	case "add":
@@ -175,22 +186,32 @@ func (a *App) UpdateSettings(ctx context.Context, set store.Settings) error {
 	old := a.Settings()
 	// The output selection has its own endpoint. A settings PUT keeps it.
 	set.OutputDevice = old.OutputDevice
+	if err := set.Validate(); err != nil {
+		return huma.Error422UnprocessableEntity(err.Error())
+	}
 	if _, err := time.LoadLocation(set.TimeZone); err != nil {
 		return huma.Error422UnprocessableEntity("unknown time zone " + set.TimeZone)
 	}
-	if err := a.saveSettings(ctx, set); err != nil {
+	if err := a.checkMusicRoot(set.MusicRoot); err != nil {
 		return err
 	}
 	if set.MusicRoot != old.MusicRoot {
+		// The new config is written before the setting is saved, so a
+		// failure leaves both as they were.
 		library.ForgetStat()
 		a.mu.Lock()
 		outputs := a.outputs
-		a.rescanAfterStart = true
 		a.mu.Unlock()
 		a.log.Info("music root changed, restarting mpd", "root", set.MusicRoot)
 		if err := a.MPD.Reconfigure(mpdctl.NewConfig(a.cfg.DataDir, set.MusicRoot, outputs)); err != nil {
 			return err
 		}
+		a.mu.Lock()
+		a.rescanAfterStart = true
+		a.mu.Unlock()
+	}
+	if err := a.saveSettings(ctx, set); err != nil {
+		return err
 	}
 	if set.Crossfade != old.Crossfade {
 		if err := a.Player.SetCrossfade(set.Crossfade); err != nil {
@@ -200,8 +221,22 @@ func (a *App) UpdateSettings(ctx context.Context, set store.Settings) error {
 	a.Events.Publish(events.Settings, "")
 	if set.SchedulerEnabled != old.SchedulerEnabled {
 		a.applySchedulerSwitch(ctx, set.SchedulerEnabled)
-	} else if set.TimeZone != old.TimeZone || set.DefaultShuffle != old.DefaultShuffle {
+	} else if set.TimeZone != old.TimeZone {
 		a.Scheduler.Invalidate()
+	}
+	return nil
+}
+
+// checkMusicRoot refuses a music root that holds the data directory: a
+// file operation there could remove the database.
+func (a *App) checkMusicRoot(root string) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return huma.Error422UnprocessableEntity("the music root is not a valid path")
+	}
+	data := filepath.Clean(a.cfg.DataDir)
+	if rootAbs == data || strings.HasPrefix(data, rootAbs+string(filepath.Separator)) {
+		return huma.Error422UnprocessableEntity("the music root cannot contain the data directory " + a.cfg.DataDir)
 	}
 	return nil
 }

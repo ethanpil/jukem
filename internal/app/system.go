@@ -43,14 +43,30 @@ func (a *App) ServeTLS() bool {
 	return err == nil
 }
 
-// LoadTLS reads the stored certificate and key. The TLS listener calls
-// it at each handshake, so a new pair applies without a restart.
+// LoadTLS returns the stored certificate and key. The TLS listener calls
+// it at each handshake, so a new pair applies without a restart. The pair
+// is parsed again only when a file changed.
 func (a *App) LoadTLS() (*tls.Certificate, error) {
 	cert, key := a.tlsFiles()
+	ci, err := os.Stat(cert)
+	if err != nil {
+		return nil, err
+	}
+	ki, err := os.Stat(key)
+	if err != nil {
+		return nil, err
+	}
+	stamp := ci.ModTime().String() + ki.ModTime().String()
+	a.tlsMu.Lock()
+	defer a.tlsMu.Unlock()
+	if a.tlsCert != nil && a.tlsStamp == stamp {
+		return a.tlsCert, nil
+	}
 	c, err := tls.LoadX509KeyPair(cert, key)
 	if err != nil {
 		return nil, err
 	}
+	a.tlsCert, a.tlsStamp = &c, stamp
 	return &c, nil
 }
 
@@ -63,15 +79,25 @@ func (a *App) StoreTLS(certPEM, keyPEM string) error {
 	return a.writeTLS([]byte(certPEM), []byte(keyPEM))
 }
 
+// writeTLS stores the pair. Each file is renamed into place, so a
+// handshake never reads a half-written file.
 func (a *App) writeTLS(certPEM, keyPEM []byte) error {
 	cert, key := a.tlsFiles()
 	if err := os.MkdirAll(filepath.Dir(cert), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(key, keyPEM, 0o600); err != nil {
+	if err := replaceFile(key, keyPEM, 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(cert, certPEM, 0o644)
+	return replaceFile(cert, certPEM, 0o644)
+}
+
+func replaceFile(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // SelfSignedTLS generates a certificate for this host's name and

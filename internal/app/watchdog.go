@@ -55,6 +55,11 @@ func (a *App) checkStall(ctx context.Context, s *stallState) {
 		s.stuck = 0
 		return
 	}
+	if s.resume && (st.State == "play" || time.Since(s.restartedAt) > 2*time.Minute) {
+		// The scheduler pressed play, or the restart is old: a later pause
+		// is a person's choice.
+		s.resume = false
+	}
 	if s.resume && st.State == "pause" {
 		// The restart was for a stall while playing, so play again. In
 		// manual mode nothing else does.
@@ -149,10 +154,7 @@ func (a *App) onSongChange(st player.Status) {
 func (a *App) runNightly(ctx context.Context) {
 	for {
 		set := a.Settings()
-		loc, err := time.LoadLocation(set.TimeZone)
-		if err != nil {
-			loc = time.UTC
-		}
+		loc := set.Location()
 		now := a.Clock.Now().In(loc)
 		next := time.Date(now.Year(), now.Month(), now.Day(), set.NightlyRescanHour, 0, 0, 0, loc)
 		if !next.After(now) {

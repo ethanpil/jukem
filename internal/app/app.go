@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -70,6 +71,10 @@ type App struct {
 	healthMu sync.Mutex
 	healthAt time.Time
 	health   watchdog.Report
+
+	tlsMu    sync.Mutex
+	tlsCert  *tls.Certificate
+	tlsStamp string
 }
 
 // Build opens the store, discovers devices and starts MPD.
@@ -96,7 +101,15 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	paths := mpdctl.PathsFor(cfg.DataDir)
 	a.Pool = mpdctl.NewPool(paths.Socket, 3)
 	a.Events = events.New()
-	a.Player = player.New(a.Pool, a.volumeLimits)
+	// The queue generation survives a restart, so an override made
+	// against the queue still applies after an upgrade.
+	var gen int64
+	db.GetState(ctx, "queue_generation", &gen)
+	a.Player = player.New(a.Pool, a.volumeLimits, gen, func(g int64) {
+		if err := db.SetState(context.Background(), "queue_generation", g); err != nil {
+			log.Warn("cannot persist the queue generation", "error", err)
+		}
+	})
 	a.Library = library.NewBrowser(a.Pool)
 	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
 	a.Playlists = library.NewPlaylists(paths.PlaylistDir, func() string { return a.Settings().MusicRoot }, db)
@@ -219,6 +232,7 @@ func (a *App) onDevices(snap audio.Snapshot) {
 func (a *App) onMPDEvent(ev mpdctl.Event) {
 	switch ev.Kind {
 	case mpdctl.EventStarted:
+		a.Files.ResetScan()
 		go func() {
 			a.applyOutput()
 			a.applyPlayerSettings()
@@ -271,25 +285,27 @@ func (a *App) applyOutput() {
 	}
 }
 
-// Health returns the health report, at most two seconds old.
+// Health returns the health report, at most two seconds old. The report
+// is built outside the lock: MPD can be slow, and a waiting health check
+// must not hold the others.
 func (a *App) Health() watchdog.Report {
 	a.healthMu.Lock()
-	defer a.healthMu.Unlock()
 	if time.Since(a.healthAt) < 2*time.Second {
+		defer a.healthMu.Unlock()
 		return a.health
 	}
-	a.health = a.buildHealth()
-	a.healthAt = time.Now()
-	return a.health
+	a.healthMu.Unlock()
+	rep := a.buildHealth()
+	a.healthMu.Lock()
+	a.health, a.healthAt = rep, time.Now()
+	a.healthMu.Unlock()
+	return rep
 }
 
 // buildHealth assembles the health report.
 func (a *App) buildHealth() watchdog.Report {
 	set := a.Settings()
-	loc, err := time.LoadLocation(set.TimeZone)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := set.Location()
 	checks := []watchdog.Check{{Name: "Service", Status: watchdog.StatusOK, Summary: "running " + a.Version}}
 
 	mpd := a.MPD.Status()
@@ -304,7 +320,9 @@ func (a *App) buildHealth() watchdog.Report {
 	owner := a.ownerNow()
 	switch owner.State {
 	case player.OwnerUnavailable:
-		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusError, Summary: owner.Reason})
+		// The MPD and Audio lines carry the error itself; a warning here
+		// keeps a missing device from a permanent 503.
+		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusWarning, Summary: "waiting: " + owner.Reason})
 	case player.OwnerManual:
 		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusWarning, Summary: "off, manual mode", Fix: "Switch the scheduler on in Settings > Schedule when the appliance should follow the schedule."})
 	default:
@@ -327,7 +345,7 @@ func (a *App) buildHealth() watchdog.Report {
 	case snap.Saved == nil:
 		checks = append(checks, watchdog.Check{Name: "Audio", Status: watchdog.StatusWarning, Summary: "no output selected", Fix: "Choose an output in Settings > Audio."})
 	case snap.Selected == nil:
-		checks = append(checks, watchdog.Check{Name: "Audio", Status: watchdog.StatusError, Summary: "selected output " + snap.Saved.Name + " is missing",
+		checks = append(checks, watchdog.Check{Name: "Audio", Status: watchdog.StatusWarning, Summary: "selected output " + snap.Saved.Name + " is missing",
 			Fix: "Plug the device in again, or choose another output in Settings > Audio."})
 	default:
 		summary := "OK, " + snap.Selected.Name
@@ -362,15 +380,19 @@ func (a *App) libraryChecks(set store.Settings, loc *time.Location) []watchdog.C
 	}
 	stor := library.Stat(set.MusicRoot)
 	switch {
-	case stor.Missing || stor.Problem != "":
+	case stor.Missing:
 		checks = append(checks, watchdog.Check{Name: "Storage", Status: watchdog.StatusError, Summary: stor.Problem, Fix: "Check the music root in Settings > Library."})
-	case stor.TotalBytes > 0:
-		used := 100 * (stor.TotalBytes - stor.FreeBytes) / stor.TotalBytes
-		c := watchdog.Check{Name: "Storage", Status: watchdog.StatusOK, Summary: fmt.Sprintf("%d%% used, %s free", used, humanBytes(stor.FreeBytes))}
-		if stor.FreeBytes < set.FreeSpaceReserve {
+	default:
+		c := watchdog.Check{Name: "Storage", Status: watchdog.StatusOK, Summary: "space unknown"}
+		if stor.TotalBytes > 0 {
+			used := 100 * (stor.TotalBytes - stor.FreeBytes) / stor.TotalBytes
+			c.Summary = fmt.Sprintf("%d%% used, %s free", used, humanBytes(stor.FreeBytes))
+		}
+		if stor.TotalBytes > 0 && stor.FreeBytes < set.FreeSpaceReserve {
 			c.Status, c.Fix = watchdog.StatusWarning, "Below the free space reserve: uploads are refused. Delete music or enlarge the disk."
 		}
 		if stor.ReadOnly {
+			// A read-only mount is a valid setup; uploads are hidden.
 			c.Summary += ", read-only"
 		}
 		checks = append(checks, c)
