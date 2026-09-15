@@ -16,10 +16,14 @@ export async function libraryView(main, rest) {
   const searchInput = h('input', { type: 'search', value: query, placeholder: 'Search titles, artists, albums, file names', 'aria-label': 'Search' });
   const searchForm = h('form.search', { role: 'search', onsubmit: (e) => { e.preventDefault(); location.hash = hashFor(path, searchInput.value.trim()); } },
     searchInput, h('button', { type: 'submit', 'aria-label': 'Search' }, icon('search')));
+  // The search form stays outside the buttons, which are rebuilt on every
+  // load. A reload in the background must not take the focus out of it.
   const tools = h('div.tools');
+  const buttons = h('div.tools');
   const scanBox = h('div');
   const selectBar = h('div.select-bar.hidden');
   const listBox = h('div');
+  tools.append(searchForm, buttons);
   main.append(h('section.page.page-wide',
     h('div.lib-head', crumbs, tools),
     scanBox, selectBar,
@@ -81,9 +85,8 @@ export async function libraryView(main, rest) {
   }
 
   function renderTools() {
-    clear(tools);
-    tools.append(
-      searchForm,
+    clear(buttons);
+    buttons.append(
       h('button.btn.btn-outline-secondary.btn-icon.s36', { type: 'button', onclick: rescan, 'aria-label': 'Rescan', title: 'Scan the whole music root for new, changed and removed files' }, icon('arrow-clockwise')),
       h('button', { type: 'button', class: `btn ${selectMode ? 'btn-soft' : 'btn-outline-secondary'}`, 'aria-pressed': String(selectMode), onclick: toggleSelect }, icon('check2-square'), 'Select'),
       query ? null : dotsMenu('Folder actions', () => [
@@ -97,6 +100,12 @@ export async function libraryView(main, rest) {
     selectMode = !selectMode;
     selected.clear();
     renderTools();
+    refresh();
+  }
+
+  // refresh draws the select bar and the list again. The list is empty when
+  // the folder could not be read, and it stays as it is then.
+  function refresh() {
     renderSelectBar();
     if (current) renderList(current);
   }
@@ -109,8 +118,8 @@ export async function libraryView(main, rest) {
     const btn = (label, cls, fn, ic) => h('button', { type: 'button', class: `btn btn-sm ${cls}`, disabled: !selected.size, onclick: fn }, ic ? icon(ic) : null, label);
     selectBar.append(
       h('span.count', `${selected.size} selected`),
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { for (const e of current?.entries || []) if (e.type === 'file') selected.add(e.path); renderSelectBar(); renderList(current); } }, 'All on this page'),
-      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { selected.clear(); renderSelectBar(); renderList(current); } }, 'None'),
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { for (const e of current?.entries || []) if (e.type === 'file') selected.add(e.path); refresh(); } }, 'All on this page'),
+      h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => { selected.clear(); refresh(); } }, 'None'),
       h('span.sep'),
       btn('Play Now', 'btn-primary', () => queueTarget('play_now', { files: files() }), 'play-fill'),
       btn('Play Next', 'btn-outline-secondary', () => queueTarget('play_next', { files: files() }), 'skip-end-fill'),
@@ -171,17 +180,20 @@ export async function libraryView(main, rest) {
         // nested in the anchor.
         list.append(h('div.row-item',
           icon('folder-fill', 'row-icon folder'),
-          h('div.row-main', h('div.row-title.fw-semibold', h('a', { href: hashFor(e.path, '') }, e.name))),
+          h('div.row-main', h('div.row-title.fw-semibold', h('a.row-link', { href: hashFor(e.path, '') }, e.name))),
           dotsMenu(`Actions for ${e.name}`, () => menuItems({ folder: e.path, paths: [e.path] }, e.name))));
       } else if (selectMode) {
         const isSel = selected.has(e.path);
         list.append(h('button', { type: 'button', class: `row-item ${isSel ? 'selected' : ''}`, role: 'checkbox', 'aria-checked': String(isSel),
-          onclick: () => { if (isSel) selected.delete(e.path); else selected.add(e.path); renderSelectBar(); renderList(pg); } },
+          onclick: () => { if (isSel) selected.delete(e.path); else selected.add(e.path); refresh(); } },
           icon(isSel ? 'check-square-fill' : 'square', 'sel-box'),
           rowText(e, pg),
           h('span.row-fig', fmtDuration(e.duration))));
       } else {
-        const previewBtn = h('button.btn.btn-outline-secondary.btn-icon.s30', { type: 'button', 'aria-label': `Browser preview of ${e.name}`, title: 'Browser preview: play in this browser, not on the speakers' }, icon(preview?.path === e.path ? 'stop-fill' : 'headphones'));
+        // A row that is drawn again while its preview plays keeps the stop
+        // icon and the accent, so both come from the preview state.
+        const playing = preview?.path === e.path;
+        const previewBtn = h('button', { type: 'button', class: `btn btn-icon s30 ${playing ? 'btn-soft' : 'btn-outline-secondary'}`, 'aria-pressed': String(playing), 'aria-label': `Browser preview of ${e.name}`, title: 'Browser preview: play in this browser, not on the speakers' }, icon(playing ? 'stop-fill' : 'headphones'));
         previewBtn.onclick = () => togglePreview(e);
         previewButtons.set(e.path, previewBtn);
         list.append(h('div.row-item',
@@ -238,8 +250,7 @@ export async function libraryView(main, rest) {
     stopPreview();
     const audio = new Audio(`/api/v1/library/preview?path=${encodeURIComponent(e.path)}`);
     preview = { path: e.path, audio };
-    const button = previewButtons.get(e.path);
-    if (button) { clear(button).append(icon('stop-fill')); button.classList.replace('btn-outline-secondary', 'btn-soft'); }
+    markPreview(previewButtons.get(e.path), true);
     audio.addEventListener('ended', stopPreview);
     // A pause before the first byte rejects play() with AbortError, which
     // is not a failure.
@@ -252,8 +263,16 @@ export async function libraryView(main, rest) {
     p.audio.pause();
     p.audio.removeAttribute('src');
     p.audio.load();
-    const button = previewButtons.get(p.path);
-    if (button) { clear(button).append(icon('headphones')); button.classList.replace('btn-soft', 'btn-outline-secondary'); }
+    markPreview(previewButtons.get(p.path), false);
+  }
+
+  // markPreview shows on the row button whether its track plays.
+  function markPreview(button, playing) {
+    if (!button) return;
+    clear(button).append(icon(playing ? 'stop-fill' : 'headphones'));
+    button.classList.toggle('btn-soft', playing);
+    button.classList.toggle('btn-outline-secondary', !playing);
+    button.setAttribute('aria-pressed', String(playing));
   }
 
   // rescan starts a full scan. The status then says a scan runs.
