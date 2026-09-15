@@ -133,7 +133,7 @@ export async function settingsView(main, rest) {
     const clockBox = h('div.mt-3');
     loadClock(clockBox);
     body.append(
-      h('div.form-check.form-switch.mb-3', enabled, h('label.form-check-label', { for: 'set-sched' }, 'Scheduler on. Off puts the appliance in manual mode: no schedule, no overrides, no dead-air alerts.')),
+      h('div.form-check.form-switch.mb-3', enabled, h('label.form-check-label', { for: 'set-sched' }, 'Scheduler on. Off puts the appliance in manual mode: no schedule, no holds, no dead-air alerts.')),
       h('form', { onsubmit: async (e) => { e.preventDefault(); await save({ time_zone: tz.value }); } },
         h('label.form-label', 'Time zone'), h('div.d-flex.gap-2', tz, h('button.btn.btn-primary', { type: 'submit' }, 'Save')), tzList,
         h('div.form-text', `Browser zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`)),
@@ -264,13 +264,13 @@ export async function settingsView(main, rest) {
         h('div.row.g-2', h('div.col-4', h('label.form-label', 'History days'), days), h('div.col-4', h('label.form-label', 'History rows'), rows), h('div.col-4', h('label.form-label', 'Dismissed alerts days'), adays)),
         h('button.btn.btn-primary.mt-3', { type: 'submit' }, 'Save system')),
       h('p.small.text-body-secondary.mt-3', 'Log file: /var/log/jukem/jukem.log (or stdout in Docker).'),
-      h('p.small.text-body-secondary', 'Logo: music library icon from the Solar Bold Duotone Icons collection, CC Attribution License.'));
+      h('p.small.text-body-secondary', 'Logo: "Music Library 2" from the Solar icon set by 480 Design, CC BY 4.0. jukem changed the colours.'));
   }
 
   function renderMaintenance(body) {
     const btn = (label, fn, cls = 'btn-outline-secondary') => h('button.btn', { type: 'button', class: `btn ${cls}`, onclick: fn }, label);
     body.append(h('div.d-flex.flex-wrap.gap-2',
-      btn('Rescan library', async () => { try { await A.api.post('/library/rescan'); toast('Rescan started', 'success'); } catch (e) { toast(e.message, 'danger'); } }),
+      btn('Rescan library', async () => { try { await A.rescanLibrary(); toast('Library scan started. The Library shows its progress.', 'success'); } catch (e) { toast(e.message, 'danger'); } }),
       btn('Check library permissions', async () => {
         try {
           const r = await A.api.post('/library/permissions/check');

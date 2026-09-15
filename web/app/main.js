@@ -17,6 +17,8 @@ export const state = {
   session: null,
   status: null,
   statusListeners: new Set(),
+  // scanSince is when this page first saw the current library scan.
+  scanSince: 0,
 };
 
 const sections = [
@@ -95,6 +97,9 @@ export async function refreshStatus() {
     if (e.status === 401) { showLogin(); return; }
     state.status = null;
   }
+  const updating = !!state.status?.player?.updating;
+  if (updating && !state.scanSince) state.scanSince = Date.now();
+  if (!updating) state.scanSince = 0;
   renderNowBar();
   for (const fn of state.statusListeners) fn(state.status);
 }
@@ -109,7 +114,9 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     chain = chain.then(async () => {
-      if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) await refreshStatus();
+      // A queue edit moves the current track, and a library event starts
+      // or ends a scan. The views read both from the status.
+      if (['player', 'queue', 'library', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) await refreshStatus();
       if (ev.type === 'alerts') await refreshAlerts();
       if (ev.type === 'upload') document.dispatchEvent(new CustomEvent('jukem-upload-done', { detail: ev }));
       refreshCurrent(ev.type);

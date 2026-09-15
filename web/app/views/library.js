@@ -1,6 +1,7 @@
 import * as A from '../api.js';
 import { h, clear, icon, toast, fmtDuration, spinner, errorBox } from '../dom.js';
 import * as ops from '../fileops.js';
+import { state, refreshStatus } from '../main.js';
 
 // libraryView browses folders and tracks, searches, and applies the three
 // queue actions to rows, folders or a selection. The hash carries the
@@ -30,10 +31,9 @@ export async function libraryView(main, rest) {
   const selected = new Set();
   let storage = null;
   let preview = null;
-  let scanTimer = null;
-  let scanWatching = false; // one poll chain at a time
-  let scanStart = 0;
-  let destroyed = false;
+  let scanning = false;
+  let scanTicker = null;
+  let reloadTimer = null;
 
   function hashFor(p, q) {
     return '#/library' + (p ? '/' + encodeURIComponent(p) : '') + (q ? (p ? '' : '/') + '?q=' + encodeURIComponent(q) : '');
@@ -75,14 +75,15 @@ export async function libraryView(main, rest) {
     return items;
   }
 
+  // menu is a row's action menu. The items are built when the menu opens,
+  // so a page of rows does not build menus that nobody opens. The preview
+  // label then also shows the current state.
   function menu(target, entryName, label, entry) {
-    const ul = h('ul.dropdown-menu.dropdown-menu-end', menuItems(target, entryName, entry));
+    const ul = h('ul.dropdown-menu.dropdown-menu-end');
     const box = h('div.dropdown',
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': label }, icon('three-dots-vertical')),
       ul);
-    // The preview label says Stop while this row plays, so it is built
-    // again each time the menu opens.
-    if (entry) box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...menuItems(target, entryName, entry).filter(Boolean)); });
+    box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...menuItems(target, entryName, entry).filter(Boolean)); });
     return box;
   }
 
@@ -159,8 +160,8 @@ export async function libraryView(main, rest) {
     }
   }
 
-  // previewButtons maps a path to its row button, so the menu can start a
-  // preview and the row still shows the stop icon.
+  // previewButtons holds the row button of each path. The menu can then
+  // start a preview, and the row button shows the stop icon.
   const previewButtons = new Map();
 
   function renderList(pg) {
@@ -265,71 +266,59 @@ export async function libraryView(main, rest) {
     if (button) clear(button).append(icon('headphones'));
   }
 
-  // rescan starts a full scan and shows its progress.
+  // rescan starts a full scan. The status then says a scan runs.
   async function rescan() {
     try {
-      await A.api.post('/library/rescan');
+      await A.rescanLibrary();
       toast('Library scan started', 'success');
-      watchScan(true);
+      refreshStatus();
     } catch (e) { toast(e.message, 'danger'); }
   }
 
-  // watchScan polls the scan state every two seconds while MPD scans.
-  // MPD gives no percentage, so the bar moves without a figure and the
-  // track count shows what the scan found. started is true right after a
-  // rescan request: MPD can take a moment to report the scan, so one
-  // extra check waits for it.
-  async function watchScan(started = false) {
-    if (scanWatching) return;
-    scanWatching = true;
-    let graceChecks = started ? 1 : 0;
-    const poll = async () => {
-      scanTimer = null;
-      let s;
-      try { s = await A.api.get('/library/scan'); } catch { s = null; }
-      if (destroyed) { scanWatching = false; return; }
-      if (!s) { scanWatching = false; scanStart = 0; clear(scanBox); return; }
-      if (s.updating || graceChecks-- > 0) {
-        if (s.updating && !scanStart) scanStart = Date.now();
-        renderScan(s);
-        scanTimer = setTimeout(poll, 2000);
-        return;
-      }
-      // The scan is over. The list reloads once if the bar was showing.
-      scanWatching = false;
-      const shown = scanBox.hasChildNodes();
-      scanStart = 0;
-      clear(scanBox);
-      if (shown) load(false);
-    };
-    await poll();
+  // reload coalesces the list reloads that a scan end and its library
+  // event ask for at the same time.
+  function reload() {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => load(false), 0);
   }
 
-  function renderScan(s) {
-    const secs = scanStart ? Math.round((Date.now() - scanStart) / 1000) : 0;
-    clear(scanBox).append(h('div.mb-3',
-      h('div.d-flex.justify-content-between.small.mb-1',
-        h('span', icon('arrow-repeat', 'me-1'), 'Scanning the library'),
-        h('span.text-body-secondary', `${s.songs.toLocaleString()} tracks · ${fmtDuration(secs)}`)),
-      h('div.progress', { role: 'progressbar', 'aria-label': 'Library scan in progress' },
-        h('div.progress-bar.progress-bar-striped.progress-bar-animated.w-100'))));
+  // onStatus shows the scan bar while MPD scans. MPD reports no progress
+  // figure for a scan, so the bar moves without a figure and shows the time.
+  function onStatus(st) {
+    const now = !!st?.player?.updating;
+    if (now && !scanning) {
+      const time = h('span.text-body-secondary');
+      clear(scanBox).append(h('div.mb-3',
+        h('div.d-flex.justify-content-between.small.mb-1',
+          h('span', icon('arrow-repeat', 'me-1'), 'Scanning the library'), time),
+        h('div.progress', { role: 'progressbar', 'aria-label': 'Library scan in progress' },
+          h('div.progress-bar.progress-bar-striped.progress-bar-animated.w-100'))));
+      const tick = () => { time.textContent = fmtDuration(state.scanSince ? (Date.now() - state.scanSince) / 1000 : 0); };
+      tick();
+      scanTicker = setInterval(tick, 1000);
+    } else if (!now && scanning) {
+      clearInterval(scanTicker);
+      scanTicker = null;
+      clear(scanBox);
+      reload();
+    }
+    scanning = now;
   }
 
   await load();
-  watchScan();
+  onStatus(state.status);
+  state.statusListeners.add(onStatus);
   return {
     onEvent(type) {
       if (type === 'settings') storage = null;
-      // A scan in progress sends library events; the progress poll reloads
-      // the list once at the end instead of on every event.
-      if (type === 'library') { watchScan(); if (!scanStart) load(false); }
-      if (type === 'settings') load(false);
+      // During a scan the list reloads once, at the end.
+      if ((type === 'library' && !scanning) || type === 'settings') reload();
     },
     destroy() {
       stopPreview();
-      destroyed = true;
-      clearTimeout(scanTimer);
-      scanTimer = null;
+      state.statusListeners.delete(onStatus);
+      clearInterval(scanTicker);
+      clearTimeout(reloadTimer);
     },
   };
 }

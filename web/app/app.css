@@ -4,10 +4,8 @@
   --now-bar-height: 64px;
   --tab-bar-height: 56px;
 }
-/* The body grows with its content, so the padding below the last element
-   keeps it clear of the fixed bars. A fixed height of 100% put the padding
-   at the viewport edge instead, and long pages ran under the bars. */
-html, body { min-height: 100%; }
+/* The body has no fixed height, so its bottom padding comes after the last
+   element and the fixed bars do not cover it. */
 body { padding-bottom: calc(var(--now-bar-height) + 1rem + env(safe-area-inset-bottom)); }
 @media (max-width: 991.98px) {
   body { padding-bottom: calc(var(--now-bar-height) + var(--tab-bar-height) + 1rem + env(safe-area-inset-bottom)); }
@@ -47,8 +45,6 @@ body { padding-bottom: calc(var(--now-bar-height) + 1rem + env(safe-area-inset-b
 .transport .btn { min-width: 56px; }
 .transport .btn-play { width: 72px; height: 72px; font-size: 2rem; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 .queue-current { border-left: 4px solid var(--bs-primary); }
-/* Tracks that already played sit above the queue, dimmed. */
-.queue-played { opacity: .65; }
 .health-list dt { font-weight: 600; }
 .mono { font-family: var(--bs-font-monospace); font-size: .85em; }
 .pre-wrap { white-space: pre-wrap; }

@@ -99,30 +99,6 @@ func (s *Server) registerLibrary(api huma.API, apiMux *http.ServeMux) {
 		return nil, mpdError(err)
 	})
 
-	type scanOutput struct {
-		Body struct {
-			Updating bool `json:"updating" doc:"True while MPD scans the library"`
-			Songs    int  `json:"songs" doc:"Tracks in MPD's database now. During a scan the count grows as MPD finds new files."`
-		}
-	}
-	huma.Register(api, huma.Operation{
-		OperationID: "library-scan", Method: http.MethodGet, Path: "/library/scan", Tags: []string{"library"},
-		Summary:     "Library scan state",
-		Description: "MPD does not report how far a scan is. The track count is the only progress figure.",
-	}, func(ctx context.Context, _ *struct{}) (*scanOutput, error) {
-		st, err := s.opts.Player.Status()
-		if err != nil {
-			return nil, mpdError(err)
-		}
-		songs, _, err := s.opts.Player.Stats()
-		if err != nil {
-			return nil, mpdError(err)
-		}
-		out := &scanOutput{}
-		out.Body.Updating, out.Body.Songs = st.Updating, songs
-		return out, nil
-	})
-
 	// The preview streams a file with Range support for the browser's audio
 	// element. An audio element cannot send a bearer header. Thus this is a
 	// cookie-session endpoint.

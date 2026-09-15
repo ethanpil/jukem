@@ -125,7 +125,7 @@ export async function scheduleView(main) {
   function dayLabel(mask) {
     if (mask === 127) return 'Every day';
     if (mask === 31) return 'Mon–Fri';
-    if (mask === 96) return 'Sat–Sun';
+    if (mask === 96) return 'Weekends';
     return DAYS.filter(([, b]) => mask & b).map(([l]) => l).join(' ');
   }
   function sourceLabel(s) {
