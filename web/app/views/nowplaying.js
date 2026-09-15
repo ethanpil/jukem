@@ -168,7 +168,7 @@ export async function nowPlayingView(main) {
     const list = h('div.list-group.row-list.mb-1');
     for (const row of rows) {
       list.append(h('div.list-group-item.queue-played',
-        h('span.small.mono.text-body-secondary', { style: 'width: 3.5em' }, new Date(row.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+        h('span.small.mono.text-body-secondary.text-nowrap', { style: 'min-width: 5.5em' }, new Date(row.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
         h('div.row-main', h('div.row-title', row.title || row.file), h('div.small.text-body-secondary.row-title', [row.artist, row.album].filter(Boolean).join(' · ') || row.file))));
     }
     recentBox.append(h('div.small.text-body-secondary.mb-1', 'Recently played'), list);
