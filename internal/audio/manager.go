@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -25,39 +26,44 @@ type Snapshot struct {
 // /dev/snd changes, every 60 seconds as a safety net (15 seconds while the
 // selected output is missing), and on demand.
 type Manager struct {
-	log      *slog.Logger
-	onChange func(Snapshot)
-	aplay    func(ctx context.Context) (string, error)
-	sysRoot  string
-	devSnd   string
+	log     *slog.Logger
+	aplay   func(ctx context.Context) (string, error)
+	sysRoot string
+	devSnd  string
 
-	mu    sync.Mutex
-	snap  Snapshot
-	saved *Identity
-	kick  chan struct{}
+	// OnChange runs after every rescan that changes the device set or the
+	// selected device. Set it before Run starts.
+	OnChange func(Snapshot)
+
+	scanMu sync.Mutex // one scan at a time, so snapshots commit in order
+	mu     sync.Mutex
+	snap   Snapshot
+	saved  *Identity
+	kick   chan struct{}
 }
 
-// NewManager creates a manager. onChange runs after every rescan that
-// changes the device set or the selected device's presence.
-func NewManager(log *slog.Logger, onChange func(Snapshot)) *Manager {
+// NewManager creates a manager.
+func NewManager(log *slog.Logger) *Manager {
 	return &Manager{
-		log:      log,
-		onChange: onChange,
-		aplay:    runAplay,
-		sysRoot:  "/sys",
-		devSnd:   "/dev/snd",
-		kick:     make(chan struct{}, 1),
+		log:     log,
+		aplay:   runAplay,
+		sysRoot: "/sys",
+		devSnd:  "/dev/snd",
+		kick:    make(chan struct{}, 1),
 	}
 }
 
 func runAplay(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "aplay", "-l")
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {
-		// aplay exits 1 with "no soundcards found" when nothing is present,
-		// which is a valid empty result.
-		if strings.Contains(string(out), "no soundcards") {
+		// aplay exits 1 and prints "no soundcards found" on stderr when
+		// nothing is present, which is a valid empty result.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "no soundcards") {
 			return "", nil
 		}
 		return "", fmt.Errorf("aplay -l: %w", err)
@@ -66,11 +72,11 @@ func runAplay(ctx context.Context) (string, error) {
 }
 
 // SetSaved sets the identity to look for and rescans.
-func (m *Manager) SetSaved(id *Identity) {
+func (m *Manager) SetSaved(ctx context.Context, id *Identity) error {
 	m.mu.Lock()
 	m.saved = id
 	m.mu.Unlock()
-	m.Rescan(context.Background())
+	return m.Rescan(ctx)
 }
 
 // Snapshot returns the last scan result.
@@ -80,8 +86,11 @@ func (m *Manager) Snapshot() Snapshot {
 	return m.snap
 }
 
-// Rescan lists the devices now and reports a change to onChange.
+// Rescan lists the devices now and reports a change to OnChange.
 func (m *Manager) Rescan(ctx context.Context) error {
+	m.scanMu.Lock()
+	defer m.scanMu.Unlock()
+
 	out, err := m.aplay(ctx)
 	if err != nil {
 		return err
@@ -105,16 +114,21 @@ func (m *Manager) Rescan(ctx context.Context) error {
 	if m.saved != nil {
 		snap.Selected, snap.MatchRule = Match(*m.saved, devices)
 	}
-	changed := !sameDevices(m.snap.Devices, devices) ||
-		(m.snap.Selected == nil) != (snap.Selected == nil) ||
-		(m.snap.Selected != nil && snap.Selected != nil && m.snap.Selected.Key() != snap.Selected.Key())
+	changed := !sameDevices(m.snap.Devices, devices) || selectedKey(m.snap.Selected) != selectedKey(snap.Selected)
 	m.snap = snap
 	m.mu.Unlock()
 
-	if changed && m.onChange != nil {
-		m.onChange(snap)
+	if changed && m.OnChange != nil {
+		m.OnChange(snap)
 	}
 	return nil
+}
+
+func selectedKey(d *Device) string {
+	if d == nil {
+		return ""
+	}
+	return d.Key()
 }
 
 func sameDevices(a, b []Device) bool {
@@ -144,6 +158,14 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 	debounce := time.NewTimer(time.Hour)
 	debounce.Stop()
+	periodic := time.NewTimer(m.interval())
+	defer periodic.Stop()
+	rescan := func() {
+		if err := m.Rescan(ctx); err != nil && ctx.Err() == nil {
+			m.log.Warn("device rescan failed", "error", err)
+		}
+		periodic.Reset(m.interval())
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -153,13 +175,9 @@ func (m *Manager) Run(ctx context.Context) {
 			// milliseconds; wait for the last event before reading.
 			debounce.Reset(time.Second)
 		case <-debounce.C:
-			if err := m.Rescan(ctx); err != nil {
-				m.log.Warn("device rescan failed", "error", err)
-			}
-		case <-time.After(m.interval()):
-			if err := m.Rescan(ctx); err != nil {
-				m.log.Warn("device rescan failed", "error", err)
-			}
+			rescan()
+		case <-periodic.C:
+			rescan()
 		}
 	}
 }

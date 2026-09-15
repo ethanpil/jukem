@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"jukem/internal/api"
@@ -43,10 +42,10 @@ type App struct {
 	MPD     *mpdctl.Supervisor
 	Pool    *mpdctl.Pool
 
-	mu         sync.Mutex
-	settings   store.Settings
-	outputs    []mpdctl.Output
-	mpdStarted atomic.Bool
+	mu       sync.Mutex
+	settings store.Settings
+	outputs  []mpdctl.Output
+	outputMu sync.Mutex // one applyOutput at a time
 
 	handler http.Handler
 	cancel  context.CancelFunc
@@ -72,14 +71,16 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 
 	ctx, cancel := context.WithCancel(ctx)
 	a := &App{Version: version, cfg: cfg, log: log, Store: db, settings: settings, cancel: cancel, Mixer: audio.NewMixer()}
-	a.Devices = audio.NewManager(log, a.onDevices)
+	a.Devices = audio.NewManager(log)
 	paths := mpdctl.PathsFor(cfg.DataDir)
 	a.Pool = mpdctl.NewPool(paths.Socket, 3)
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
 	// present device from the beginning.
-	a.Devices.SetSaved(settings.OutputDevice)
+	if err := a.Devices.SetSaved(ctx, settings.OutputDevice); err != nil {
+		log.Warn("audio device scan failed", "error", err)
+	}
 	snap := a.Devices.Snapshot()
 	a.outputs = outputsFor(snap.Devices)
 	if err := a.MPD.Start(ctx, mpdctl.NewConfig(cfg.DataDir, settings.MusicRoot, a.outputs)); err != nil {
@@ -87,7 +88,9 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 		db.Close()
 		return nil, &MaintenanceError{Reason: "MPD does not start: " + err.Error(), Fix: "Check that the mpd package is installed and the data directory is writable, then restart the service."}
 	}
-	a.mpdStarted.Store(true)
+	// Later changes go through onDevices, which is registered only now so
+	// that the first scan does not act before MPD exists.
+	a.Devices.OnChange = a.onDevices
 	go a.Devices.Run(ctx)
 
 	h, err := api.New(api.Options{Version: version, Static: web.Files, Health: a.Health})
@@ -141,25 +144,24 @@ func sameOutputs(a, b []mpdctl.Output) bool {
 // onDevices runs after every device change. A new set of outputs means a
 // new config and an MPD restart; a change of selection alone is instant.
 func (a *App) onDevices(snap audio.Snapshot) {
-	if !a.mpdStarted.Load() {
-		return
-	}
 	outputs := outputsFor(snap.Devices)
 	a.mu.Lock()
 	changed := !sameOutputs(a.outputs, outputs)
-	if changed {
-		a.outputs = outputs
-	}
 	musicRoot := a.settings.MusicRoot
 	a.mu.Unlock()
-	if changed {
-		a.log.Info("audio devices changed, restarting mpd", "outputs", len(outputs))
-		if err := a.MPD.Reconfigure(mpdctl.NewConfig(a.cfg.DataDir, musicRoot, outputs)); err != nil {
-			a.log.Error("cannot reconfigure mpd", "error", err)
-		}
+	if !changed {
+		go a.applyOutput()
 		return
 	}
-	a.applyOutput()
+	a.log.Info("audio devices changed, restarting mpd", "outputs", len(outputs))
+	if err := a.MPD.Reconfigure(mpdctl.NewConfig(a.cfg.DataDir, musicRoot, outputs)); err != nil {
+		// The outputs stay as they were, so the next change tries again.
+		a.log.Error("cannot reconfigure mpd", "error", err)
+		return
+	}
+	a.mu.Lock()
+	a.outputs = outputs
+	a.mu.Unlock()
 }
 
 // onMPDEvent applies the selected output each time MPD starts.
@@ -173,14 +175,23 @@ func (a *App) onMPDEvent(ev mpdctl.Event) {
 }
 
 // applyOutput enables the selected output, disables the others, and
-// reapplies a remembered hardware level.
+// reapplies a remembered hardware level. Calls run one at a time, so two
+// callers cannot interleave their enable and disable commands.
 func (a *App) applyOutput() {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	snap := a.Devices.Snapshot()
 	name := ""
 	if snap.Selected != nil {
 		name = snap.Selected.OutputName()
 	}
-	if err := mpdctl.EnableOnly(a.Pool, name); err != nil {
+	err := mpdctl.EnableOnly(a.Pool, name)
+	if err != nil {
+		// MPD can still be busy right after a start; one more try covers it.
+		time.Sleep(time.Second)
+		err = mpdctl.EnableOnly(a.Pool, name)
+	}
+	if err != nil {
 		a.log.Warn("cannot select mpd output", "output", name, "error", err)
 	}
 	if snap.Selected == nil {

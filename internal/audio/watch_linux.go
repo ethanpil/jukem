@@ -13,7 +13,9 @@ import (
 // /dev/snd. inotify works the same on bare metal and through a Docker bind
 // mount, unlike netlink uevents.
 func watchDevSnd(ctx context.Context, dir string, fn func()) error {
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	// Non-blocking, so the runtime poller owns the fd and Close unblocks
+	// the read loop.
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return err
 	}

@@ -52,9 +52,9 @@ func processOwnedByMe(pid int) bool {
 	return ok && int(sys.Uid) == os.Getuid()
 }
 
-// recoverOrphan kills an MPD left behind by a jukem that was killed or
-// panicked. It kills a process only when every identity check passes, so a
-// recycled PID is never touched.
+// recoverOrphan kills an MPD that a killed or panicked jukem left behind.
+// It kills a process only when every identity check passes, so it never
+// touches a recycled PID.
 func recoverOrphan(paths Paths, binary string, log *slog.Logger) {
 	exe := resolveBinary(binary)
 	if rec, err := readPIDFile(paths.PIDFile); err == nil {
@@ -122,27 +122,34 @@ func findByCmdline(confFile string) []int {
 			continue
 		}
 		args := strings.Split(string(data), "\x00")
-		if len(args) >= 2 && strings.HasSuffix(args[0], "mpd") {
-			for _, a := range args[1:] {
-				if a == confFile {
-					pids = append(pids, pid)
-					break
-				}
+		for _, a := range args[1:] {
+			if a == confFile {
+				pids = append(pids, pid)
+				break
 			}
 		}
 	}
 	return pids
 }
 
-// killAndWait sends SIGTERM and SIGKILLs after five seconds.
+// killAndWait sends SIGTERM, SIGKILLs after five seconds, and returns once
+// the process is gone, so the next MPD does not find the device busy.
 func killAndWait(pid int) {
 	syscall.Kill(pid, syscall.SIGTERM)
-	deadline := time.Now().Add(5 * time.Second)
+	if waitGone(pid, 5*time.Second) {
+		return
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+	waitGone(pid, 2*time.Second)
+}
+
+func waitGone(pid int, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		if !processAlive(pid) {
-			return
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	syscall.Kill(pid, syscall.SIGKILL)
+	return !processAlive(pid)
 }

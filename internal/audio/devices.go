@@ -49,13 +49,14 @@ func (d Identity) OutputName() string {
 
 // Key is a stable key for per-device settings such as the mixer level.
 func (d Identity) Key() string {
+	dev := strconv.Itoa(d.Device)
 	switch {
 	case d.VendorID != "" && d.Serial != "":
-		return "usb:" + d.VendorID + ":" + d.ProductID + ":" + d.Serial
+		return "usb:" + d.VendorID + ":" + d.ProductID + ":" + d.Serial + ":" + dev
 	case d.SysPath != "":
-		return "path:" + d.SysPath + ":" + strconv.Itoa(d.Device)
+		return "path:" + d.SysPath + ":" + dev
 	}
-	return "card:" + d.CardID + ":" + strconv.Itoa(d.Device)
+	return "card:" + d.CardID + ":" + dev
 }
 
 var aplayLine = regexp.MustCompile(`^card (\d+): (\S+) \[(.*?)\], device (\d+): (.*?) \[(.*?)\]`)
@@ -98,8 +99,8 @@ func Match(saved Identity, present []Device) (*Device, string) {
 				hits = append(hits, i)
 			}
 		}
-		// Cheap DACs often share one serial across every unit, so a tie is
-		// not trusted.
+		// Cheap DACs often share one serial across every unit, so the rule
+		// does not trust a tie.
 		if len(hits) == 1 {
 			return &present[hits[0]], "serial"
 		}

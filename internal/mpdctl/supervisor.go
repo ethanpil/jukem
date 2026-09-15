@@ -1,6 +1,7 @@
 package mpdctl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,33 +41,33 @@ type Status struct {
 	Running   bool
 	Since     time.Time
 	PID       int
-	Restarts  int
 	LastError string
 }
 
-// Supervisor runs mpd --no-daemon as a child and keeps it running.
+// Supervisor runs mpd --no-daemon as a child and keeps it running. The
+// loop goroutine owns the process: Reconfigure and Stop only ask it to act,
+// so every exit has a known reason.
 type Supervisor struct {
 	paths   Paths
 	binary  string
 	log     *slog.Logger
 	onEvent func(Event)
 
-	mu        sync.Mutex
-	conf      Config
-	cmd       *exec.Cmd
-	running   bool
-	since     time.Time
-	restarts  int
-	lastErr   string
-	failures  []time.Time
+	mu       sync.Mutex
+	conf     Config
+	cmd      *exec.Cmd
+	running  bool
+	since    time.Time
+	lastErr  string
+	failures []time.Time
+
 	restartCh chan struct{}
-	stopping  bool
 	cancel    context.CancelFunc
 	done      chan struct{}
 }
 
 // New creates a supervisor for the MPD binary named binary ("mpd" on the
-// path). onEvent receives every process event; it may be nil.
+// path). onEvent receives every process event; nil is allowed.
 func New(dataDir, binary string, log *slog.Logger, onEvent func(Event)) *Supervisor {
 	if onEvent == nil {
 		onEvent = func(Event) {}
@@ -93,10 +94,10 @@ func (s *Supervisor) Start(ctx context.Context, conf Config) error {
 	if err := os.MkdirAll(s.paths.PlaylistDir, 0o750); err != nil {
 		return err
 	}
+	recoverOrphan(s.paths, s.binary, s.log)
 	if err := s.writeConf(conf); err != nil {
 		return err
 	}
-	recoverOrphan(s.paths, s.binary, s.log)
 	ctx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
 	s.conf = conf
@@ -107,41 +108,32 @@ func (s *Supervisor) Start(ctx context.Context, conf Config) error {
 	return nil
 }
 
-// Reconfigure writes a new config and restarts MPD so it takes effect.
+// Reconfigure writes a new config and asks the loop to restart MPD. It
+// returns at once; the restart happens in the background.
 func (s *Supervisor) Reconfigure(conf Config) error {
 	if err := s.writeConf(conf); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.conf = conf
-	cmd := s.cmd
 	s.mu.Unlock()
 	select {
 	case s.restartCh <- struct{}{}:
 	default:
 	}
-	if cmd != nil && cmd.Process != nil {
-		terminate(cmd.Process, 5*time.Second)
-	}
 	return nil
 }
 
-// Stop ends MPD and the restart loop. It waits up to five seconds for a
-// clean exit and then kills the process.
+// Stop ends MPD and the restart loop. The loop waits up to five seconds
+// for a clean exit and then kills the process.
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
-	s.stopping = true
-	cancel := s.cancel
-	cmd := s.cmd
-	done := s.done
+	cancel, done := s.cancel, s.done
 	s.mu.Unlock()
 	if cancel == nil {
 		return
 	}
 	cancel()
-	if cmd != nil && cmd.Process != nil {
-		terminate(cmd.Process, 5*time.Second)
-	}
 	<-done
 	os.Remove(s.paths.PIDFile)
 	os.Remove(s.paths.Socket)
@@ -152,7 +144,7 @@ func (s *Supervisor) Stop() {
 func (s *Supervisor) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := Status{Running: s.running, Since: s.since, Restarts: s.restarts, LastError: s.lastErr}
+	st := Status{Running: s.running, Since: s.since, LastError: s.lastErr}
 	if s.cmd != nil && s.cmd.Process != nil {
 		st.PID = s.cmd.Process.Pid
 	}
@@ -167,13 +159,27 @@ func (s *Supervisor) writeConf(conf Config) error {
 	return os.Rename(tmp, s.paths.ConfFile)
 }
 
+// exitReason says why runOnce returned.
+type exitReason int
+
+const (
+	exitCrashed   exitReason = iota // MPD exited on its own
+	exitRequested                   // Reconfigure asked for a restart
+	exitCancelled                   // Stop ended the loop
+)
+
 // loop runs MPD and restarts it with backoff until ctx ends.
 func (s *Supervisor) loop(ctx context.Context) {
 	defer close(s.done)
 	backoff := time.Second
 	for {
+		// A restart request from before this start is already satisfied.
+		select {
+		case <-s.restartCh:
+		default:
+		}
 		start := time.Now()
-		err := s.runOnce(ctx)
+		reason, err := s.runOnce(ctx)
 		s.mu.Lock()
 		s.running = false
 		s.cmd = nil
@@ -181,38 +187,29 @@ func (s *Supervisor) loop(ctx context.Context) {
 			s.lastErr = err.Error()
 		}
 		s.mu.Unlock()
-		if ctx.Err() != nil {
+		switch reason {
+		case exitCancelled:
 			return
-		}
-		requested := false
-		select {
-		case <-s.restartCh:
-			requested = true
-		default:
-		}
-		if requested {
+		case exitRequested:
 			s.log.Info("restarting mpd with the new config")
 			backoff = time.Second
 			continue
 		}
-		s.log.Warn("mpd exited", "error", err, "restart_in", backoff)
-		s.onEvent(Event{Kind: EventExited, Err: err})
 		if time.Since(start) > time.Minute {
 			backoff = time.Second
 		}
+		s.log.Warn("mpd exited", "error", err, "restart_in", backoff)
+		s.onEvent(Event{Kind: EventExited, Err: err})
 		s.noteFailure()
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.restartCh:
+			backoff = time.Second
+			continue
 		case <-time.After(backoff):
 		}
-		backoff *= 2
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
-		}
-		s.mu.Lock()
-		s.restarts++
-		s.mu.Unlock()
+		backoff = min(backoff*2, 30*time.Second)
 	}
 }
 
@@ -234,14 +231,15 @@ func (s *Supervisor) noteFailure() {
 	}
 }
 
-// runOnce starts MPD, waits for the socket, and returns when it exits.
-func (s *Supervisor) runOnce(ctx context.Context) error {
+// runOnce starts MPD, waits for the socket, and returns when it exits or
+// when the loop must stop or restart it.
+func (s *Supervisor) runOnce(ctx context.Context) (exitReason, error) {
 	os.Remove(s.paths.Socket)
 	cmd := exec.Command(s.binary, "--no-daemon", s.paths.ConfFile)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = &lineLogger{log: s.log}
+	cmd.Stderr = &lineLogger{log: s.log}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", s.binary, err)
+		return exitCrashed, fmt.Errorf("start %s: %w", s.binary, err)
 	}
 	s.mu.Lock()
 	s.cmd = cmd
@@ -251,15 +249,9 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- cmd.Wait() }()
 
-	if err := waitForSocket(ctx, s.paths.Socket, waitErr, 15*time.Second); err != nil {
-		select {
-		case werr := <-waitErr:
-			return fmt.Errorf("mpd exited before its socket opened: %v", werr)
-		default:
-		}
-		terminate(cmd.Process, 5*time.Second)
-		<-waitErr
-		return err
+	reason, err := s.waitForSocket(ctx, waitErr)
+	if err != nil {
+		return reason, err
 	}
 	s.mu.Lock()
 	s.running = true
@@ -268,35 +260,73 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 	s.mu.Unlock()
 	s.log.Info("mpd running", "pid", cmd.Process.Pid)
 	s.onEvent(Event{Kind: EventStarted})
-	return <-waitErr
+
+	select {
+	case err := <-waitErr:
+		return exitCrashed, err
+	case <-ctx.Done():
+		terminate(cmd.Process, waitErr, 5*time.Second)
+		return exitCancelled, nil
+	case <-s.restartCh:
+		terminate(cmd.Process, waitErr, 5*time.Second)
+		return exitRequested, nil
+	}
 }
 
-// waitForSocket polls the unix socket until MPD answers, the process exits,
-// or the timeout passes. It does not consume from waitErr.
-func waitForSocket(ctx context.Context, socket string, waitErr <-chan error, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if c, err := net.DialTimeout("unix", socket, time.Second); err == nil {
+// waitForSocket polls the unix socket until MPD answers, the process
+// exits, or fifteen seconds pass.
+func (s *Supervisor) waitForSocket(ctx context.Context, waitErr chan error) (exitReason, error) {
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if c, err := net.Dial("unix", s.paths.Socket); err == nil {
 			c.Close()
-			return nil
+			return exitCrashed, nil
 		}
 		select {
+		case err := <-waitErr:
+			return exitCrashed, fmt.Errorf("mpd exited before its socket opened: %v", err)
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-		if len(waitErr) > 0 {
-			return errors.New("mpd exited before its socket opened")
+			terminate(s.cmdProcess(), waitErr, 5*time.Second)
+			return exitCancelled, ctx.Err()
+		case <-s.restartCh:
+			terminate(s.cmdProcess(), waitErr, 5*time.Second)
+			return exitRequested, errors.New("restart requested during start")
+		case <-timeout.C:
+			terminate(s.cmdProcess(), waitErr, 5*time.Second)
+			return exitCrashed, fmt.Errorf("mpd did not open %s within 15s", s.paths.Socket)
+		case <-tick.C:
 		}
 	}
-	return fmt.Errorf("mpd did not open %s within %s", socket, timeout)
+}
+
+func (s *Supervisor) cmdProcess() *os.Process {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cmd.Process
+}
+
+// terminate sends SIGTERM, waits for the exit, and SIGKILLs after grace.
+func terminate(p *os.Process, waitErr chan error, grace time.Duration) {
+	if err := p.Signal(syscall.SIGTERM); err != nil {
+		p.Kill()
+		<-waitErr
+		return
+	}
+	select {
+	case <-waitErr:
+	case <-time.After(grace):
+		p.Kill()
+		<-waitErr
+	}
 }
 
 // writePIDFile records what startup recovery needs to identify the process
 // on the next start: pid, kernel start time, and the config path.
 func (s *Supervisor) writePIDFile(pid int) {
-	startTime := processStartTime(pid)
-	content := fmt.Sprintf("%d\n%s\n%s\n", pid, startTime, s.paths.ConfFile)
+	content := fmt.Sprintf("%d\n%s\n%s\n", pid, processStartTime(pid), s.paths.ConfFile)
 	if err := os.WriteFile(s.paths.PIDFile, []byte(content), 0o640); err != nil {
 		s.log.Warn("cannot write mpd pid file", "error", err)
 	}
@@ -325,18 +355,22 @@ func readPIDFile(path string) (pidRecord, error) {
 	return pidRecord{PID: pid, StartTime: strings.TrimSpace(lines[1]), ConfFile: strings.TrimSpace(lines[2])}, nil
 }
 
-// terminate sends SIGTERM, waits, and then SIGKILLs the process.
-func terminate(p *os.Process, grace time.Duration) {
-	if err := p.Signal(syscall.SIGTERM); err != nil {
-		p.Kill()
-		return
-	}
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if !processAlive(p.Pid) {
-			return
+// lineLogger sends each line MPD prints to the service log, so MPD output
+// lands in the rotating log file and in docker logs.
+type lineLogger struct {
+	log *slog.Logger
+	buf bytes.Buffer
+}
+
+func (l *lineLogger) Write(p []byte) (int, error) {
+	l.buf.Write(p)
+	for {
+		line, err := l.buf.ReadString('\n')
+		if err != nil {
+			l.buf.WriteString(line)
+			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		l.log.Info("mpd: " + strings.TrimRight(line, "\r\n"))
 	}
-	p.Kill()
+	return len(p), nil
 }

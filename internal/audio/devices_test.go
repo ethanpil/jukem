@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,18 +108,21 @@ func TestEnrichFromSysfs(t *testing.T) {
 	if d.SysPath != "devices/pci0000/usb1/1-1/1-1_1.0" {
 		t.Fatalf("sys path %q", d.SysPath)
 	}
-	if d.Key() != "usb:0d8c:0014:ABC123" {
+	if d.Key() != "usb:0d8c:0014:ABC123:0" {
 		t.Fatal(d.Key())
 	}
 }
 
 func TestManagerRescanReportsChanges(t *testing.T) {
 	var changes []Snapshot
-	m := NewManager(testLogger(), func(s Snapshot) { changes = append(changes, s) })
+	m := NewManager(slog.New(slog.DiscardHandler))
+	m.OnChange = func(s Snapshot) { changes = append(changes, s) }
 	m.sysRoot = t.TempDir()
 	out := aplayOut
 	m.aplay = func(context.Context) (string, error) { return out, nil }
-	m.SetSaved(&Identity{CardID: "Device"})
+	if err := m.SetSaved(context.Background(), &Identity{CardID: "Device"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(changes) != 1 || changes[0].Selected == nil || changes[0].MatchRule != "card_id" {
 		t.Fatalf("first scan: %+v", changes)
 	}

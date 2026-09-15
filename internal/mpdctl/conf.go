@@ -22,7 +22,6 @@ type Config struct {
 	DBFile      string
 	StateFile   string
 	StickerFile string
-	LogFile     string
 	Socket      string
 	Outputs     []Output
 }
@@ -59,7 +58,6 @@ func NewConfig(dataDir, musicDir string, outputs []Output) Config {
 		DBFile:      path.Join(p.Dir, "database"),
 		StateFile:   path.Join(p.Dir, "state"),
 		StickerFile: path.Join(p.Dir, "sticker.sql"),
-		LogFile:     path.Join(p.Dir, "mpd.log"),
 		Socket:      p.Socket,
 		Outputs:     outputs,
 	}
@@ -77,7 +75,6 @@ func (c Config) Render() string {
 	line("db_file", c.DBFile)
 	line("state_file", c.StateFile)
 	line("sticker_file", c.StickerFile)
-	line("log_file", c.LogFile)
 	line("bind_to_address", c.Socket)
 	line("zeroconf_enabled", "no")
 	line("restore_paused", "yes")

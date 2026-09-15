@@ -12,15 +12,6 @@ import (
 
 func processStartTime(pid int) string { return "" }
 
-func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	p.Release()
-	return true
-}
-
 func recoverOrphan(paths Paths, binary string, log *slog.Logger) {
 	os.Remove(paths.PIDFile)
 }

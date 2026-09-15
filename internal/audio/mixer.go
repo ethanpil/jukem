@@ -41,7 +41,12 @@ func ParseMixer(out string) []MixerControl {
 		line := sc.Text()
 		if m := controlLine.FindStringSubmatch(line); m != nil {
 			flush()
-			cur = &MixerControl{Name: m[1]}
+			// amixer addresses a control with a non-zero index as 'Name',N.
+			name := m[1]
+			if m[2] != "0" {
+				name += "," + m[2]
+			}
+			cur = &MixerControl{Name: name}
 			continue
 		}
 		if cur == nil {
@@ -51,7 +56,8 @@ func ParseMixer(out string) []MixerControl {
 		if strings.HasPrefix(t, "Capabilities:") && strings.Contains(t, "pvolume") {
 			hasVolume = true
 		}
-		// The first channel line sets the level; later channels are ignored.
+		// The first channel line sets the level; the parser skips later
+		// channels.
 		if hasLevel {
 			continue
 		}
