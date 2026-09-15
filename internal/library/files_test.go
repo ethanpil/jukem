@@ -65,6 +65,8 @@ func TestUploadConflictPolicy(t *testing.T) {
 	if err != nil || res.Skipped {
 		t.Fatalf("replace: %+v %v", res, err)
 	}
+	// The stored file armed the scan timer, and the test has no player.
+	f.timer.Stop()
 	if data, _ := os.ReadFile(filepath.Join(root, "a", "x.mp3")); string(data) != "new" {
 		t.Fatal("replace kept the old file")
 	}

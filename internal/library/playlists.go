@@ -98,8 +98,14 @@ func (p *Playlists) Entries(name string) ([]string, error) {
 	entries := []string{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	first := true
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
+		if first {
+			// An editor on Windows can put a byte order mark first.
+			line = strings.TrimPrefix(line, "\ufeff")
+			first = false
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -164,6 +170,13 @@ func (p *Playlists) write(name string, entries []string) error {
 		w.WriteByte('\n')
 	}
 	if err := w.Flush(); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	// The rename is atomic; the sync keeps a power cut from leaving an
+	// empty file behind it.
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
@@ -318,14 +331,13 @@ func (p *Playlists) Referencing(ctx context.Context, paths []string) (map[string
 // Rewrite updates every playlist for a set of moves and deletes in one
 // pass per playlist. Entries the validator rejects stay as they are, so a
 // hand-written line never stops the other playlists from being updated.
-func (p *Playlists) Rewrite(ctx context.Context, changes []Change) (int, error) {
+func (p *Playlists) Rewrite(ctx context.Context, changes []Change) error {
 	lists, err := p.store.ListPlaylists(ctx)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	changed := 0
 	var errs []error
 	for _, pl := range lists {
 		entries, err := p.Entries(pl.Name)
@@ -358,7 +370,6 @@ func (p *Playlists) Rewrite(ctx context.Context, changes []Change) (int, error) 
 			continue
 		}
 		p.store.TouchPlaylist(ctx, pl.ID)
-		changed++
 	}
-	return changed, errors.Join(errs...)
+	return errors.Join(errs...)
 }

@@ -25,8 +25,8 @@ type Schedule struct {
 	Name       string `json:"name" minLength:"1" maxLength:"100"`
 	Enabled    bool   `json:"enabled"`
 	Days       int    `json:"days" minimum:"1" maximum:"127" doc:"Bit mask, Monday is 1, Sunday is 64. A day is the day the window starts."`
-	StartTime  string `json:"start_time" pattern:"^[0-2][0-9]:[0-5][0-9]$" doc:"Local wall-clock time HH:MM"`
-	EndTime    string `json:"end_time" pattern:"^[0-2][0-9]:[0-5][0-9]$" doc:"Local wall-clock time HH:MM. Earlier than the start means past midnight."`
+	StartTime  string `json:"start_time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" doc:"Local wall-clock time HH:MM"`
+	EndTime    string `json:"end_time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" doc:"Local wall-clock time HH:MM. Earlier than the start means past midnight."`
 	SourceType string `json:"source_type" enum:"directory,playlist"`
 	SourceRef  string `json:"source_ref" doc:"A path under the music root, or a playlist id"`
 	Shuffle    bool   `json:"shuffle"`
@@ -35,11 +35,11 @@ type Schedule struct {
 
 // Exception is a date that overrides the weekly rules.
 type Exception struct {
-	Date       string  `json:"date" pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`
+	Date       string  `json:"date,omitempty" pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$" doc:"Required on create; the path names it on update"`
 	Kind       string  `json:"kind" enum:"silent,hours,source" doc:"With silent, nothing plays that day. With hours, the given hours play the given source. With source, the normal hours play a different source."`
 	Note       string  `json:"note,omitempty" maxLength:"200"`
-	StartTime  *string `json:"start_time,omitempty" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
-	EndTime    *string `json:"end_time,omitempty" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
+	StartTime  *string `json:"start_time,omitempty" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$"`
+	EndTime    *string `json:"end_time,omitempty" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$"`
 	SourceType *string `json:"source_type,omitempty" enum:"directory,playlist"`
 	SourceRef  *string `json:"source_ref,omitempty"`
 	Shuffle    *bool   `json:"shuffle,omitempty"`
@@ -128,11 +128,15 @@ func (s *Store) DeleteSchedule(ctx context.Context, id int64) (bool, error) {
 // ListExceptions returns the exceptions between two dates inclusive, or
 // all when both are empty.
 func (s *Store) ListExceptions(ctx context.Context, from, to string) ([]Exception, error) {
-	q := `SELECT date, kind, note, start_time, end_time, source_type, source_ref, shuffle, volume FROM schedule_exceptions`
+	q := `SELECT date, kind, note, start_time, end_time, source_type, source_ref, shuffle, volume FROM schedule_exceptions WHERE 1 = 1`
 	var args []any
-	if from != "" || to != "" {
-		q += ` WHERE date >= ? AND date <= ?`
-		args = append(args, from, to)
+	if from != "" {
+		q += ` AND date >= ?`
+		args = append(args, from)
+	}
+	if to != "" {
+		q += ` AND date <= ?`
+		args = append(args, to)
 	}
 	rows, err := s.r.QueryContext(ctx, q+` ORDER BY date`, args...)
 	if err != nil {
@@ -235,7 +239,7 @@ func (s *Store) RemoveDoNotPlay(ctx context.Context, file string) (bool, error) 
 
 // ListDoNotPlay returns every entry, newest first.
 func (s *Store) ListDoNotPlay(ctx context.Context) ([]DoNotPlayEntry, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT file, title, added_at FROM do_not_play ORDER BY added_at DESC`)
+	rows, err := s.r.QueryContext(ctx, `SELECT file, title, added_at FROM do_not_play ORDER BY added_at DESC, file`)
 	if err != nil {
 		return nil, err
 	}

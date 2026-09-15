@@ -112,7 +112,17 @@ func (f *Files) Move(ctx context.Context, refs References, from, to string) erro
 	if err != nil {
 		return &OpError{Status: http.StatusNotFound, Detail: "no such file or folder"}
 	}
-	if _, err := os.Lstat(dst); err == nil {
+	// A symlinked folder moves as a link, but its references are folder
+	// references.
+	isDir := info.IsDir()
+	if info.Mode()&os.ModeSymlink != 0 {
+		if target, err := os.Stat(src); err == nil {
+			isDir = target.IsDir()
+		}
+	}
+	// On a file system without case, a rename that only changes the case
+	// finds the source itself at the destination.
+	if dstInfo, err := os.Lstat(dst); err == nil && !os.SameFile(info, dstInfo) {
 		return &OpError{Status: http.StatusConflict, Detail: "something with that name exists at the destination"}
 	}
 	if err := f.ensureWritable(filepath.Dir(src), root); err != nil {
@@ -120,7 +130,7 @@ func (f *Files) Move(ctx context.Context, refs References, from, to string) erro
 	}
 	// A folder that moves to another parent needs write access to itself,
 	// because its ".." entry changes.
-	if info.IsDir() && filepath.Dir(src) != filepath.Dir(dst) {
+	if isDir && filepath.Dir(src) != filepath.Dir(dst) {
 		if err := f.ensureWritable(src, root); err != nil {
 			return err
 		}
@@ -148,7 +158,7 @@ func (f *Files) Move(ctx context.Context, refs References, from, to string) erro
 		}
 		os.Remove(src)
 	}
-	f.updateReferences(ctx, refs, []Change{{Old: fromRel, New: toRel, IsDir: info.IsDir()}})
+	f.updateReferences(ctx, refs, []Change{{Old: fromRel, New: toRel, IsDir: isDir}})
 	f.noteChanged(path.Dir(fromRel), path.Dir(toRel))
 	return nil
 }
@@ -228,7 +238,7 @@ func (f *Files) updateReferences(ctx context.Context, refs References, changes [
 	if len(changes) == 0 {
 		return
 	}
-	if _, err := refs.Playlists.Rewrite(ctx, changes); err != nil {
+	if err := refs.Playlists.Rewrite(ctx, changes); err != nil {
 		f.log.Warn("cannot rewrite every playlist", "error", err)
 	}
 	for _, c := range changes {

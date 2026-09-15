@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"jukem/internal/audio"
 )
 
-// Settings holds every setting the UI exposes. Bootstrap settings (listen
-// address, data directory, log file) live in the config file instead.
+// Settings holds every setting the UI exposes. The bootstrap settings
+// (listen address, data directory, log file) are in the config file.
 type Settings struct {
 	SetupComplete bool `json:"setup_complete" doc:"True after the setup wizard has finished"`
 
@@ -121,6 +123,29 @@ func (set *Settings) Validate() error {
 		set.AlertWebhookPreset = "generic"
 	}
 	return nil
+}
+
+// locCache keeps the parsed zones. time.LoadLocation reads the zone
+// file on every call, and the scheduler asks for the zone every tick.
+var locCache struct {
+	mu   sync.Mutex
+	zone string
+	loc  *time.Location
+}
+
+// Location returns the configured zone, or UTC when the name is unknown.
+func (set *Settings) Location() *time.Location {
+	locCache.mu.Lock()
+	defer locCache.mu.Unlock()
+	if locCache.loc != nil && locCache.zone == set.TimeZone {
+		return locCache.loc
+	}
+	loc, err := time.LoadLocation(set.TimeZone)
+	if err != nil {
+		return time.UTC
+	}
+	locCache.zone, locCache.loc = set.TimeZone, loc
+	return loc
 }
 
 // ExtensionAllowed reports whether a file name has an allowed extension.

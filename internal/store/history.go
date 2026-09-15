@@ -24,10 +24,10 @@ func (s *Store) AddHistory(ctx context.Context, r HistoryRow) error {
 	return err
 }
 
-// ListHistory returns up to limit rows, newest first. Rows are added
-// in time order, so the id orders them and pages them without a gap:
-// a page continues below the last id of the page before it. A zero
-// beforeID starts at the newest row.
+// ListHistory returns up to limit rows, newest first. Rows are added in
+// time order, so the id orders them. A page continues below the last id
+// of the page before it, so no row is lost. A zero beforeID starts at
+// the newest row.
 func (s *Store) ListHistory(ctx context.Context, beforeID int64, limit int) ([]HistoryRow, error) {
 	if beforeID <= 0 {
 		beforeID = math.MaxInt64

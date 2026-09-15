@@ -5,10 +5,10 @@ import (
 	"database/sql"
 )
 
-// Path comparisons in SQL use substr with lengths that SQLite measures in
-// characters, so a non-ASCII folder name works, and they are exact, so a
-// folder that differs only by case is not touched. LIKE would be
-// case-insensitive and Go's len counts bytes.
+// Path comparisons in SQL use substr. SQLite measures its lengths in
+// characters, so a non-ASCII folder name works. The comparisons are
+// exact, so a folder that differs only by case is not touched. LIKE
+// would be case-insensitive, and Go's len counts bytes.
 
 // belowClause matches column = ? or column starting with ? + "/". The
 // caller passes the path twice.

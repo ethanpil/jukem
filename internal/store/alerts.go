@@ -55,7 +55,7 @@ func (s *Store) DismissAlert(ctx context.Context, id int64) (bool, error) {
 
 // ActiveAlerts lists the alerts nobody dismissed, newest first.
 func (s *Store) ActiveAlerts(ctx context.Context) ([]Alert, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT `+alertColumns+` FROM alerts WHERE dismissed_at IS NULL ORDER BY raised_at DESC`)
+	rows, err := s.r.QueryContext(ctx, `SELECT `+alertColumns+` FROM alerts WHERE dismissed_at IS NULL ORDER BY raised_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}

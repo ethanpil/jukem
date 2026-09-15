@@ -118,7 +118,9 @@ func (b *Browser) Search(q string) (entries []Entry, limited bool, err error) {
 	window := "0:" + strconv.Itoa(SearchLimit+1)
 	err = b.pool.Do(func(c *mpd.Client) error {
 		for _, field := range []string{"any", "file"} {
-			attrs, err := c.Search(field, q, "window", window)
+			// gompd sends the assembled command through Fprintf, so a
+			// percent sign in the query must be doubled.
+			attrs, err := c.Search(field, strings.ReplaceAll(q, "%", "%%"), "window", window)
 			if err != nil {
 				return err
 			}

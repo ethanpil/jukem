@@ -219,30 +219,28 @@ func listSnapshots(dir string) ([]snapshotFile, error) {
 	return files, nil
 }
 
-// pruneSnapshots keeps the newest keepSnapshots files. It never removes the
-// last snapshot of a schema version: after a migration that fails on every
-// start, that file is the one a rollback needs.
+// pruneSnapshots keeps the newest keepSnapshots files. It also keeps the
+// newest snapshot of each schema version: after a migration that fails on
+// every start, that file is the one a rollback needs.
 func pruneSnapshots(dir string) error {
 	files, err := listSnapshots(dir)
 	if err != nil {
 		return err
 	}
-	perVersion := map[int]int{}
-	for _, f := range files {
-		perVersion[f.version]++
-	}
+	// The list is newest first, so the first file of a version is the
+	// newest one of that version.
+	seen := map[int]bool{}
 	kept := 0
 	var errs []string
 	for _, f := range files {
-		if kept < keepSnapshots || perVersion[f.version] == 1 {
+		if kept < keepSnapshots || !seen[f.version] {
 			kept++
+			seen[f.version] = true
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, f.name)); err != nil {
 			errs = append(errs, err.Error())
-			continue
 		}
-		perVersion[f.version]--
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))

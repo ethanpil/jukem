@@ -78,9 +78,6 @@ func (s *Store) Close() error {
 // Read returns the read pool. Its connections reject writes.
 func (s *Store) Read() *sql.DB { return s.r }
 
-// Write returns the single-connection write pool.
-func (s *Store) Write() *sql.DB { return s.w }
-
 // Tx runs fn in a write transaction and commits when fn returns nil.
 func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := s.w.BeginTx(ctx, nil)

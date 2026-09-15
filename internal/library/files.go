@@ -198,25 +198,21 @@ func (f *Files) Upload(rel, conflict string, body io.Reader, size int64) (Upload
 	// arrived, so a rejected upload leaves no empty folder behind.
 	destDir := filepath.Dir(abs)
 	base := nearestExisting(destDir, root)
-	if info, err := os.Lstat(base); err == nil && !info.IsDir() {
+	// Stat follows a symlink: the root, or a folder in it, is often a
+	// link to a mount.
+	if info, err := os.Stat(base); err == nil && !info.IsDir() {
 		return UploadResult{}, &OpError{Status: http.StatusConflict, Detail: "a file is in the way of the folder path"}
 	}
 	if err := f.ensureWritable(base, root); err != nil {
 		return UploadResult{}, err
 	}
-	// The space check counts the uploads in flight, so a parallel batch
-	// cannot pass the same free figure three times.
-	if size > 0 && st.FreeBytes > 0 {
-		f.mu.Lock()
-		room := st.FreeBytes - lim.Reserve - f.inflight
-		if size > room {
-			f.mu.Unlock()
-			return UploadResult{}, &OpError{Status: http.StatusInsufficientStorage, Detail: "not enough free space on the music disk"}
-		}
-		f.mu.Unlock()
-	}
-
+	// The space check and the reservation are one step, so a parallel
+	// batch cannot pass the same free figure three times.
 	f.mu.Lock()
+	if size > 0 && st.FreeBytes > 0 && size > st.FreeBytes-lim.Reserve-f.inflight {
+		f.mu.Unlock()
+		return UploadResult{}, &OpError{Status: http.StatusInsufficientStorage, Detail: "not enough free space on the music disk"}
+	}
 	f.active++
 	f.inflight += max(size, 0)
 	f.mu.Unlock()
@@ -225,6 +221,8 @@ func (f *Files) Upload(rel, conflict string, body io.Reader, size int64) (Upload
 		f.active--
 		f.inflight -= max(size, 0)
 		f.mu.Unlock()
+		// The next space check must see the new file.
+		ForgetStat()
 	}()
 
 	tmpDir := filepath.Join(root, ".jukem-tmp")
@@ -263,6 +261,8 @@ func writeTemp(tmpDir string, body io.Reader, limit int64) (string, int64, error
 		return "", 0, &OpError{Status: http.StatusInternalServerError, Detail: "cannot create a temporary file: " + err.Error()}
 	}
 	tmp := out.Name()
+	// Other tools and users read the music too.
+	out.Chmod(0o644)
 	// One extra byte tells a body over the limit from one exactly at it.
 	n, err := io.Copy(out, io.LimitReader(body, limit+1))
 	if err == nil && n > limit {
@@ -359,6 +359,22 @@ func (f *Files) maybeScan() {
 		f.scanning = false
 		f.mu.Unlock()
 		f.events.Publish(events.Upload, folder)
+	}
+}
+
+// ResetScan forgets a scan in progress after MPD restarted, because the
+// end event of the old scan never comes. Pending folders are scanned
+// again.
+func (f *Files) ResetScan() {
+	f.mu.Lock()
+	if f.scanning {
+		f.pending = append(f.pending, f.scanDir)
+		f.scanning = false
+	}
+	more := len(f.pending) > 0
+	f.mu.Unlock()
+	if more {
+		f.timer.Reset(5 * time.Second)
 	}
 }
 
@@ -463,6 +479,11 @@ type PermissionReport struct {
 // not writable.
 func (f *Files) CheckPermissions(ctx context.Context) (PermissionReport, error) {
 	root := f.root()
+	// The walk does not follow a symlinked root, and a root is often a
+	// link to a mount.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	rep := PermissionReport{Problems: []string{}}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if ctx.Err() != nil {

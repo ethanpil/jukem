@@ -13,7 +13,7 @@ type Storage struct {
 	TotalBytes int64  `json:"total_bytes" doc:"0 when unknown"`
 	FreeBytes  int64  `json:"free_bytes" doc:"0 when unknown"`
 	ReadOnly   bool   `json:"read_only" doc:"True when the root is not writable. The UI hides uploads and file operations."`
-	Missing    bool   `json:"missing" doc:"True when the root does not exist"`
+	Missing    bool   `json:"missing" doc:"True when the root does not exist, is not a directory, or cannot be read"`
 	Problem    string `json:"problem,omitempty" doc:"Why the root is not usable, in plain words"`
 }
 
@@ -56,16 +56,18 @@ func stat(root string) Storage {
 		s.Problem = "The music root does not exist."
 		return s
 	case err != nil:
-		s.ReadOnly = true
+		s.Missing, s.ReadOnly = true, true
 		s.Problem = "The music root cannot be read: " + err.Error()
 		return s
 	case !st.IsDir():
-		s.ReadOnly = true
+		s.Missing, s.ReadOnly = true, true
 		s.Problem = "The music root is not a directory."
 		return s
 	}
 	s.TotalBytes, s.FreeBytes = diskSpace(root)
-	s.ReadOnly = !Writable(root)
+	// The access check writes nothing; a probe file on every status call
+	// would wear the disk.
+	s.ReadOnly = !canWrite(root)
 	if s.ReadOnly {
 		s.Problem = "The music root is not writable by the service user. A read-only mount is expected to show this. For an ownership problem, Settings > Maintenance > Check library permissions gives the fix."
 	}
