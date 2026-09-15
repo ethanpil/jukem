@@ -3,7 +3,7 @@
 
 import * as A from './api.js';
 import { h, clear, icon, toast } from './dom.js';
-import { route, start, navigate, currentSection, refreshCurrent } from './router.js';
+import { route, start, stop, navigate, currentSection, refreshCurrent } from './router.js';
 import { loginView } from './views/login.js';
 import { nowPlayingView } from './views/nowplaying.js';
 import { libraryView } from './views/library.js';
@@ -27,6 +27,14 @@ const sections = [
   { id: 'settings', title: 'Settings', icon: 'gear', hash: '#/settings' },
 ];
 
+// Bootstrap has no "auto" theme; follow the device and its changes.
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  document.documentElement.dataset.bsTheme = darkQuery.matches ? 'dark' : 'light';
+}
+darkQuery.addEventListener('change', applyTheme);
+applyTheme();
+
 function renderNav() {
   const top = clear(document.getElementById('topnav-links'));
   const tabs = clear(document.getElementById('tab-bar'));
@@ -45,12 +53,13 @@ function markActive() {
 }
 document.addEventListener('route', markActive);
 
-// Status polling and the event stream. Events say what changed; the
-// client refetches.
+// The event stream says what changed; the client refetches. A slow poll
+// stays as a fallback for a stream that silently died.
 let es = null;
 let statusTimer = null;
 
 export async function refreshStatus() {
+  if (!state.session?.authenticated) return;
   try {
     state.status = await A.status();
   } catch (e) {
@@ -67,9 +76,8 @@ function connectEvents() {
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
-    if (ev.type === 'player' || ev.type === 'devices' || ev.type === 'health' || ev.type === 'schedule') refreshStatus();
+    if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) refreshStatus();
     refreshCurrent(ev.type);
-    document.dispatchEvent(new CustomEvent('jukem-event', { detail: ev }));
   };
   es.onopen = () => refreshStatus();
 }
@@ -92,8 +100,11 @@ export function renderNowBar() {
   bar.classList.toggle('d-none', !state.session?.authenticated);
   for (const id of ['owner-badge-top', 'owner-badge-bar']) {
     const b = document.getElementById(id);
-    b.className = `btn btn-sm owner-badge ${ownerClass(st?.owner)}`;
-    b.textContent = st ? (st.owner?.reason || st.owner?.state || '') : 'Offline';
+    for (const c of [...b.classList]) if (c.startsWith('owner-')) b.classList.remove(c);
+    b.classList.add('owner-badge', ownerClass(st?.owner));
+    let text = st ? (st.owner?.reason || st.owner?.state || '') : 'Offline';
+    if (st?.owner?.warning) text += ` · ${st.owner.warning}`;
+    b.textContent = text;
     b.onclick = () => navigate('#/health');
   }
   if (!st) {
@@ -122,8 +133,11 @@ export function renderNowBar() {
 
 function showLogin() {
   state.session = { authenticated: false };
-  document.getElementById('now-bar').classList.add('d-none');
+  state.status = null;
+  stop();
+  if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
   if (es) { es.close(); es = null; }
+  document.getElementById('now-bar').classList.add('d-none');
   loginView(document.getElementById('main'), onSignedIn);
 }
 
@@ -131,11 +145,10 @@ async function onSignedIn(sess) {
   state.session = sess;
   A.setCSRF(sess.csrf_token);
   renderNav();
+  if (!routesRegistered) registerRoutes();
   connectEvents();
   await refreshStatus();
-  if (statusTimer) clearInterval(statusTimer);
-  statusTimer = setInterval(refreshStatus, 15000);
-  if (!routesRegistered) registerRoutes();
+  if (!statusTimer) statusTimer = setInterval(refreshStatus, 60000);
   start();
 }
 

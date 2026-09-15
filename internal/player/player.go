@@ -1,10 +1,10 @@
-// Package player drives MPD's queue and transport, and records the intent
-// behind every command so a stopped player can be explained.
+// Package player drives MPD's queue and transport. It records the intent
+// behind every command, so that a stopped player has an explanation.
 package player
 
 import (
 	"errors"
-	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +41,7 @@ type Status struct {
 	Repeat       bool    `json:"repeat"`
 	QueueLength  int     `json:"queue_length"`
 	QueueVersion int     `json:"queue_version" doc:"Changes whenever the queue changes"`
+	HasNext      bool    `json:"-"`
 	Error        string  `json:"error,omitempty" doc:"MPD's last error, if any"`
 	Updating     bool    `json:"updating" doc:"True while MPD scans the library"`
 }
@@ -55,15 +56,16 @@ const (
 	IntentStop  IntentKind = "stop"
 )
 
-// Intent is the last command jukem sent, against which queue generation,
-// and when.
+// Intent is the last command jukem sent. It carries the queue generation
+// at that time and the last track MPD played.
 type Intent struct {
 	Kind       IntentKind
 	Generation int64
 	At         time.Time
-	// LastFile is the last file MPD was playing, for the finished check.
-	LastFile string
-	LastPos  int
+	// LastFile is the last file MPD played, and LastWasFinal says whether
+	// MPD had no next track after it.
+	LastFile     string
+	LastWasFinal bool
 }
 
 // Player wraps the MPD pool.
@@ -83,9 +85,6 @@ func New(pool *mpdctl.Pool, limits func() (min, max int)) *Player {
 	return &Player{pool: pool, prioritized: map[int]bool{}, limits: limits}
 }
 
-// Pool returns the underlying pool, for components with their own commands.
-func (p *Player) Pool() *mpdctl.Pool { return p.pool }
-
 // Generation returns the queue generation, which increments each time the
 // queue is replaced.
 func (p *Player) Generation() int64 {
@@ -101,18 +100,24 @@ func (p *Player) LastIntent() Intent {
 	return p.intent
 }
 
+// record stores the intent of a command that MPD accepted.
 func (p *Player) record(kind IntentKind) {
 	p.mu.Lock()
-	p.intent = Intent{Kind: kind, Generation: p.generation, At: time.Now(), LastFile: p.intent.LastFile, LastPos: p.intent.LastPos}
+	p.intent.Kind = kind
+	p.intent.Generation = p.generation
+	p.intent.At = time.Now()
 	p.mu.Unlock()
 }
 
-// NoteSong remembers the current track, so a later stop can be classified
-// as finished when it was the last one.
-func (p *Player) NoteSong(file string, pos int) {
+// NoteSong remembers the current track and whether it is the final one, so
+// a later stop is classified as finished only when MPD ran out of tracks.
+func (p *Player) NoteSong(st Status) {
+	if st.Song == nil {
+		return
+	}
 	p.mu.Lock()
-	p.intent.LastFile = file
-	p.intent.LastPos = pos
+	p.intent.LastFile = st.Song.File
+	p.intent.LastWasFinal = !st.HasNext
 	p.mu.Unlock()
 }
 
@@ -125,7 +130,7 @@ func (p *Player) Status() (Status, error) {
 			return err
 		}
 		st = parseStatus(attrs)
-		if st.State != "stop" || attrs["song"] != "" {
+		if attrs["song"] != "" {
 			song, err := c.CurrentSong()
 			if err != nil {
 				return err
@@ -150,6 +155,7 @@ func parseStatus(a mpd.Attrs) Status {
 	st.Repeat = a["repeat"] == "1"
 	st.QueueLength, _ = strconv.Atoi(a["playlistlength"])
 	st.QueueVersion, _ = strconv.Atoi(a["playlist"])
+	st.HasNext = a["nextsong"] != ""
 	st.Error = a["error"]
 	st.Updating = a["updating_db"] != ""
 	return st
@@ -166,43 +172,47 @@ func trackFrom(a mpd.Attrs) Track {
 		t.Duration = float64(d)
 	}
 	if t.Title == "" {
-		t.Title = baseName(t.File)
+		t.Title = titleFromFile(t.File)
 	}
 	return t
 }
 
-func baseName(file string) string {
-	if i := strings.LastIndex(file, "/"); i >= 0 {
-		file = file[i+1:]
+// titleFromFile is the file name without directory and extension.
+func titleFromFile(file string) string {
+	base := path.Base(file)
+	if ext := path.Ext(base); ext != "" && ext != base {
+		base = strings.TrimSuffix(base, ext)
 	}
-	if i := strings.LastIndex(file, "."); i > 0 {
-		file = file[:i]
+	return base
+}
+
+// transport sends one command and records its intent when MPD accepts it.
+func (p *Player) transport(kind IntentKind, fn func(c *mpd.Client) error) error {
+	if err := p.pool.Do(fn); err != nil {
+		return err
 	}
-	return file
+	p.record(kind)
+	return nil
 }
 
 // Play starts playback of the current position.
 func (p *Player) Play() error {
-	p.record(IntentPlay)
-	return p.pool.Do(func(c *mpd.Client) error { return c.Play(-1) })
+	return p.transport(IntentPlay, func(c *mpd.Client) error { return c.Play(-1) })
 }
 
 // PlayID starts playback at a queue entry.
 func (p *Player) PlayID(id int) error {
-	p.record(IntentPlay)
-	return p.pool.Do(func(c *mpd.Client) error { return c.PlayID(id) })
+	return p.transport(IntentPlay, func(c *mpd.Client) error { return c.PlayID(id) })
 }
 
 // Pause pauses playback.
 func (p *Player) Pause() error {
-	p.record(IntentPause)
-	return p.pool.Do(func(c *mpd.Client) error { return c.Pause(true) })
+	return p.transport(IntentPause, func(c *mpd.Client) error { return c.Pause(true) })
 }
 
 // Stop stops playback.
 func (p *Player) Stop() error {
-	p.record(IntentStop)
-	return p.pool.Do(func(c *mpd.Client) error { return c.Stop() })
+	return p.transport(IntentStop, func(c *mpd.Client) error { return c.Stop() })
 }
 
 // Next skips to the next track.
@@ -244,11 +254,6 @@ func (p *Player) SetShuffle(on bool) error {
 	return p.pool.Do(func(c *mpd.Client) error { return c.Random(on) })
 }
 
-// SetRepeat turns repeat on or off. Scheduled playback keeps it on.
-func (p *Player) SetRepeat(on bool) error {
-	return p.pool.Do(func(c *mpd.Client) error { return c.Repeat(on) })
-}
-
 // SetCrossfade sets the crossfade in seconds.
 func (p *Player) SetCrossfade(seconds int) error {
 	return p.pool.Do(func(c *mpd.Client) error {
@@ -256,26 +261,23 @@ func (p *Player) SetCrossfade(seconds int) error {
 	})
 }
 
-// Queue returns one page of the queue.
+// Queue returns one page of the queue and the total length.
 func (p *Player) Queue(offset, limit int) ([]Track, int, error) {
-	var tracks []Track
+	tracks := []Track{}
 	total := 0
 	err := p.pool.Do(func(c *mpd.Client) error {
 		st, err := c.Status()
 		if err != nil {
 			return err
 		}
-		total, _ = strconv.Atoi(st["playlistlength"])
+		total = parseStatus(st).QueueLength
 		if offset >= total {
-			tracks = []Track{}
 			return nil
 		}
-		end := min(offset+limit, total)
-		attrs, err := c.PlaylistInfo(offset, end)
+		attrs, err := c.PlaylistInfo(offset, min(offset+limit, total))
 		if err != nil {
 			return err
 		}
-		tracks = make([]Track, 0, len(attrs))
 		for _, a := range attrs {
 			tracks = append(tracks, trackFrom(a))
 		}
@@ -310,8 +312,9 @@ func (p *Player) newGeneration() {
 	p.mu.Unlock()
 }
 
-// Load replaces the queue with files, in order, and starts playing. It
-// returns the number of tracks loaded, at most MaxQueue.
+// Load replaces the queue with files, in order, sets the options, and
+// starts playing. It returns the number of tracks loaded, at most
+// MaxQueue. A negative volume leaves the volume alone.
 func (p *Player) Load(files []string, shuffle bool, volume int) (int, error) {
 	if len(files) > MaxQueue {
 		files = files[:MaxQueue]
@@ -326,19 +329,22 @@ func (p *Player) Load(files []string, shuffle bool, volume int) (int, error) {
 		if err := c.Random(shuffle); err != nil {
 			return err
 		}
+		if err := c.Repeat(true); err != nil {
+			return err
+		}
 		if volume >= 0 {
 			if err := c.SetVolume(volume); err != nil {
 				return err
 			}
 		}
-		return nil
+		return c.Play(-1)
 	})
 	if err != nil {
 		return 0, err
 	}
 	p.newGeneration()
 	p.record(IntentPlay)
-	return len(files), p.pool.Do(func(c *mpd.Client) error { return c.Play(-1) })
+	return len(files), nil
 }
 
 // addAll adds files in a command list, in order.
@@ -365,30 +371,31 @@ func (p *Player) PlayNext(files []string) (int, error) {
 	}
 	var ids []int
 	err := p.pool.Do(func(c *mpd.Client) error {
-		st, err := c.Status()
+		attrs, err := c.Status()
 		if err != nil {
 			return err
 		}
-		length, _ := strconv.Atoi(st["playlistlength"])
-		if length+len(files) > MaxQueue {
-			files = files[:max(0, MaxQueue-length)]
+		st := parseStatus(attrs)
+		if st.QueueLength+len(files) > MaxQueue {
+			files = files[:max(0, MaxQueue-st.QueueLength)]
 		}
-		playing := st["state"] != "stop" && st["song"] != ""
+		// A current entry exists while playing, paused, or stopped inside
+		// the queue; the insert goes after it. Otherwise it goes on top.
+		hasCurrent := attrs["song"] != ""
 		for i, f := range files {
-			var attrs mpd.Attrs
-			if playing {
-				// Relative positions keep the selection in order.
-				attrs, err = c.Command("addid %s +%d", f, i).Attrs()
+			var a mpd.Attrs
+			if hasCurrent {
+				a, err = c.Command("addid %s +%d", f, i).Attrs()
 			} else {
-				attrs, err = c.Command("addid %s %d", f, i).Attrs()
+				a, err = c.Command("addid %s %d", f, i).Attrs()
 			}
 			if err != nil {
 				return err
 			}
-			id, _ := strconv.Atoi(attrs["Id"])
+			id, _ := strconv.Atoi(a["Id"])
 			ids = append(ids, id)
 		}
-		if st["random"] == "1" {
+		if st.Shuffle {
 			for _, id := range ids {
 				if err := c.SetPriorityID(255, id); err != nil {
 					return err
@@ -411,11 +418,11 @@ func (p *Player) Add(files []string) (int, error) {
 		return 0, nil
 	}
 	err := p.pool.Do(func(c *mpd.Client) error {
-		st, err := c.Status()
+		attrs, err := c.Status()
 		if err != nil {
 			return err
 		}
-		length, _ := strconv.Atoi(st["playlistlength"])
+		length := parseStatus(attrs).QueueLength
 		if length+len(files) > MaxQueue {
 			files = files[:max(0, MaxQueue-length)]
 		}
@@ -438,20 +445,14 @@ func (p *Player) SongChanged(currentID int) {
 }
 
 // ListFiles returns every audio file below dir, in case-insensitive path
-// order. dir "" is the whole library.
+// order. dir "" is the whole library. listall returns paths only, so a
+// large library stays inside MPD's output buffer.
 func (p *Player) ListFiles(dir string) ([]string, error) {
 	var files []string
 	err := p.pool.Do(func(c *mpd.Client) error {
-		attrs, err := c.ListAllInfo(dir)
-		if err != nil {
-			return err
-		}
-		for _, a := range attrs {
-			if f := a["file"]; f != "" {
-				files = append(files, f)
-			}
-		}
-		return nil
+		var err error
+		files, err = c.Command("listall %s", dir).Strings("file")
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -478,21 +479,13 @@ func (p *Player) Ping() error {
 	return p.pool.Do(func(c *mpd.Client) error { return c.Ping() })
 }
 
-// Finished reports whether a stopped MPD reached the end of its queue on
-// purpose: the last intent was play, the generation is unchanged, MPD
-// reports no error, and the last track was the final one.
+// Finished reports whether a stopped MPD reached the end of its queue. That
+// is the case when the last intent was play against the same generation,
+// MPD reports no error, and the last track played had no successor.
 func (p *Player) Finished(st Status) bool {
 	in := p.LastIntent()
 	if in.Kind != IntentPlay || in.Generation != p.Generation() || st.Error != "" {
 		return false
 	}
-	return st.State == "stop" && st.QueueLength > 0 && in.LastPos == st.QueueLength-1
-}
-
-// Describe returns a short text for logs.
-func (st Status) Describe() string {
-	if st.Song == nil {
-		return st.State
-	}
-	return fmt.Sprintf("%s %s", st.State, st.Song.File)
+	return st.State == "stop" && st.QueueLength > 0 && in.LastWasFinal
 }

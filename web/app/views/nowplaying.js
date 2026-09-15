@@ -28,7 +28,9 @@ export async function nowPlayingView(main) {
   seekInput.addEventListener('input', () => { seeking = true; elapsedLabel.textContent = fmtDuration(Number(seekInput.value)); });
   seekInput.addEventListener('change', async () => {
     seeking = false;
-    try { await A.seek(Number(seekInput.value)); } catch (e) { toast(e.message, 'danger'); }
+    elapsedBase = Number(seekInput.value);
+    elapsedAt = Date.now();
+    try { await A.seek(elapsedBase); } catch (e) { toast(e.message, 'danger'); }
   });
 
   const volumeInput = h('input.form-range.flex-grow-1', { type: 'range', min: 0, max: 100, value: 50, step: 1, 'aria-label': 'Volume' });
@@ -43,9 +45,10 @@ export async function nowPlayingView(main) {
   });
   volumeInput.addEventListener('change', () => { volumeDragging = false; sendVolume(); });
   async function sendVolume() {
+    const sent = Number(volumeInput.value);
     try {
-      const r = await A.setVolume(Number(volumeInput.value));
-      if (r.volume !== Number(volumeInput.value)) {
+      const r = await A.setVolume(sent);
+      if (r.volume !== sent && !volumeDragging) {
         volumeInput.value = r.volume;
         volumeLabel.textContent = r.volume;
         toast(`Volume limited to ${r.volume} by Settings > Playback`, 'warning');
@@ -74,13 +77,17 @@ export async function nowPlayingView(main) {
       seekInput.max = Math.max(1, Math.round(song.duration || 0));
       durationLabel.textContent = fmtDuration(song.duration);
       seekInput.disabled = !song.duration;
+      if (!seeking) {
+        seekInput.value = Math.round(elapsedBase);
+        elapsedLabel.textContent = fmtDuration(elapsedBase);
+      }
     } else {
       trackBox.append(h('div.h4.mb-1', st.mpd_running ? 'Nothing playing' : 'MPD is not running'),
         h('div.text-body-secondary', st.owner?.reason || ''));
       seekInput.max = 100; seekInput.value = 0; seekInput.disabled = true;
       durationLabel.textContent = '0:00';
     }
-    trackBox.append(h('div.mt-2', h('span.badge.text-bg-light.border', st.owner?.reason || st.owner?.state || '')));
+    trackBox.append(h('div.mt-2', h('span.badge.text-bg-light.border', st.owner?.reason || st.owner?.state || ''), st.owner?.warning ? h('span.badge.text-bg-warning.ms-1', st.owner.warning) : null));
     if (p.volume >= 0 && !volumeDragging) {
       volumeInput.value = p.volume;
       volumeLabel.textContent = p.volume;
@@ -116,17 +123,17 @@ export async function nowPlayingView(main) {
 
   async function override(minutes) {
     try {
-      await A.api.post('/override', minutes ? { mode: 'timed', minutes } : { mode: 'until_next' });
+      await A.createOverride(minutes ? { mode: 'timed', minutes } : { mode: 'until_next' });
       toast(minutes ? `Override for ${minutes} minutes` : 'Override until the next scheduled event', 'warning');
     } catch (e) { toast(e.message, 'danger'); }
   }
   async function resumeSchedule() {
-    try { await A.api.del('/override'); toast('Schedule resumed', 'success'); } catch (e) { toast(e.message, 'danger'); }
+    try { await A.clearOverride(); toast('Schedule resumed', 'success'); } catch (e) { toast(e.message, 'danger'); }
   }
   async function doNotPlay(song) {
     if (!await confirmDialog({ title: 'Do not play', body: `Keep "${song.title || song.file}" out of all future scheduled playback?`, confirmText: 'Do not play' })) return;
     try {
-      await A.api.post('/do-not-play', { file: song.file, title: song.title });
+      await A.addDoNotPlay(song.file, song.title);
       await A.playerAction('next');
       toast('Added to the do-not-play list', 'success');
     } catch (e) { toast(e.message, 'danger'); }
@@ -188,6 +195,7 @@ export async function nowPlayingView(main) {
         h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', disabled: page >= pages - 1, onclick: () => { offset += PAGE; loadQueue(); } }, 'Next')));
     }
     if (window.Sortable) {
+      if (sortable) sortable.destroy();
       sortable = Sortable.create(list, {
         handle: '.drag-handle', animation: 150,
         onEnd: async (ev) => {
@@ -199,7 +207,7 @@ export async function nowPlayingView(main) {
     }
   }
   async function playFrom(t) {
-    try { await A.api.post('/queue/play', { id: t.id }); } catch (e) { toast(e.message, 'danger'); }
+    try { await A.playQueueEntry(t.id); } catch (e) { toast(e.message, 'danger'); }
   }
   async function move(t, to) {
     if (to < 0 || to >= total) return;
@@ -223,9 +231,16 @@ export async function nowPlayingView(main) {
   await loadQueue();
   if (!state.status) refreshStatus();
 
+  // The queue reloads on queue changes, and on a player event only when
+  // the current entry moved, so a volume drag does not rebuild the list.
+  let shownSongId = state.status?.player?.song?.id;
   return {
     onEvent(type) {
-      if (type === 'queue' || type === 'player') loadQueue();
+      if (type === 'queue') loadQueue();
+      if (type === 'player') {
+        const id = state.status?.player?.song?.id;
+        if (id !== shownSongId) { shownSongId = id; loadQueue(); }
+      }
     },
     destroy() {
       clearInterval(tick);

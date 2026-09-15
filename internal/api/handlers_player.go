@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/fhs/gompd/v2/mpd"
 
 	"jukem/internal/mpdctl"
 	"jukem/internal/player"
@@ -18,9 +19,11 @@ type zoneInput struct {
 	Zone string `query:"zone" default:"main" doc:"Playback zone; only main exists"`
 }
 
-func checkZone(zone string) error {
-	if zone != "" && zone != "main" {
-		return huma.Error404NotFound("no such zone: " + zone)
+// Resolve rejects every zone but main. huma runs it for each handler that
+// embeds zoneInput.
+func (z *zoneInput) Resolve(ctx huma.Context) []error {
+	if z.Zone != "" && z.Zone != "main" {
+		return []error{&huma.ErrorDetail{Message: "no such zone: " + z.Zone, Location: "query.zone", Value: z.Zone}}
 	}
 	return nil
 }
@@ -44,13 +47,27 @@ type statusOutput struct {
 	Body StatusBody
 }
 
-// mpdError maps a failed MPD command to a problem response.
+// mpdError maps a failed MPD command to a problem response. A protocol
+// error about a missing song or a bad argument is the client's fault.
 func mpdError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var se huma.StatusError
+	if errors.As(err, &se) {
+		return err
+	}
 	if errors.Is(err, mpdctl.ErrNotRunning) {
 		return huma.Error503ServiceUnavailable("MPD is not running")
+	}
+	var me mpd.Error
+	if errors.As(err, &me) {
+		switch me.Code {
+		case 50: // ACK_ERROR_NO_EXIST
+			return huma.Error404NotFound(me.Message)
+		case 2: // ACK_ERROR_ARG
+			return huma.Error422UnprocessableEntity(me.Message)
+		}
 	}
 	return huma.Error502BadGateway("MPD rejected the command: " + err.Error())
 }
@@ -60,9 +77,6 @@ func (s *Server) registerPlayer(api huma.API) {
 		OperationID: "get-status", Method: http.MethodGet, Path: "/status", Tags: []string{"player"},
 		Summary: "Player state, current track, owner, output and health summary",
 	}, func(ctx context.Context, in *zoneInput) (*statusOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		return &statusOutput{Body: s.status()}, nil
 	})
 
@@ -72,29 +86,20 @@ func (s *Server) registerPlayer(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "player-action", Method: http.MethodPost, Path: "/player/{action}", Tags: []string{"player"},
-		Summary: "Transport control", Description: "play, pause and stop create an override while the scheduler is on.",
-	}, func(ctx context.Context, in *actionInput) (*statusOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
+		Summary: "Transport control", Description: "play, pause and stop create an override while the scheduler is on. Refetch GET /status for the result.",
+		DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *actionInput) (*struct{}, error) {
 		p, _ := PrincipalFrom(ctx)
 		var err error
 		switch in.Action {
-		case "play":
-			err = s.opts.Transport(ctx, "play", p.Source())
-		case "pause":
-			err = s.opts.Transport(ctx, "pause", p.Source())
-		case "stop":
-			err = s.opts.Transport(ctx, "stop", p.Source())
 		case "next":
 			err = s.opts.Player.Next()
 		case "previous":
 			err = s.opts.Player.Previous()
+		default:
+			err = s.opts.Transport(ctx, in.Action, p.Source())
 		}
-		if err != nil {
-			return nil, mpdError(err)
-		}
-		return &statusOutput{Body: s.status()}, nil
+		return nil, mpdError(err)
 	})
 
 	type volumeInput struct {
@@ -112,9 +117,6 @@ func (s *Server) registerPlayer(api huma.API) {
 		OperationID: "set-volume", Method: http.MethodPut, Path: "/player/volume", Tags: []string{"player"},
 		Summary: "Set the volume, clamped to the configured limits",
 	}, func(ctx context.Context, in *volumeInput) (*volumeOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		v, err := s.opts.Player.SetVolume(in.Body.Volume)
 		if err != nil {
 			return nil, mpdError(err)
@@ -132,17 +134,12 @@ func (s *Server) registerPlayer(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "set-options", Method: http.MethodPut, Path: "/player/options", Tags: []string{"player"},
-		Summary: "Set play options",
-	}, func(ctx context.Context, in *optionsInput) (*statusOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
+		Summary: "Set play options", DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *optionsInput) (*struct{}, error) {
 		if in.Body.Shuffle != nil {
-			if err := s.opts.Player.SetShuffle(*in.Body.Shuffle); err != nil {
-				return nil, mpdError(err)
-			}
+			return nil, mpdError(s.opts.Player.SetShuffle(*in.Body.Shuffle))
 		}
-		return &statusOutput{Body: s.status()}, nil
+		return nil, nil
 	})
 
 	type seekInput struct {
@@ -153,15 +150,9 @@ func (s *Server) registerPlayer(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "seek", Method: http.MethodPost, Path: "/player/seek", Tags: []string{"player"},
-		Summary: "Seek inside the current track",
-	}, func(ctx context.Context, in *seekInput) (*statusOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
-		if err := s.opts.Player.Seek(in.Body.Position); err != nil {
-			return nil, mpdError(err)
-		}
-		return &statusOutput{Body: s.status()}, nil
+		Summary: "Seek inside the current track", DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *seekInput) (*struct{}, error) {
+		return nil, mpdError(s.opts.Player.Seek(in.Body.Position))
 	})
 
 	type queueInput struct {
@@ -180,9 +171,6 @@ func (s *Server) registerPlayer(api huma.API) {
 		OperationID: "get-queue", Method: http.MethodGet, Path: "/queue", Tags: []string{"queue"},
 		Summary: "One page of the queue",
 	}, func(ctx context.Context, in *queueInput) (*queueOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		tracks, total, err := s.opts.Player.Queue(in.Offset, in.Limit)
 		if err != nil {
 			return nil, mpdError(err)
@@ -198,18 +186,11 @@ func (s *Server) registerPlayer(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "queue-action", Method: http.MethodPost, Path: "/queue", Tags: []string{"queue"},
-		Summary: "Play Now, Play Next or Add to Queue for files, folders or playlists",
+		Summary: "Play Now, Play Next or Add to Queue for files, a folder or a playlist",
 	}, func(ctx context.Context, in *queueActionInput) (*queueActionOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		p, _ := PrincipalFrom(ctx)
 		res, err := s.opts.QueueAction(ctx, in.Body, p.Source())
 		if err != nil {
-			var se huma.StatusError
-			if errors.As(err, &se) {
-				return nil, err
-			}
 			return nil, mpdError(err)
 		}
 		return &queueActionOutput{Body: res}, nil
@@ -224,15 +205,10 @@ func (s *Server) registerPlayer(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "play-queue-entry", Method: http.MethodPost, Path: "/queue/play", Tags: []string{"queue"},
 		Summary: "Play from a queue entry", Description: "Creates an override while the scheduler is on, like play.",
-	}, func(ctx context.Context, in *playIDInput) (*statusOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
+		DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *playIDInput) (*struct{}, error) {
 		p, _ := PrincipalFrom(ctx)
-		if err := s.opts.PlayEntry(ctx, in.Body.ID, p.Source()); err != nil {
-			return nil, mpdError(err)
-		}
-		return &statusOutput{Body: s.status()}, nil
+		return nil, mpdError(s.opts.PlayEntry(ctx, in.Body.ID, p.Source()))
 	})
 
 	type queueIDInput struct {
@@ -243,9 +219,6 @@ func (s *Server) registerPlayer(api huma.API) {
 		OperationID: "remove-queue-entry", Method: http.MethodDelete, Path: "/queue/{id}", Tags: []string{"queue"},
 		Summary: "Remove a queue entry", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *queueIDInput) (*struct{}, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		return nil, mpdError(s.opts.Player.Remove(in.ID))
 	})
 
@@ -260,21 +233,16 @@ func (s *Server) registerPlayer(api huma.API) {
 		OperationID: "move-queue-entry", Method: http.MethodPost, Path: "/queue/move", Tags: []string{"queue"},
 		Summary: "Reorder the queue", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *moveInput) (*struct{}, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		return nil, mpdError(s.opts.Player.Move(in.Body.ID, in.Body.To))
 	})
 }
 
-// QueueAction is the body of POST /queue.
+// QueueAction is the body of POST /queue. Folder "/" is the whole library.
 type QueueAction struct {
-	Action    string   `json:"action" enum:"play_now,play_next,add"`
-	Files     []string `json:"files,omitempty" doc:"Paths relative to the music root, in the order shown"`
-	Folder    string   `json:"folder,omitempty" doc:"A folder; every track below it in path order"`
-	Playlist  int64    `json:"playlist,omitempty" doc:"A playlist id"`
-	IsRoot    bool     `json:"-"`
-	Recursive bool     `json:"-"`
+	Action   string   `json:"action" enum:"play_now,play_next,add"`
+	Files    []string `json:"files,omitempty" doc:"Paths relative to the music root, in the order shown"`
+	Folder   string   `json:"folder,omitempty" doc:"A folder; every track below it in path order. / is the whole library"`
+	Playlist int64    `json:"playlist,omitempty" doc:"A playlist id"`
 }
 
 // QueueResult reports what a queue action did.

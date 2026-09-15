@@ -25,9 +25,6 @@ func (s *Server) registerSettings(api huma.API) {
 		OperationID: "put-settings", Method: http.MethodPut, Path: "/settings", Tags: []string{"settings"},
 		Summary: "Replace the settings", Description: "Send the whole object from GET /settings with the changed fields.",
 	}, func(ctx context.Context, in *struct{ Body store.Settings }) (*settingsOutput, error) {
-		if _, err := webSession(ctx); err != nil {
-			return nil, err
-		}
 		if err := in.Body.Validate(); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}

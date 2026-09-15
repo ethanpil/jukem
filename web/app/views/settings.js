@@ -48,11 +48,6 @@ export async function settingsView(main, rest) {
   renderAll();
   if (rest) document.getElementById(`settings-${rest}`)?.scrollIntoView();
 
-  function numberField(label, key, opts = {}) {
-    const input = h('input.form-control', { type: 'number', value: settings[key], ...opts });
-    return h('div.col-sm-6.col-lg-4', h('label.form-label', label), input, opts.help ? h('div.form-text', opts.help) : null, { get value() { return Number(input.value); } });
-  }
-
   function renderPlayback(body) {
     const min = h('input.form-control', { type: 'number', min: 0, max: 100, value: settings.volume_min });
     const max = h('input.form-control', { type: 'number', min: 0, max: 100, value: settings.volume_max });
@@ -307,5 +302,14 @@ export async function settingsView(main, rest) {
       h('div.mt-3', h('button.btn.btn-outline-secondary', { type: 'button', onclick: signOut }, icon('box-arrow-right', 'me-1'), 'Sign out')));
   }
 
-  return { onEvent(type) { if (type === 'devices') bodies.audio.render(clear(bodies.audio.body)); } };
+  // Another client can change settings while this page is open. A save
+  // sends the whole object, so the copy here must stay current.
+  return {
+    async onEvent(type) {
+      if (type === 'devices') bodies.audio.render(clear(bodies.audio.body));
+      if (type === 'settings') {
+        try { settings = await A.settings(); } catch { /* keep the copy */ }
+      }
+    },
+  };
 }

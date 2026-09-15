@@ -59,6 +59,10 @@ export const queue = (offset = 0, limit = 200) => api.get(`/queue?offset=${offse
 export const queueAction = (body) => api.post('/queue', body);
 export const removeQueueEntry = (id) => api.del(`/queue/${id}`);
 export const moveQueueEntry = (id, to) => api.post('/queue/move', { id, to });
+export const playQueueEntry = (id) => api.post('/queue/play', { id });
+export const createOverride = (body) => api.post('/override', body);
+export const clearOverride = () => api.del('/override');
+export const addDoNotPlay = (file, title) => api.post('/do-not-play', { file, title });
 
 // Devices and settings
 export const devices = () => api.get('/devices');

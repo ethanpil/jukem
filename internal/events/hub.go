@@ -1,6 +1,6 @@
 // Package events fans change notifications out to SSE clients. An event
-// says what changed, never what the state is now; clients refetch over
-// REST.
+// says what changed and never what the state is now. Clients refetch the
+// state over REST.
 package events
 
 import (
@@ -22,7 +22,6 @@ const (
 	Alerts   Type = "alerts"   // alerts raised or dismissed
 	Settings Type = "settings" // settings changed
 	Health   Type = "health"   // health status changed
-	Upload   Type = "upload"   // a library rescan after uploads finished
 )
 
 // Event is one notification.
@@ -31,8 +30,8 @@ type Event struct {
 	Ref  string `json:"ref,omitempty"` // an optional path or id the change concerns
 }
 
-// Hub holds the connected clients. A client that cannot keep up is
-// dropped; it reconnects and resynchronises over REST.
+// Hub holds the connected clients. The hub drops a client whose buffer is
+// full. The client reconnects and gets the state again over REST.
 type Hub struct {
 	mu      sync.Mutex
 	clients map[chan Event]struct{}

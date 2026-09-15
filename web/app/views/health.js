@@ -1,5 +1,5 @@
 import * as A from '../api.js';
-import { h, clear, icon, spinner, errorBox, fmtAgo } from '../dom.js';
+import { h, clear, icon, spinner, errorBox } from '../dom.js';
 
 const statusIcon = { ok: ['check-circle-fill', 'text-success'], warning: ['exclamation-triangle-fill', 'text-warning'], error: ['x-circle-fill', 'text-danger'] };
 
@@ -33,7 +33,7 @@ export async function healthView(main) {
     if (info) {
       box.append(h('p.small.text-body-secondary', `jukem ${info.version} · schema ${info.schema_version} · ${info.runtime} · up ${Math.floor(info.uptime_seconds / 3600)}h ${Math.floor((info.uptime_seconds % 3600) / 60)}m`));
     }
-    box.append(h('p.small.text-body-secondary', `Checked ${fmtAgo(new Date().toISOString())}`));
+    box.append(h('p.small.text-body-secondary', `Checked ${new Date().toLocaleTimeString()}`));
   }
   await load();
   return { onEvent(type) { if (type === 'health' || type === 'alerts' || type === 'devices') load(); } };

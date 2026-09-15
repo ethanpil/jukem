@@ -35,9 +35,6 @@ func (s *Server) registerDevices(api huma.API) {
 		OperationID: "list-devices", Method: http.MethodGet, Path: "/devices", Tags: []string{"devices"},
 		Summary: "Detected outputs with identity and presence",
 	}, func(ctx context.Context, in *zoneInput) (*devicesOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		return &devicesOutput{Body: s.devices()}, nil
 	})
 
@@ -45,9 +42,6 @@ func (s *Server) registerDevices(api huma.API) {
 		OperationID: "rescan-devices", Method: http.MethodPost, Path: "/devices/rescan", Tags: []string{"devices"},
 		Summary: "Rescan the outputs now",
 	}, func(ctx context.Context, in *zoneInput) (*devicesOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
-			return nil, err
-		}
 		if err := s.opts.Devices.Rescan(ctx); err != nil {
 			return nil, huma.Error502BadGateway("device scan failed: " + err.Error())
 		}
@@ -64,18 +58,9 @@ func (s *Server) registerDevices(api huma.API) {
 		OperationID: "select-device", Method: http.MethodPut, Path: "/devices/default", Tags: []string{"devices"},
 		Summary: "Select the output",
 	}, func(ctx context.Context, in *selectInput) (*devicesOutput, error) {
-		if err := checkZone(in.Zone); err != nil {
+		found, err := s.presentDevice(in.Body.Key)
+		if err != nil {
 			return nil, err
-		}
-		snap := s.opts.Devices.Snapshot()
-		var found *audio.Device
-		for i := range snap.Devices {
-			if snap.Devices[i].Key() == in.Body.Key {
-				found = &snap.Devices[i]
-			}
-		}
-		if found == nil {
-			return nil, huma.Error404NotFound("no present device has that key")
 		}
 		id := found.Identity
 		if err := s.opts.SelectOutput(ctx, &id); err != nil {

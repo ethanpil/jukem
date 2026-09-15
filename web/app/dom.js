@@ -16,7 +16,7 @@ export function h(spec, attrs, ...children) {
       if (v === null || v === undefined || v === false) continue;
       if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (k === 'class') el.className = v;
-      // The CSP forbids style attributes; the CSSOM is allowed.
+      // The CSP forbids style attributes. The CSSOM path is permitted.
       else if (k === 'style') el.style.cssText = v;
       else if (k === 'dataset') Object.assign(el.dataset, v);
       else if (v === true) el.setAttribute(k, '');
@@ -29,7 +29,7 @@ export function h(spec, attrs, ...children) {
   return el;
 }
 
-export function append(el, children) {
+function append(el, children) {
   for (const c of children.flat(Infinity)) {
     if (c === null || c === undefined || c === false) continue;
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
@@ -119,15 +119,6 @@ export function fmtTime(iso) {
   return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export function fmtAgo(iso) {
-  if (!iso) return '';
-  const sec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-  return `${Math.floor(sec / 86400)}d ago`;
-}
-
 // copyText copies to the clipboard, with the execCommand fallback that
 // works over plain HTTP.
 export async function copyText(text) {
@@ -140,16 +131,6 @@ export async function copyText(text) {
   ta.select();
   document.execCommand('copy');
   ta.remove();
-}
-
-export function baseName(path) {
-  const i = path.lastIndexOf('/');
-  return i >= 0 ? path.slice(i + 1) : path;
-}
-
-export function dirName(path) {
-  const i = path.lastIndexOf('/');
-  return i >= 0 ? path.slice(0, i) : '';
 }
 
 // spinner is a small loading placeholder.
