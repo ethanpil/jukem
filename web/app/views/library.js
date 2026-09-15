@@ -17,10 +17,11 @@ export async function libraryView(main, rest) {
   const searchForm = h('form.d-flex.gap-1.flex-grow-1', { onsubmit: (e) => { e.preventDefault(); location.hash = hashFor(path, searchInput.value.trim()); } },
     searchInput, h('button.btn.btn-outline-secondary', { type: 'submit', 'aria-label': 'Search' }, icon('search')));
   const tools = h('div.d-flex.gap-2');
+  const scanBox = h('div');
   const listBox = h('div');
   const pager = h('div');
   const selectBar = h('div.flex-wrap.align-items-center.gap-2.mb-2.p-2.rounded.bg-body-tertiary');
-  main.append(header, selectBar, listBox, pager);
+  main.append(header, scanBox, selectBar, listBox, pager);
   header.append(crumbs, searchForm, tools);
 
   let page = 0;
@@ -29,6 +30,8 @@ export async function libraryView(main, rest) {
   const selected = new Set();
   let storage = null;
   let preview = null;
+  let scanTimer = null;
+  let scanStart = 0;
 
   function hashFor(p, q) {
     return '#/library' + (p ? '/' + encodeURIComponent(p) : '') + (q ? (p ? '' : '/') + '?q=' + encodeURIComponent(q) : '');
@@ -46,12 +49,16 @@ export async function libraryView(main, rest) {
   }
 
   // menuItems builds the action list for a target: {files} or {folder}.
-  function menuItems(target, entryName) {
+  // A file row also gets the browser preview, which never uses the
+  // speakers.
+  function menuItems(target, entryName, entry) {
     const isDir = !!target.folder;
     const run = (fn) => (ev) => { ev.preventDefault(); fn(); };
     const item = (ic, label, fn, cls = '') => h('li', h('button', { type: 'button', class: `dropdown-item ${cls}`.trim(), onclick: run(fn) }, icon(ic, 'me-2'), label));
     const items = [
       entryName ? h('li', h('h6.dropdown-header.text-truncate', entryName)) : null,
+      entry ? item('headphones', preview?.path === entry.path ? 'Stop browser preview' : 'Browser preview', () => togglePreview(entry)) : null,
+      entry ? h('li', h('hr.dropdown-divider')) : null,
       item('play-fill', 'Play Now', () => queueTarget('play_now', target)),
       item('skip-end', 'Play Next', () => queueTarget('play_next', target)),
       item('plus-lg', 'Add to Queue', () => queueTarget('add', target)),
@@ -66,15 +73,21 @@ export async function libraryView(main, rest) {
     return items;
   }
 
-  function menu(target, entryName, label) {
-    return h('div.dropdown',
+  function menu(target, entryName, label, entry) {
+    const ul = h('ul.dropdown-menu.dropdown-menu-end', menuItems(target, entryName, entry));
+    const box = h('div.dropdown',
       h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': label }, icon('three-dots-vertical')),
-      h('ul.dropdown-menu.dropdown-menu-end', menuItems(target, entryName)));
+      ul);
+    // The preview label says Stop while this row plays, so it is built
+    // again each time the menu opens.
+    if (entry) box.addEventListener('show.bs.dropdown', () => { clear(ul).append(...menuItems(target, entryName, entry).filter(Boolean)); });
+    return box;
   }
 
   function renderTools() {
     clear(tools);
     tools.append(
+      h('button.btn.btn-outline-secondary', { type: 'button', onclick: rescan, title: 'Scan the whole music root for new, changed and removed files' }, icon('arrow-clockwise', 'me-1'), 'Rescan'),
       h('button', { type: 'button', class: `btn ${selectMode ? 'btn-secondary' : 'btn-outline-secondary'}`, onclick: toggleSelect }, icon('check2-square', 'me-1'), 'Select'),
       query ? null : h('div.dropdown',
         h('button.btn.btn-outline-secondary', { type: 'button', 'data-bs-toggle': 'dropdown', 'aria-label': 'Folder actions' }, icon('three-dots')),
@@ -144,8 +157,13 @@ export async function libraryView(main, rest) {
     }
   }
 
+  // previewButtons maps a path to its row button, so the menu can start a
+  // preview and the row still shows the stop icon.
+  const previewButtons = new Map();
+
   function renderList(pg) {
     clear(listBox);
+    previewButtons.clear();
     if (!pg.entries.length) {
       listBox.append(h('p.text-body-secondary', pg.search ? 'No tracks match.' : storage?.missing ? `${storage.problem} Check Settings > Library.` : 'This folder is empty. Upload music or copy it into the music root and rescan.'));
       return;
@@ -170,14 +188,14 @@ export async function libraryView(main, rest) {
           rowText(e, pg),
           h('span.small.mono', fmtDuration(e.duration))));
       } else {
-        const previewBtn = h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': `Preview ${e.name}` }, icon(preview?.path === e.path ? 'stop-fill' : 'headphones'));
-        previewBtn.onclick = () => togglePreview(e, previewBtn);
-        if (preview?.path === e.path) preview.button = previewBtn;
+        const previewBtn = h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', 'aria-label': `Browser preview of ${e.name}`, title: 'Browser preview: play in this browser, not on the speakers' }, icon(preview?.path === e.path ? 'stop-fill' : 'headphones'));
+        previewBtn.onclick = () => togglePreview(e);
+        previewButtons.set(e.path, previewBtn);
         list.append(h('div.list-group-item',
           previewBtn,
           rowText(e, pg),
           h('span.small.mono.text-body-secondary', fmtDuration(e.duration)),
-          menu({ files: [e.path], paths: [e.path] }, e.title || e.name, `Actions for ${e.name}`)));
+          menu({ files: [e.path], paths: [e.path] }, e.title || e.name, `Actions for ${e.name}`, e)));
       }
     }
     listBox.append(list);
@@ -222,12 +240,13 @@ export async function libraryView(main, rest) {
   }
 
   // Preview plays through the browser, never the speakers.
-  function togglePreview(e, button) {
+  function togglePreview(e) {
     if (preview && preview.path === e.path) { stopPreview(); return; }
     stopPreview();
     const audio = new Audio(`/api/v1/library/preview?path=${encodeURIComponent(e.path)}`);
-    preview = { path: e.path, audio, button };
-    clear(button).append(icon('stop-fill'));
+    preview = { path: e.path, audio };
+    const button = previewButtons.get(e.path);
+    if (button) clear(button).append(icon('stop-fill'));
     audio.addEventListener('ended', stopPreview);
     // A pause before the first byte rejects play() with AbortError, which
     // is not a failure.
@@ -240,15 +259,69 @@ export async function libraryView(main, rest) {
     p.audio.pause();
     p.audio.removeAttribute('src');
     p.audio.load();
-    if (p.button.isConnected) clear(p.button).append(icon('headphones'));
+    const button = previewButtons.get(p.path);
+    if (button) clear(button).append(icon('headphones'));
+  }
+
+  // rescan starts a full scan and shows its progress.
+  async function rescan() {
+    try {
+      await A.api.post('/library/rescan');
+      toast('Library scan started', 'success');
+      watchScan(true);
+    } catch (e) { toast(e.message, 'danger'); }
+  }
+
+  // watchScan polls the scan state every two seconds while MPD scans.
+  // MPD gives no percentage, so the bar moves without a figure and the
+  // track count shows what the scan found. started is true right after a
+  // rescan request, because MPD can take a moment to report the scan.
+  async function watchScan(started = false) {
+    if (scanTimer) return;
+    let graceChecks = started ? 3 : 0;
+    const poll = async () => {
+      scanTimer = null;
+      let s;
+      try { s = await A.api.get('/library/scan'); } catch { clear(scanBox); return; }
+      if (!s.updating && graceChecks-- <= 0) {
+        if (scanStart) {
+          scanStart = 0;
+          clear(scanBox);
+          load(false);
+        }
+        return;
+      }
+      if (s.updating && !scanStart) scanStart = Date.now();
+      renderScan(s);
+      scanTimer = setTimeout(poll, 2000);
+    };
+    await poll();
+  }
+
+  function renderScan(s) {
+    const secs = scanStart ? Math.round((Date.now() - scanStart) / 1000) : 0;
+    clear(scanBox).append(h('div.mb-3',
+      h('div.d-flex.justify-content-between.small.mb-1',
+        h('span', icon('arrow-repeat', 'me-1'), 'Scanning the library'),
+        h('span.text-body-secondary', `${s.songs.toLocaleString()} tracks · ${fmtDuration(secs)}`)),
+      h('div.progress', { role: 'progressbar', 'aria-label': 'Library scan in progress' },
+        h('div.progress-bar.progress-bar-striped.progress-bar-animated.w-100'))));
   }
 
   await load();
+  watchScan();
   return {
     onEvent(type) {
       if (type === 'settings') storage = null;
-      if (type === 'library' || type === 'settings') load(false);
+      // A scan in progress sends library events; the progress poll reloads
+      // the list once at the end instead of on every event.
+      if (type === 'library') { watchScan(); if (!scanStart) load(false); }
+      if (type === 'settings') load(false);
     },
-    destroy() { stopPreview(); },
+    destroy() {
+      stopPreview();
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    },
   };
 }
