@@ -6,34 +6,41 @@
 <meta name="color-scheme" content="light dark">
 <title>jukem</title>
 <link rel="icon" type="image/svg+xml" href="/app/logo.svg">
+<link rel="preload" href="/vendor/fonts/onest-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css">
 <link rel="stylesheet" href="/app/app.css">
 </head>
 <body>
-<nav class="navbar navbar-expand d-none d-lg-flex bg-body-tertiary border-bottom sticky-top" id="topnav">
-  <div class="container-fluid">
-    <a class="navbar-brand fw-semibold d-flex align-items-center gap-2" href="#/"><img src="/app/logo.svg" alt="" width="28" height="28">jukem</a>
-    <ul class="navbar-nav me-auto" id="topnav-links"></ul>
-    <div class="d-flex align-items-center gap-2">
-      <div id="alert-badge" class="d-none"></div>
-      <button type="button" class="btn btn-sm owner-badge" id="owner-badge-top" title="Open the health page"></button>
+<header class="app-header hidden" id="topnav">
+  <div class="app-header-inner">
+    <a class="brand" href="#/"><span class="logo" data-logo></span>jukem</a>
+    <nav class="nav-links" id="topnav-links" aria-label="Sections"></nav>
+    <div class="header-tools">
+      <a class="bell hidden" id="alert-badge" href="#/health" title="Active alerts"><i class="bi bi-bell" aria-hidden="true"></i><span class="count-dot"></span></a>
+      <button type="button" class="owner-chip" id="owner-badge-top" title="Open the health page"></button>
     </div>
   </div>
-</nav>
-<div id="alert-banner" class="alert alert-warning rounded-0 mb-0 d-none" role="alert"></div>
-<main id="main" class="container-fluid py-3"></main>
-<div id="now-bar" class="now-bar bg-body-tertiary border-top d-none">
+</header>
+<header class="mobile-header hidden" id="mobilenav">
+  <a class="brand" href="#/"><span class="logo" data-logo></span>jukem</a>
+  <div class="header-tools">
+    <a class="bell hidden" id="alert-badge-mobile" href="#/health" title="Active alerts"><i class="bi bi-bell" aria-hidden="true"></i><span class="count-dot"></span></a>
+    <button type="button" class="owner-chip compact" id="owner-badge-bar" title="Open the health page"></button>
+  </div>
+</header>
+<div id="alert-banner" class="alert-banner hidden" role="alert"></div>
+<main id="main" class="app-main"></main>
+<div id="now-bar" class="now-bar hidden">
   <div class="now-bar-inner">
-    <button type="button" class="btn btn-lg btn-primary rounded-circle now-bar-toggle" id="now-bar-play" aria-label="Play or pause"><i class="bi bi-play-fill"></i></button>
+    <button type="button" class="now-bar-play" id="now-bar-play" aria-label="Play or pause"><i class="bi bi-play-fill"></i></button>
     <div class="now-bar-text" id="now-bar-text">
-      <div class="fw-semibold text-truncate" id="now-bar-title"></div>
-      <div class="small text-body-secondary text-truncate" id="now-bar-sub"></div>
+      <div class="now-bar-title" id="now-bar-title"></div>
+      <div class="now-bar-sub" id="now-bar-sub"></div>
     </div>
-    <button type="button" class="btn owner-badge d-lg-none" id="owner-badge-bar" title="Open the health page"></button>
   </div>
 </div>
-<nav class="tab-bar d-lg-none bg-body-tertiary border-top" id="tab-bar"></nav>
+<nav class="tab-bar hidden" id="tab-bar" aria-label="Sections"></nav>
 <div class="toast-container position-fixed top-0 end-0 p-3" id="toasts"></div>
 <div id="modal-root"></div>
 <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>

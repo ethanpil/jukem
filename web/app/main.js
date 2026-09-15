@@ -2,7 +2,7 @@
 // the now-playing bar. Views render into <main>.
 
 import * as A from './api.js';
-import { h, clear, icon, toast } from './dom.js';
+import { h, clear, icon, toast, logo } from './dom.js';
 import { route, start, stop, navigate, currentSection, refreshCurrent } from './router.js';
 import { loginView } from './views/login.js';
 import { nowPlayingView } from './views/nowplaying.js';
@@ -22,7 +22,7 @@ export const state = {
 };
 
 const sections = [
-  { id: '', title: 'Now Playing', icon: 'music-note-beamed', hash: '#/' },
+  { id: '', title: 'Now Playing', short: 'Now', icon: 'music-note-beamed', hash: '#/' },
   { id: 'library', title: 'Library', icon: 'folder2', hash: '#/library' },
   { id: 'playlists', title: 'Playlists', icon: 'list-ul', hash: '#/playlists' },
   { id: 'schedule', title: 'Schedule', icon: 'calendar-week', hash: '#/schedule' },
@@ -37,14 +37,22 @@ function applyTheme() {
 darkQuery.addEventListener('change', applyTheme);
 applyTheme();
 
+for (const el of document.querySelectorAll('[data-logo]')) logo(el);
+
 function renderNav() {
   const top = clear(document.getElementById('topnav-links'));
   const tabs = clear(document.getElementById('tab-bar'));
   for (const s of sections) {
-    top.append(h('li.nav-item', h('a.nav-link', { href: s.hash, dataset: { section: s.id } }, s.title)));
-    tabs.append(h('a', { href: s.hash, dataset: { section: s.id } }, icon(s.icon), h('span', s.title)));
+    top.append(h('a.navlink', { href: s.hash, dataset: { section: s.id } }, icon(s.icon), s.title));
+    tabs.append(h('a', { href: s.hash, dataset: { section: s.id } }, icon(s.icon), h('span', s.short || s.title)));
   }
   markActive();
+}
+
+// showShell shows the navigation and the now-playing bar only to a
+// signed-in person.
+function showShell(on) {
+  for (const id of ['topnav', 'mobilenav', 'now-bar', 'tab-bar']) document.getElementById(id).classList.toggle('hidden', !on);
 }
 
 function markActive() {
@@ -61,7 +69,7 @@ document.addEventListener('upload-progress', (e) => {
   for (const a of document.querySelectorAll('[data-section="library"]')) {
     let badge = a.querySelector('.upload-badge');
     if (!running) { if (badge) badge.remove(); continue; }
-    if (!badge) { badge = h('span.badge.text-bg-primary.upload-badge.ms-1'); a.append(badge); }
+    if (!badge) { badge = h('span.upload-badge'); a.append(badge); }
     badge.textContent = `${done}/${total}`;
   }
 });
@@ -73,15 +81,18 @@ async function refreshAlerts() {
   let alerts = [];
   try { alerts = (await A.alerts()).alerts; } catch { return; }
   const banner = document.getElementById('alert-banner');
-  const badge = document.getElementById('alert-badge');
   clear(banner);
-  banner.classList.toggle('d-none', !alerts.length);
-  badge.classList.toggle('d-none', !alerts.length);
+  banner.classList.toggle('hidden', !alerts.length);
+  for (const id of ['alert-badge', 'alert-badge-mobile']) {
+    const bell = document.getElementById(id);
+    bell.classList.toggle('hidden', !alerts.length);
+    bell.title = `${alerts.length} active alert${alerts.length === 1 ? '' : 's'}`;
+    bell.querySelector('.count-dot').textContent = String(alerts.length);
+  }
   if (!alerts.length) return;
   const first = alerts[0];
-  banner.append(icon('exclamation-triangle-fill', 'me-2'), first.message, ' ',
-    h('a.alert-link', { href: '#/health' }, alerts.length > 1 ? `${alerts.length} alerts` : 'Details'));
-  clear(badge).append(h('span.badge.text-bg-warning', { title: 'Active alerts' }, String(alerts.length)));
+  banner.append(icon('exclamation-triangle-fill'), h('span.msg', first.message),
+    h('a', { href: '#/health' }, alerts.length > 1 ? `${alerts.length} alerts` : 'Details'));
 }
 
 // The event stream says what changed; the client refetches. A slow poll
@@ -125,6 +136,19 @@ function connectEvents() {
   es.onopen = () => refreshStatus();
 }
 
+// ownerShort is the one-word state for the small chip on a phone.
+function ownerShort(owner) {
+  switch (owner?.state) {
+    case 'SCHEDULED': return 'scheduled';
+    case 'OVERRIDDEN': return 'on hold';
+    case 'UNAVAILABLE': return 'unavailable';
+    case 'MANUAL': return 'manual';
+    default: return owner?.state ? String(owner.state).toLowerCase() : 'offline';
+  }
+}
+
+const ownerClasses = ['owner-scheduled', 'owner-overridden', 'owner-unavailable', 'owner-manual'];
+
 function ownerClass(owner) {
   switch (owner?.state) {
     case 'SCHEDULED': return 'owner-scheduled';
@@ -140,14 +164,16 @@ function renderNowBar() {
   const title = document.getElementById('now-bar-title');
   const sub = document.getElementById('now-bar-sub');
   const play = document.getElementById('now-bar-play');
-  bar.classList.toggle('d-none', !state.session?.authenticated);
+  bar.classList.toggle('hidden', !state.session?.authenticated);
+  let text = st ? (st.owner?.reason || st.owner?.state || '') : 'Offline';
+  if (st?.owner?.warning) text += ` · ${st.owner.warning}`;
   for (const id of ['owner-badge-top', 'owner-badge-bar']) {
     const b = document.getElementById(id);
-    for (const c of [...b.classList]) if (c.startsWith('owner-')) b.classList.remove(c);
-    b.classList.add('owner-badge', ownerClass(st?.owner));
-    let text = st ? (st.owner?.reason || st.owner?.state || '') : 'Offline';
-    if (st?.owner?.warning) text += ` · ${st.owner.warning}`;
-    b.textContent = text;
+    b.classList.remove(...ownerClasses);
+    b.classList.add(ownerClass(st?.owner));
+    const compact = b.classList.contains('compact');
+    clear(b).append(h('span.dot'), h('span.label', compact ? (st ? ownerShort(st.owner) : 'offline') : text));
+    b.title = `${text}. Open the health page.`;
     b.onclick = () => navigate('#/health');
   }
   if (!st) {
@@ -182,9 +208,8 @@ function showLogin() {
   stop();
   if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
   if (es) { es.close(); es = null; }
-  document.getElementById('now-bar').classList.add('d-none');
-  document.getElementById('alert-banner').classList.add('d-none');
-  document.getElementById('alert-badge').classList.add('d-none');
+  showShell(false);
+  document.getElementById('alert-banner').classList.add('hidden');
   loginView(document.getElementById('main'), onSignedIn);
 }
 
@@ -193,6 +218,7 @@ async function onSignedIn(sess) {
   state.session = sess;
   A.setCSRF(sess.csrf_token);
   renderNav();
+  showShell(true);
   if (!routesRegistered) registerRoutes();
   // The hash changes before the router starts, so the change event that
   // follows is ignored and the wizard mounts once.
@@ -227,7 +253,7 @@ async function boot() {
   try {
     sess = await A.session();
   } catch (e) {
-    document.getElementById('main').append(h('div.alert.alert-danger', 'jukem is not reachable: ' + e.message));
+    document.getElementById('main').append(h('div.page.page-sm', h('div.alert.alert-danger', icon('x-circle-fill'), h('div', 'jukem is not reachable: ' + e.message))));
     return;
   }
   if (sess.setup_required) {
