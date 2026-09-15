@@ -90,3 +90,26 @@ func TestMaintenanceMode(t *testing.T) {
 		t.Fatalf("maintenance mode must not serve the app shell: %d", resp.StatusCode)
 	}
 }
+
+// The logo SVG styles itself for dark mode, so its policy allows inline
+// style. A 304 answer carries that policy too.
+func TestLogoPolicy(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/app/logo.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "default-src 'none'; style-src 'unsafe-inline'"
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Security-Policy") != want {
+		t.Fatalf("200: %d %q", resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/app/logo.svg", nil)
+	req.Header.Set("If-None-Match", resp.Header.Get("ETag"))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 304 || resp.Header.Get("Content-Security-Policy") != want {
+		t.Fatalf("304: %d %q", resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
+	}
+}

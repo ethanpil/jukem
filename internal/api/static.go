@@ -123,6 +123,13 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveStatic(w http.ResponseWriter, r *http.Request, f *staticFile, status int) {
+	if strings.HasPrefix(f.contentType, "image/svg+xml") {
+		// The logo changes its colour with an inline style for dark mode.
+		// An SVG cannot load anything else, and a browser shown the SVG
+		// alone runs no script from it. A 304 answer carries the same
+		// policy, because the browser keeps the headers of the last answer.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	}
 	// The tag is the content hash, so a browser's revalidation costs no
 	// bytes after a restart either.
 	w.Header().Set("ETag", f.etag)

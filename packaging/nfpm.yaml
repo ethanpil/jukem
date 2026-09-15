@@ -5,7 +5,7 @@ release: 0
 maintainer: jukem maintainers <jukem@example.com>
 description: Jukebox appliance that plays MPD through the local sound hardware
 homepage: https://github.com/OWNER/jukem
-license: MIT
+license: MIT AND CC-BY-4.0
 depends:
   - mpd
   - alsa-utils
