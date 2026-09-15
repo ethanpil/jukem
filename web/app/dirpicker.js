@@ -9,6 +9,8 @@ export function dirPicker({ start, onPick }) {
   const crumb = h('div.mono.small.mb-2');
   async function load() {
     try {
+      // A start path that does not exist falls back to the root once.
+      if (path !== '/' && (await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`).then(() => false, (e) => e.status === 404))) path = '/';
       const d = await A.api.get(`/system/directories?path=${encodeURIComponent(path)}`);
       path = d.path;
       crumb.textContent = path;

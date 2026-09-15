@@ -16,6 +16,8 @@ type SessionInfo struct {
 	Authenticated bool   `json:"authenticated"`
 	Kind          string `json:"kind,omitempty" enum:"session,api_key"`
 	CSRFToken     string `json:"csrf_token,omitempty" doc:"Send as X-CSRF-Token on state-changing requests"`
+	// SetupComplete is present for a web session; false opens the wizard.
+	SetupComplete *bool `json:"setup_complete,omitempty" doc:"False until the setup wizard has finished"`
 }
 
 type sessionOutput struct {
@@ -215,8 +217,21 @@ func (s *Server) sessionInfo(ctx context.Context) (SessionInfo, error) {
 		info.Authenticated = true
 		info.Kind = string(p.Kind)
 		info.CSRFToken = p.Session.CSRFToken
+		if p.Kind == KindSession {
+			info.SetupComplete = s.setupComplete()
+		}
 	}
 	return info, nil
+}
+
+// setupComplete reports whether the wizard finished. Without settings
+// (maintenance mode) the answer is nil, and the UI does not open it.
+func (s *Server) setupComplete() *bool {
+	if s.opts.Settings == nil {
+		return nil
+	}
+	done := s.opts.Settings().SetupComplete
+	return &done
 }
 
 func (s *Server) signIn(ctx context.Context) (*sessionOutput, error) {
@@ -227,7 +242,7 @@ func (s *Server) signIn(ctx context.Context) (*sessionOutput, error) {
 	}
 	return &sessionOutput{
 		SetCookie: cookie,
-		Body:      SessionInfo{Authenticated: true, Kind: string(KindSession), CSRFToken: se.CSRFToken},
+		Body:      SessionInfo{Authenticated: true, Kind: string(KindSession), CSRFToken: se.CSRFToken, SetupComplete: s.setupComplete()},
 	}, nil
 }
 

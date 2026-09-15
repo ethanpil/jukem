@@ -180,14 +180,13 @@ async function onSignedIn(sess) {
   A.setCSRF(sess.csrf_token);
   renderNav();
   if (!routesRegistered) registerRoutes();
+  // The hash changes before the router starts, so the change event that
+  // follows is ignored and the wizard mounts once.
+  if (sess.setup_complete === false && location.hash !== '#/setup') location.hash = '#/setup';
   connectEvents();
   await refreshStatus();
   refreshAlerts();
   if (!statusTimer) statusTimer = setInterval(refreshStatus, 60000);
-  try {
-    const set = await A.settings();
-    if (!set.setup_complete && location.hash !== '#/setup') location.hash = '#/setup';
-  } catch { /* the wizard is optional when settings do not load */ }
   start();
 }
 
@@ -218,7 +217,7 @@ async function boot() {
     return;
   }
   if (sess.setup_required) {
-    wizardView(document.getElementById('main'), '', { firstRun: true, onSignedIn: (s) => { location.hash = '#/setup'; return onSignedIn(s); } });
+    wizardView(document.getElementById('main'), '', { firstRun: true, onSignedIn });
     return;
   }
   if (!sess.authenticated || sess.kind !== 'session') {

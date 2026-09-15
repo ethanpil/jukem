@@ -1,9 +1,9 @@
 # jukem
 
-jukem is a self-hosted jukebox appliance. It plays music through the sound
-hardware of the machine it runs on, on a weekly schedule, with a web UI and a
-REST API to control it. MPD does the playback. jukem owns MPD: it writes the
-MPD configuration, starts MPD as a child process, and restarts it when it
+jukem is a self-hosted jukebox appliance. It plays music on a weekly
+schedule through the sound hardware of its machine. A web UI and a REST API
+control it. MPD does the playback. jukem owns MPD: it writes the MPD
+configuration, starts MPD as a child process, and restarts it when it
 stops.
 
 jukem comes as a signed Alpine apk for `x86_64` and `aarch64`, and as a Docker
@@ -30,9 +30,9 @@ See [PLAN.md](PLAN.md) for the design notes and the reasons behind them.
 ## Install on Alpine Linux
 
 Use Alpine's `sys` install mode. The diskless and data-disk modes rebuild
-the root filesystem at every boot from the package cache, and a package that
-you install from a local file does not survive that. Support for those modes
-needs a local apk repository and is not part of version 1.
+the root filesystem at every boot from the package cache. A package from a
+local file is not in that cache, so it is gone after the reboot. Support for
+those modes needs a local apk repository and is not part of version 1.
 
 Enable the community repository: remove the `#` before the `community` line
 in `/etc/apk/repositories`. Then run, as root:
@@ -43,7 +43,7 @@ ARCH=$(apk --print-arch)
 BASE=https://github.com/OWNER/jukem/releases/download/v$VERSION
 
 wget -qO /etc/apk/keys/jukem.rsa.pub "$BASE/jukem.rsa.pub"   # once; the key does not change
-sha256sum /etc/apk/keys/jukem.rsa.pub                              # compare with the value below
+sha256sum /etc/apk/keys/jukem.rsa.pub                              # compare with SHA256SUMS on the release page
 wget "$BASE/jukem-$VERSION-$ARCH.apk"
 apk add chrony "./jukem-$VERSION-$ARCH.apk"
 
@@ -52,9 +52,6 @@ rc-update add jukem default
 rc-service chronyd start
 rc-service jukem start
 ```
-
-Public key SHA-256: `see packaging/keys/README.md; the value is published
-with the first release`.
 
 Open `http://<host>/` and follow the setup wizard. `apk add` installs `mpd`
 and the other dependencies from Alpine's mirrors. chrony keeps the clock
@@ -66,8 +63,9 @@ to restart at a time of your choice.
 
 ### Music copied by hand
 
-The service runs as the `jukem` user. If you copy music onto the machine as
-root, with scp, rsync or from a USB stick, give it to the service user:
+The service runs as the `jukem` user. Music that you copy onto the machine
+as root, with scp, rsync or from a USB stick, belongs to root. Give it to
+the service user:
 
 ```sh
 chown -R jukem:jukem /srv/jukem/music
@@ -88,7 +86,7 @@ Maintenance > Check library permissions.
 | `/var/log/jukem/` | Log file, capped in size |
 | `/srv/jukem/music/` | Default music root |
 
-Every other setting lives in the database and is changed in the web UI.
+The database holds every other setting. Change them in the web UI.
 
 ## Install with Docker
 
@@ -114,8 +112,9 @@ owner.
 ## First run
 
 The wizard asks for a password, the time zone, the music root, the output
-device and a first schedule. Then it plays a track and asks you if you hear
-it. Setup is complete when you say yes.
+device and a first schedule. Then it plays the library and asks you if you
+hear it. Setup is complete when you say yes. An empty library lets you
+finish without the test.
 
 If you hear nothing:
 
@@ -126,16 +125,17 @@ If you hear nothing:
 
 ## Health and alerts
 
-The Health page answers "is it working?" in plain language: MPD, the
-scheduler, the clock, the output device, the library, the storage and the
-last track change. Anything that is not OK says what is wrong and what to do.
+The Health page answers one question in plain language: does it work? It
+shows MPD, the scheduler, the clock, the output device, the library, the
+storage and the last track change. A line that is not OK says what is wrong
+and what to do.
 
 Alerts show as a banner on every screen. To send them somewhere else, set a
 webhook URL in Settings > System. The generic format posts JSON. The ntfy
 format posts to an ntfy topic URL with a title and a priority.
 
-`/healthz` answers `200` when the service can do its job and `503` when it
-cannot. Docker uses it as the health check.
+`/healthz` answers `200` when the service works and `503` when it does not.
+Docker uses it as the health check.
 
 ## Access from outside the home
 
@@ -144,13 +144,14 @@ or WireGuard. Do not forward the port on the router.
 
 HTTPS is one switch in Settings > Security. Upload a certificate and key, or
 let jukem generate a self-signed certificate. Browsers warn about a
-self-signed certificate. When HTTPS is on and a certificate is stored, jukem
-serves TLS on `listen_tls` (default `:443`, `:8443` in Docker) and redirects
-HTTP to it. The switch takes effect at the next service restart.
+self-signed certificate. With the switch on and a certificate in place,
+jukem serves TLS on `listen_tls` (default `:443`, `:8443` in Docker). Plain
+HTTP redirects to it. The switch takes effect at the next service restart.
+A new certificate applies at once.
 
 ## API
 
-The REST API lives under `/api/v1`. The OpenAPI document is at
+The REST API is under `/api/v1`. The OpenAPI document is at
 `/api/v1/openapi.json` and the interactive docs at `/api/v1/docs`.
 
 Create an API key in Settings > Security and send it as
@@ -194,16 +195,16 @@ This sets a new password and signs out every device.
 
 ## Music licensing
 
-Playing recorded music in a business generally needs a public performance
-licence (PRS and PPL in the UK; ASCAP, BMI, SESAC and GMR in the US), unless
-the music is licensed for commercial background use. The play history helps
-if a report is ever required.
+A business that plays recorded music usually needs a public performance
+licence. In the UK that is PRS and PPL. In the US that is ASCAP, BMI, SESAC
+and GMR. Music with a licence for commercial background use is the
+exception. The play history helps when you must report what played.
 
 ## Development
 
 ```sh
 go test ./...
-go run ./cmd/jukem serve --config ./packaging/config.yaml
+mkdir -p data && JUKEM_LISTEN=127.0.0.1:8080 JUKEM_DATA_DIR=./data JUKEM_LOG_FILE= go run ./cmd/jukem serve
 scripts/package.sh amd64 v1.0.0      # unsigned apk in dist/
 ```
 

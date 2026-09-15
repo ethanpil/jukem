@@ -134,6 +134,14 @@ export async function copyText(text) {
 }
 
 // spinner is a small loading placeholder.
+// tzDatalist lists every IANA zone the browser knows, for a text input
+// with list=id.
+export function tzDatalist(id) {
+  const list = h('datalist', { id });
+  for (const z of (Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [])) list.append(h('option', { value: z }));
+  return list;
+}
+
 export function spinner() {
   return h('div.text-center.py-4', h('div.spinner-border.text-secondary', { role: 'status' }, h('span.visually-hidden', 'Loading')));
 }

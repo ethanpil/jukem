@@ -259,11 +259,12 @@ supervise-daemon restarts jukem if it exits, and `respawn_max=0` removes the ret
 ```yaml
 # Bootstrap settings. Everything else is configured in the web UI.
 listen: ":80"
+listen_tls: ":443"    # used when HTTPS is switched on in Settings > Security
 data_dir: /var/lib/jukem
 log_file: /var/log/jukem/jukem.log
 ```
 
-`JUKEM_LISTEN`, `JUKEM_DATA_DIR`, and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which is what the Docker image uses. The music root is not here: it's chosen in the setup wizard and lives in the database, so there's only one place to change it. Unknown keys produce a warning and are ignored; missing keys fall back to these defaults.
+`JUKEM_LISTEN`, `JUKEM_LISTEN_TLS`, `JUKEM_DATA_DIR`, and `JUKEM_LOG_FILE` override these. An empty `log_file` logs to stdout, which is what the Docker image uses. The music root is not here: it's chosen in the setup wizard and lives in the database, so there's only one place to change it. Unknown keys produce a warning and are ignored; missing keys fall back to these defaults.
 
 ### `scripts/package.sh`
 

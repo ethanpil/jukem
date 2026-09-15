@@ -1,5 +1,5 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, spinner, errorBox, confirmDialog, copyText, fmtTime, modal } from '../dom.js';
+import { h, clear, icon, toast, spinner, errorBox, confirmDialog, copyText, fmtTime, modal, tzDatalist } from '../dom.js';
 import { signOut } from '../main.js';
 import { dirPicker } from '../dirpicker.js';
 
@@ -128,8 +128,7 @@ export async function settingsView(main, rest) {
       await save({ scheduler_enabled: enabled.checked }, enabled.checked ? 'Scheduler on' : 'Scheduler off: manual mode');
     } });
     const tz = h('input.form-control', { type: 'text', value: settings.time_zone, list: 'tz-list', placeholder: 'Europe/London' });
-    const tzList = h('datalist#tz-list');
-    for (const z of (Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [])) tzList.append(h('option', { value: z }));
+    const tzList = tzDatalist('tz-list');
     const clockBox = h('div.mt-3');
     loadClock(clockBox);
     body.append(

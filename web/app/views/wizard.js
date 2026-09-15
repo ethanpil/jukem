@@ -1,20 +1,20 @@
 import * as A from '../api.js';
-import { h, clear, icon, toast, errorBox } from '../dom.js';
+import { h, clear, icon, toast, errorBox, tzDatalist } from '../dom.js';
 import { dirPicker } from '../dirpicker.js';
 import { navigate } from '../router.js';
+import { state, refreshStatus } from '../main.js';
 
 // The wizard runs on the first visit: password, time zone, music root,
 // output device, a first schedule, and a track that must be heard. Setup
 // is complete when sound came out, not when a row exists.
 const STEPS = ['Password', 'Time zone', 'Music', 'Output', 'Schedule', 'Listen'];
 
-export async function wizardView(main, rest, opts = {}) {
+export async function wizardView(main, _rest, opts = {}) {
   clear(main);
   const box = h('div.mx-auto.mt-3', { style: 'max-width: 560px' });
   main.append(box);
-  const firstRun = !!opts.firstRun;
   let settings = null;
-  let step = firstRun ? 0 : 1;
+  let step = opts.firstRun ? 0 : 1;
 
   function frame(title, body, footer) {
     clear(box);
@@ -22,8 +22,10 @@ export async function wizardView(main, rest, opts = {}) {
     STEPS.forEach((name, i) => dots.append(h('span', { class: `badge rounded-pill ${i === step ? 'text-bg-primary' : i < step ? 'text-bg-success' : 'text-bg-secondary'}`, title: name }, `${i + 1}`)));
     box.append(h('h1.h4.mb-1', title), dots, body, h('div.d-flex.gap-2.mt-4', footer));
   }
-  const next = (label = 'Continue') => h('button.btn.btn-primary', { type: 'submit' }, label);
-  const skip = (fn) => h('button.btn.btn-link.ms-auto', { type: 'button', onclick: fn }, 'Skip');
+  const go = (n) => { step = n; render(); };
+  // The footer sits outside the form, so the button names it.
+  const next = () => h('button.btn.btn-primary', { type: 'submit', form: 'wiz' }, 'Continue');
+  const skip = (n) => h('button.btn.btn-link.ms-auto', { type: 'button', onclick: () => go(n) }, 'Skip');
 
   async function loadSettings() {
     if (!settings) settings = await A.settings();
@@ -57,15 +59,13 @@ export async function wizardView(main, rest, opts = {}) {
     const set = await loadSettings();
     const browser = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const tz = h('input.form-control', { type: 'text', value: set.time_zone === 'UTC' && browser ? browser : set.time_zone, list: 'wiz-tz', required: true });
-    const list = h('datalist#wiz-tz');
-    for (const z of (Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [])) list.append(h('option', { value: z }));
     const err = h('div.text-danger.small.mt-2');
     frame('Time zone', h('form#wiz', { onsubmit: async (e) => {
       e.preventDefault();
-      try { await save({ time_zone: tz.value.trim() }); step = 2; render(); } catch (ex) { err.textContent = ex.message; }
+      try { await save({ time_zone: tz.value.trim() }); go(2); } catch (ex) { err.textContent = ex.message; }
     } },
       h('p.text-body-secondary', 'Every schedule uses this zone. Daylight saving is handled for you.'),
-      h('label.form-label', 'Zone'), tz, list, err),
+      h('label.form-label', 'Zone'), tz, tzDatalist('wiz-tz'), err),
     [next()]);
   }
 
@@ -75,7 +75,7 @@ export async function wizardView(main, rest, opts = {}) {
     const err = h('div.text-danger.small.mt-2');
     frame('Music', h('form#wiz', { onsubmit: async (e) => {
       e.preventDefault();
-      try { await save({ music_root: root.value.trim() }); step = 3; render(); } catch (ex) { err.textContent = ex.message; }
+      try { await save({ music_root: root.value.trim() }); go(3); } catch (ex) { err.textContent = ex.message; }
     } },
       h('p.text-body-secondary', 'The folder MPD reads music from. A NAS mount or a USB drive is usually under /mnt or /media. You can also upload music later in Library.'),
       h('label.form-label', 'Music root'), h('div.d-flex.gap-2', root, h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => dirPicker({ start: root.value, onPick: (p) => { root.value = p; } }) }, 'Browse…')),
@@ -85,7 +85,7 @@ export async function wizardView(main, rest, opts = {}) {
 
   async function stepOutput() {
     const body = h('div');
-    frame('Output device', h('form#wiz', { onsubmit: (e) => { e.preventDefault(); step = 4; render(); } }, h('p.text-body-secondary', 'Choose the sound card the speakers are connected to.'), body), [next(), skip(() => { step = 4; render(); })]);
+    frame('Output device', h('form#wiz', { onsubmit: (e) => { e.preventDefault(); go(4); } }, h('p.text-body-secondary', 'Choose the sound card the speakers are connected to.'), body), [next(), skip(4)]);
     async function load() {
       let d;
       try { d = await A.devices(); } catch (e) { clear(body).append(errorBox(e)); return; }
@@ -104,19 +104,21 @@ export async function wizardView(main, rest, opts = {}) {
     load();
   }
 
-  function stepSchedule() {
+  async function stepSchedule() {
+    const set = await loadSettings();
+    // A person who returns to the wizard has a rule already: nothing to add.
+    if ((await A.api.get('/schedules')).schedules.length) { go(5); return; }
     const name = h('input.form-control', { type: 'text', value: 'Opening hours', required: true, maxlength: 100 });
     const start = h('input.form-control', { type: 'time', value: '09:00', required: true });
     const end = h('input.form-control', { type: 'time', value: '17:00', required: true });
     const weekend = h('input.form-check-input', { type: 'checkbox', id: 'wiz-weekend' });
-    const shuffle = h('input.form-check-input', { type: 'checkbox', id: 'wiz-shuffle', checked: true });
+    const shuffle = h('input.form-check-input', { type: 'checkbox', id: 'wiz-shuffle', checked: set.default_shuffle });
     const err = h('div.text-danger.small.mt-2');
     frame('First schedule', h('form#wiz', { onsubmit: async (e) => {
       e.preventDefault();
       try {
         await A.api.post('/schedules', { name: name.value.trim(), enabled: true, days: weekend.checked ? 127 : 31, start_time: start.value, end_time: end.value, source_type: 'directory', source_ref: '', shuffle: shuffle.checked, volume: null });
-        step = 5;
-        render();
+        go(5);
       } catch (ex) { err.textContent = ex.message; }
     } },
       h('p.text-body-secondary', 'When should music play? The whole library plays during this window. Add more rules later in Schedule.'),
@@ -124,22 +126,11 @@ export async function wizardView(main, rest, opts = {}) {
       h('div.row.g-2.mt-1', h('div.col-6', h('label.form-label', 'Start'), start), h('div.col-6', h('label.form-label', 'End'), end)),
       h('div.form-check.mt-3', weekend, h('label.form-check-label', { for: 'wiz-weekend' }, 'Also on Saturday and Sunday')),
       h('div.form-check', shuffle, h('label.form-check-label', { for: 'wiz-shuffle' }, 'Shuffle')), err),
-    [next(), skip(() => { step = 5; render(); })]);
+    [next(), skip(5)]);
   }
 
-  // firstTrack finds one playable file by walking the library.
-  async function firstTrack(path = '', depth = 0) {
-    const r = await A.api.get(`/library/browse?path=${encodeURIComponent(path)}`);
-    const file = r.entries.find((e) => e.type === 'file');
-    if (file) return file;
-    if (depth >= 4) return null;
-    for (const d of r.entries.filter((e) => e.type === 'directory')) {
-      const f = await firstTrack(d.path, depth + 1);
-      if (f) return f;
-    }
-    return null;
-  }
-
+  // The last step plays the whole library and asks for a confirmation.
+  // Only an empty library allows a finish without the test.
   function stepListen() {
     const status = h('div.mt-3');
     const heard = h('div.mt-3.d-none',
@@ -154,20 +145,22 @@ export async function wizardView(main, rest, opts = {}) {
               h('li', 'A muted hardware control is a common cause. Settings > Audio > Hardware level.'),
               h('li', 'Is the amplifier on and the volume up?'))));
         } }, 'No')));
+    const noMusic = h('div.mt-3.d-none',
+      h('div.alert.alert-info.small', 'The library has no tracks yet, or MPD is still scanning it. Upload music in Library, then test the sound from Settings > Audio.'),
+      h('button.btn.btn-outline-secondary', { type: 'button', onclick: finish }, 'Finish without a test'));
     async function play() {
-      clear(status).append(h('div.text-body-secondary', 'Looking for a track…'));
-      let track;
-      try { track = await firstTrack(); } catch (e) { clear(status).append(errorBox(e)); return; }
-      if (!track) {
-        clear(status).append(h('div.alert.alert-info.small', 'The library has no tracks yet, or MPD is still scanning. Upload music in Library, then come back to Settings to finish. You can finish now and test later.'));
-        heard.classList.remove('d-none');
+      clear(status).append(h('div.text-body-secondary', 'Starting…'));
+      try {
+        await A.queueAction({ action: 'play_now', folder: '/' });
+      } catch (e) {
+        if (e.status === 404) { clear(status); noMusic.classList.remove('d-none'); return; }
+        clear(status).append(errorBox(e));
         return;
       }
-      try {
-        await A.queueAction({ action: 'play_now', files: [track.path] });
-        clear(status).append(h('div', icon('music-note-beamed', 'me-1'), `Playing ${track.title || track.name}`));
-        heard.classList.remove('d-none');
-      } catch (e) { clear(status).append(errorBox(e)); }
+      await refreshStatus();
+      const song = state.status?.player?.song;
+      clear(status).append(h('div', icon('music-note-beamed', 'me-1'), song ? `Playing ${song.title || song.file}` : 'Playing'));
+      heard.classList.remove('d-none');
     }
     async function finish() {
       try {
@@ -177,10 +170,10 @@ export async function wizardView(main, rest, opts = {}) {
       } catch (e) { toast(e.message, 'danger'); }
     }
     frame('Listen', h('div',
-      h('p.text-body-secondary', 'Setup is done when sound comes out of the speakers. Play a track from the library and confirm you hear it.'),
-      h('button.btn.btn-primary.btn-lg', { type: 'button', onclick: play }, icon('play-fill', 'me-1'), 'Play a track'),
-      status, heard),
-    [h('button.btn.btn-link', { type: 'button', onclick: () => { step = 3; render(); } }, 'Back to output'), h('button.btn.btn-link.ms-auto', { type: 'button', onclick: finish }, 'Finish without a test')]);
+      h('p.text-body-secondary', 'Setup is done when sound comes out of the speakers. Play the library and confirm that you hear it.'),
+      h('button.btn.btn-primary.btn-lg', { type: 'button', onclick: play }, icon('play-fill', 'me-1'), 'Play'),
+      status, heard, noMusic),
+    [h('button.btn.btn-link', { type: 'button', onclick: () => go(3) }, 'Back to output')]);
   }
 
   async function render() {
