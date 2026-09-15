@@ -65,6 +65,10 @@ async function dispatch() {
 export function start() {
   if (!started) {
     started = true;
+    // The router puts every view at the top itself, and a view such as
+    // Settings scrolls to a section. The browser must not move the page
+    // again after a reload.
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
     window.addEventListener('hashchange', dispatch);
   }
   dispatch();

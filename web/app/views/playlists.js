@@ -47,7 +47,7 @@ export async function playlistsView(main, rest) {
     for (const pl of lists) {
       list.append(h('div.row-item.tall',
         h('div.row-icon-tile', icon('music-note-list')),
-        h('div.row-main', h('div.row-title.fw-semibold', h('a', { href: `#/playlists/${pl.id}` }, pl.name)), h('div.row-sub', `${pl.count} track${pl.count === 1 ? '' : 's'}`)),
+        h('div.row-main', h('div.row-title.fw-semibold', h('a.row-link', { href: `#/playlists/${pl.id}` }, pl.name)), h('div.row-sub', `${pl.count} track${pl.count === 1 ? '' : 's'}`)),
         h('div.only-desktop', queueButtons(pl.id)),
         dotsMenu(`More for ${pl.name}`, [
           h('li', h('h6.dropdown-header', pl.name)),
@@ -66,6 +66,8 @@ export async function playlistsView(main, rest) {
   }
 
   async function loadDetail() {
+    // The list goes away at every path below, so its drag handler goes first.
+    if (sortable) { sortable.destroy(); sortable = null; }
     let pl;
     try { pl = await A.api.get(`/playlists/${id}`); } catch (e) { clear(box).append(e.status === 404 ? h('div.panel.panel-empty', 'No such playlist. ', h('a', { href: '#/playlists' }, 'Back to playlists')) : errorBox(e)); return; }
     clear(box);
@@ -104,7 +106,6 @@ export async function playlistsView(main, rest) {
     });
     card.append(list);
     if (window.Sortable) {
-      if (sortable) sortable.destroy();
       sortable = Sortable.create(list, {
         handle: '.drag-handle', animation: 150,
         onStart: () => { dragging = true; },

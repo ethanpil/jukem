@@ -73,7 +73,8 @@ export async function historyView(main) {
   async function load() {
     more.disabled = true;
     let r;
-    try { r = await A.history(before); } catch (e) { box.append(h('div.mt-3', errorBox(e))); return; }
+    // A failed request must leave the button ready for another try.
+    try { r = await A.history(before); } catch (e) { box.append(h('div.mt-3', errorBox(e))); more.disabled = false; return; }
     if (!r.rows.length && !before) list.append(h('div.panel-empty', 'Nothing played yet.'));
     for (const row of r.rows) {
       list.append(h('div.row-item',

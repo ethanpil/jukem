@@ -60,10 +60,22 @@ export async function settingsView(main, rest) {
     for (const [k, a] of Object.entries(links)) a.classList.toggle('active', k === id);
     if (matchMedia('(max-width: 900px)').matches) links[id].scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
-  function renderAll() { for (const s of Object.values(bodies)) s.render(clear(s.body)); }
-  renderAll();
+  // A section that fetches returns a promise. A link to a section waits for
+  // all of them, because a section that fills later moves the one below it.
+  function renderAll() { return Promise.all(Object.values(bodies).map((s) => s.render(clear(s.body)))); }
+  const rendered = renderAll();
   markNav(rest && bodies[rest] ? rest : 'playback');
-  if (rest) document.getElementById(`settings-${rest}`)?.scrollIntoView();
+  if (rest && bodies[rest]) {
+    await rendered;
+    // The jump is instant: a smooth scroll that starts before the page is
+    // ready is interrupted by the browser.
+    const toSection = () => document.getElementById(`settings-${rest}`)?.scrollIntoView({ behavior: 'auto' });
+    toSection();
+    // A page that still loads is put back at the top by the browser, because
+    // the address has no element with that name. The section is shown again
+    // when the page is ready.
+    if (document.readyState !== 'complete') window.addEventListener('load', toSection, { once: true });
+  }
 
   // The section list follows the scroll: the active section is the last
   // card whose top has passed the upper part of the window.
@@ -325,13 +337,20 @@ export async function settingsView(main, rest) {
     h('div.set-sub', btn('box-arrow-right', 'Sign out', signOut)));
   }
 
-  // Another client can change settings while this page is open. A save
-  // sends the whole object, so the copy here must stay current.
+  // Another client can change settings while this page is open. A save sends
+  // the whole object and reads it from the inputs, so the copy and the
+  // inputs must both follow the change. The sections are drawn again only
+  // when a value really differs, so a save from this page does not clear a
+  // field that somebody types in.
   return {
     async onEvent(type) {
       if (type === 'devices') bodies.audio.render(clear(bodies.audio.body));
       if (type === 'settings') {
-        try { settings = await A.settings(); } catch { /* keep the copy */ }
+        let fresh;
+        try { fresh = await A.settings(); } catch { return; /* keep the copy */ }
+        const changed = JSON.stringify(fresh) !== JSON.stringify(settings);
+        settings = fresh;
+        if (changed) renderAll();
       }
     },
     destroy() {
