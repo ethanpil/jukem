@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 type staticFile struct {
 	raw         []byte
 	contentType string
+	etag        string
 	once        sync.Once
 	gz          []byte
 }
@@ -58,7 +61,8 @@ func newStaticHandler(fsys fs.FS, version, shell string, shellStatus int) (*stat
 		if err != nil {
 			return err
 		}
-		h.files["/"+p] = &staticFile{raw: data, contentType: contentTypeFor(p)}
+		sum := sha256.Sum256(data)
+		h.files["/"+p] = &staticFile{raw: data, contentType: contentTypeFor(p), etag: `"` + hex.EncodeToString(sum[:8]) + `"`}
 		return nil
 	})
 	if err != nil {
@@ -119,6 +123,13 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveStatic(w http.ResponseWriter, r *http.Request, f *staticFile, status int) {
+	// The tag is the content hash, so a browser's revalidation costs no
+	// bytes after a restart either.
+	w.Header().Set("ETag", f.etag)
+	if status == http.StatusOK && strings.Contains(r.Header.Get("If-None-Match"), f.etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", f.contentType)
 	body := f.raw
 	if gz := f.gzipped(); gz != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {

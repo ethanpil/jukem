@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/fhs/gompd/v2/mpd"
 
 	"jukem/internal/library"
 )
@@ -21,6 +22,12 @@ func libraryError(err error) error {
 		return huma.Error422UnprocessableEntity(badPathDetail)
 	}
 	return mpdError(err)
+}
+
+// isNoSuchDirectory reports MPD's answer for a folder it has not scanned.
+func isNoSuchDirectory(err error) bool {
+	var me mpd.Error
+	return errors.As(err, &me) && me.Code == 50
 }
 
 // audioTypes maps the allowed extensions to media types. The Alpine
@@ -41,6 +48,14 @@ func (s *Server) registerLibrary(api huma.API, apiMux *http.ServeMux) {
 	}, func(ctx context.Context, in *browseInput) (*struct{ Body library.Page }, error) {
 		page, err := s.opts.Library.Browse(in.Path, in.Page)
 		if err != nil {
+			// A new, empty folder is on disk before MPD scans it.
+			if rel, cerr := library.CleanRel(in.Path); cerr == nil && isNoSuchDirectory(err) {
+				if abs, aerr := library.Abs(s.opts.Settings().MusicRoot, rel); aerr == nil {
+					if st, serr := os.Stat(abs); serr == nil && st.IsDir() {
+						return &struct{ Body library.Page }{Body: library.Page{Path: rel, Entries: []library.Entry{}, Pages: 1}}, nil
+					}
+				}
+			}
 			return nil, libraryError(err)
 		}
 		return &struct{ Body library.Page }{Body: page}, nil

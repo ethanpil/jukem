@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"github.com/danielgtaylor/huma/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -43,6 +44,23 @@ type Principal struct {
 	Kind    PrincipalKind
 	Name    string // key name, or "web UI" for a session
 	Session store.Session
+	// renew is set when the session was extended, so the cookie is sent
+	// again with a new lifetime.
+	renew bool
+}
+
+// hashSlots bounds the password hashes in flight. One argon2 hash takes
+// 19 MiB, and login and setup are open endpoints.
+const hashSlots = 2
+
+// acquireHash takes a hash slot, or answers 429 when none is free soon.
+func (a *auth) acquireHash() (func(), error) {
+	select {
+	case a.hashSem <- struct{}{}:
+		return func() { <-a.hashSem }, nil
+	case <-time.After(2 * time.Second):
+		return nil, huma.Error429TooManyRequests("too many password checks at once; try again")
+	}
 }
 
 type principalKey struct{}
@@ -74,6 +92,7 @@ type auth struct {
 	store   *store.Store
 	secure  bool // set the Secure cookie flag
 	limiter *loginLimiter
+	hashSem chan struct{}
 }
 
 // HashPassword returns an argon2id PHC string.
@@ -238,6 +257,9 @@ func (a *auth) middleware(next http.Handler) http.Handler {
 		}
 		if p != nil {
 			ctx = context.WithValue(ctx, principalKey{}, *p)
+			if p.renew {
+				http.SetCookie(w, a.sessionCookie(p.Session.ID))
+			}
 		}
 		if isOpen(r.URL.Path) {
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -285,10 +307,11 @@ func (a *auth) authenticate(r *http.Request) (*Principal, error) {
 	if err != nil || !ok {
 		return nil, err
 	}
-	if time.Since(se.LastSeen) > touchInterval {
+	renew := time.Since(se.LastSeen) > touchInterval
+	if renew {
 		a.store.TouchSession(ctx, se.ID, time.Now().Add(sessionLife))
 	}
-	return &Principal{Kind: KindSession, Name: "web UI", Session: se}, nil
+	return &Principal{Kind: KindSession, Name: "web UI", Session: se, renew: renew}, nil
 }
 
 // startSession creates a session and returns the cookie to set.

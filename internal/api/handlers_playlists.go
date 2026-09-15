@@ -184,14 +184,23 @@ func (s *Server) registerFileOps(api huma.API) {
 		OperationID: "move-path", Method: http.MethodPost, Path: "/library/move", Tags: []string{"library"},
 		Summary: "Move or rename, updating playlist and schedule references", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *moveInput) (*struct{}, error) {
-		return nil, opError(s.opts.Files.Move(ctx, s.refs(), in.Body.From, in.Body.To))
+		if err := s.opts.Files.Move(ctx, s.refs(), in.Body.From, in.Body.To); err != nil {
+			return nil, opError(err)
+		}
+		// A moved folder can be a rule's source.
+		s.opts.Scheduler.Invalidate()
+		return nil, nil
 	})
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-paths", Method: http.MethodPost, Path: "/library/delete", Tags: []string{"library"},
-		Summary: "Delete files and folders for good", DefaultStatus: http.StatusNoContent,
+		Summary: "Delete files and folders permanently", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *pathsInput) (*struct{}, error) {
-		return nil, opError(s.opts.Files.Delete(ctx, s.refs(), in.Body.Paths))
+		if err := s.opts.Files.Delete(ctx, s.refs(), in.Body.Paths); err != nil {
+			return nil, opError(err)
+		}
+		s.opts.Scheduler.Invalidate()
+		return nil, nil
 	})
 
 	type dnpInput struct {

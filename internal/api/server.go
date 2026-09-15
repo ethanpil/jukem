@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -89,7 +90,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		opts:    opts,
 		store:   opts.Store,
-		auth:    &auth{store: opts.Store, secure: opts.TLS, limiter: newLoginLimiter()},
+		auth:    &auth{store: opts.Store, secure: opts.TLS, limiter: newLoginLimiter(), hashSem: make(chan struct{}, hashSlots)},
 		started: time.Now(),
 	}
 
@@ -138,10 +139,31 @@ func New(opts Options) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthz(opts.Health))
-	mux.Handle("/api/", s.auth.middleware(apiMux))
+	mux.Handle("/api/", s.cors(s.auth.middleware(apiMux)))
 	mux.Handle("/", sh)
 	s.handler = securityHeaders(mux)
 	return s, nil
+}
+
+// cors answers cross-origin API requests from the origins in the
+// settings. With no origin listed, the browser's same-origin rule stands.
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && s.opts.Settings != nil && slices.Contains(s.opts.Settings().CORSOrigins, origin) {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-CSRF-Token")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+			h.Add("Vary", "Origin")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Handler returns the root handler.

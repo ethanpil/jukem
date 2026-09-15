@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"syscall"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -66,6 +67,9 @@ func (s *Server) registerSystemOps(api huma.API) {
 		OperationID: "test-alert", Method: http.MethodPost, Path: "/alerts/test", Tags: []string{"system"},
 		Summary: "Send a test alert to the webhook", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		if err := s.opts.Alerter.Test(ctx); err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
 		}
@@ -94,11 +98,14 @@ func (s *Server) registerSystemOps(api huma.API) {
 	}, func(ctx context.Context, in *struct {
 		Path string `query:"path" default:"/"`
 	}) (*struct{ Body library.DirListing }, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		d, err := library.ListDirs(in.Path)
 		switch {
 		case errors.Is(err, os.ErrInvalid):
 			return nil, huma.Error422UnprocessableEntity("path must be absolute")
-		case errors.Is(err, os.ErrNotExist):
+		case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 			return nil, huma.Error404NotFound("no such directory")
 		case errors.Is(err, os.ErrPermission):
 			return nil, huma.Error403Forbidden("the jukem user cannot read " + in.Path)
@@ -112,6 +119,9 @@ func (s *Server) registerSystemOps(api huma.API) {
 		OperationID: "snapshot-database", Method: http.MethodPost, Path: "/system/snapshot", Tags: []string{"system"},
 		Summary: "Copy the database to the snapshots directory",
 	}, func(ctx context.Context, _ *struct{}) (*snapshotOutput, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		path, err := s.opts.Snapshot(ctx)
 		if err != nil {
 			return nil, err
@@ -125,6 +135,9 @@ func (s *Server) registerSystemOps(api huma.API) {
 		OperationID: "restart-service", Method: http.MethodPost, Path: "/system/restart", Tags: []string{"system"},
 		Summary: "Stop the service; the supervisor starts it again", DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		if err := s.opts.Restart(); err != nil {
 			return nil, huma.Error503ServiceUnavailable(err.Error())
 		}
@@ -141,6 +154,9 @@ func (s *Server) registerSystemOps(api huma.API) {
 			Key         string `json:"key" minLength:"1"`
 		}
 	}) (*struct{}, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		if err := s.opts.StoreTLS(in.Body.Certificate, in.Body.Key); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
@@ -151,6 +167,9 @@ func (s *Server) registerSystemOps(api huma.API) {
 		OperationID: "self-signed-tls", Method: http.MethodPost, Path: "/settings/tls/self-signed", Tags: []string{"settings"},
 		Summary: "Generate and store a self-signed certificate", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
 		return nil, s.opts.SelfSignedTLS()
 	})
 }

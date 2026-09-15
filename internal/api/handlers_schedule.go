@@ -4,45 +4,46 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"jukem/internal/events"
 	"jukem/internal/library"
 	"jukem/internal/scheduler"
 	"jukem/internal/store"
 )
 
-// validateSource checks a schedule source.
-func (s *Server) validateSource(ctx context.Context, typ, ref string) error {
+// validateSource checks a schedule source and returns it in the form
+// the store compares: a clean folder path, or a playlist id with no
+// extra characters.
+func (s *Server) validateSource(ctx context.Context, typ, ref string) (string, error) {
 	switch typ {
 	case "directory":
-		if _, err := library.CleanRel(ref); err != nil {
-			return huma.Error422UnprocessableEntity("the source folder path is not allowed")
+		clean, err := library.CleanRel(ref)
+		if err != nil {
+			return "", huma.Error422UnprocessableEntity("the source folder path is not allowed")
 		}
+		return clean, nil
 	case "playlist":
-		var id int64
-		if _, err := fmt.Sscanf(ref, "%d", &id); err != nil {
-			return huma.Error422UnprocessableEntity("the playlist reference must be an id")
+		id, err := strconv.ParseInt(strings.TrimSpace(ref), 10, 64)
+		if err != nil || id <= 0 {
+			return "", huma.Error422UnprocessableEntity("the playlist reference must be an id")
 		}
 		if _, ok, err := s.store.GetPlaylist(ctx, id); err != nil {
-			return err
+			return "", err
 		} else if !ok {
-			return huma.Error422UnprocessableEntity("no such playlist")
+			return "", huma.Error422UnprocessableEntity("no such playlist")
 		}
-	default:
-		return huma.Error422UnprocessableEntity("source_type must be directory or playlist")
+		return strconv.FormatInt(id, 10), nil
 	}
-	return nil
+	return "", huma.Error422UnprocessableEntity("source_type must be directory or playlist")
 }
 
 func (s *Server) loc() *time.Location {
-	loc, err := time.LoadLocation(s.opts.Settings().TimeZone)
-	if err != nil {
-		return time.UTC
-	}
-	return loc
+	set := s.opts.Settings()
+	return set.Location()
 }
 
 // checkConflicts reports overlaps of r with the other enabled rules.
@@ -85,9 +86,11 @@ func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
 
 // saveRule validates a rule, checks conflicts, and creates or replaces it.
 func (s *Server) saveRule(ctx context.Context, r store.Schedule) (*struct{ Body store.Schedule }, error) {
-	if err := s.validateSource(ctx, r.SourceType, r.SourceRef); err != nil {
+	ref, err := s.validateSource(ctx, r.SourceType, r.SourceRef)
+	if err != nil {
 		return nil, err
 	}
+	r.SourceRef = ref
 	if err := s.checkConflicts(ctx, r); err != nil {
 		return nil, err
 	}
@@ -107,7 +110,6 @@ func (s *Server) saveRule(ctx context.Context, r store.Schedule) (*struct{ Body 
 		}
 	}
 	s.opts.Scheduler.Invalidate()
-	s.opts.Events.Publish(events.Schedule, "")
 	return &struct{ Body store.Schedule }{Body: r}, nil
 }
 
@@ -189,7 +191,6 @@ func (s *Server) registerSchedule(api huma.API) {
 			return nil, huma.Error404NotFound("no such rule")
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(events.Schedule, "")
 		return nil, nil
 	})
 
@@ -299,21 +300,28 @@ func (s *Server) registerSchedule(api huma.API) {
 			}
 		}
 		if e.SourceType != nil {
-			if err := s.validateSource(ctx, *e.SourceType, *e.SourceRef); err != nil {
+			if e.SourceRef == nil {
+				return huma.Error422UnprocessableEntity("source_type needs source_ref")
+			}
+			ref, err := s.validateSource(ctx, *e.SourceType, *e.SourceRef)
+			if err != nil {
 				return err
 			}
+			e.SourceRef = &ref
 		}
 		if err := s.store.PutException(ctx, e); err != nil {
 			return err
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(events.Schedule, "")
 		return nil
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "create-exception", Method: http.MethodPost, Path: "/schedule-exceptions", Tags: []string{"schedule"},
 		Summary: "Create or replace the exception for a date", DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, in *excInput) (*struct{ Body store.Exception }, error) {
+		if in.Body.Date == "" {
+			return nil, huma.Error422UnprocessableEntity("date is required")
+		}
 		if err := putException(ctx, in.Body); err != nil {
 			return nil, err
 		}
@@ -348,7 +356,6 @@ func (s *Server) registerSchedule(api huma.API) {
 			return nil, huma.Error404NotFound("no exception on that date")
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(events.Schedule, "")
 		return nil, nil
 	})
 
@@ -385,7 +392,7 @@ func (s *Server) registerSchedule(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "create-override", Method: http.MethodPost, Path: "/override", Tags: []string{"schedule"},
-		Summary: "Hold the current state for a while", DefaultStatus: http.StatusCreated,
+		Summary: "Hold play, pause or stop until the schedule resumes", DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, in *overrideInput) (*overrideOutput, error) {
 		if !s.opts.Settings().SchedulerEnabled {
 			return nil, huma.Error409Conflict("the scheduler is off; everything is manual")
@@ -463,7 +470,7 @@ func (s *Server) registerSchedule(api huma.API) {
 	type clockInput struct {
 		Body struct {
 			Date     string `json:"date" pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`
-			Time     string `json:"time" pattern:"^[0-2][0-9]:[0-5][0-9]$"`
+			Time     string `json:"time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$"`
 			TimeZone string `json:"time_zone" minLength:"1"`
 		}
 	}
@@ -494,7 +501,6 @@ func (s *Server) registerSchedule(api huma.API) {
 			}
 		}
 		s.opts.Scheduler.Invalidate()
-		s.opts.Events.Publish(events.Schedule, "")
 		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone)}, nil
 	})
 }

@@ -77,7 +77,19 @@ func (s *Server) registerAuth(api huma.API) {
 		Summary: "Set the first password", Description: "Allowed only while no password exists. Starts a web session.",
 		DefaultStatus: http.StatusCreated, Security: []map[string][]string{},
 	}, func(ctx context.Context, in *passwordInput) (*sessionOutput, error) {
+		// The check comes before the hash: a hash costs memory, and this
+		// endpoint is open.
+		if _, exists, err := s.store.PasswordHash(ctx); err != nil {
+			return nil, err
+		} else if exists {
+			return nil, huma.Error409Conflict("a password is already set")
+		}
+		release, err := s.auth.acquireHash()
+		if err != nil {
+			return nil, err
+		}
 		hash, err := HashPassword(in.Body.Password)
+		release()
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +116,13 @@ func (s *Server) registerAuth(api huma.API) {
 		if err != nil {
 			return nil, err
 		}
-		if !exists || !VerifyPassword(hash, in.Body.Password) {
+		release, err := s.auth.acquireHash()
+		if err != nil {
+			return nil, err
+		}
+		ok := exists && VerifyPassword(hash, in.Body.Password)
+		release()
+		if !ok {
 			s.auth.limiter.fail(ip)
 			return nil, huma.Error401Unauthorized("wrong password")
 		}
@@ -138,10 +156,19 @@ func (s *Server) registerAuth(api huma.API) {
 		if err != nil {
 			return nil, err
 		}
-		if !VerifyPassword(hash, in.Body.Current) {
+		release, err := s.auth.acquireHash()
+		if err != nil {
+			return nil, err
+		}
+		ok := VerifyPassword(hash, in.Body.Current)
+		var newHash string
+		if ok {
+			newHash, err = HashPassword(in.Body.Password)
+		}
+		release()
+		if !ok {
 			return nil, huma.Error403Forbidden("the current password is wrong")
 		}
-		newHash, err := HashPassword(in.Body.Password)
 		if err != nil {
 			return nil, err
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -88,6 +89,9 @@ func (s *Server) registerUpload(api huma.API, apiMux *http.ServeMux) {
 // upload streams one file into the library.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	lim := s.opts.Files.Limits()
+	// A body that stops arriving must end, or the upload counts as active
+	// and holds every library scan. Half an hour covers a slow WiFi link.
+	http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Minute))
 	// The reader is capped regardless of Content-Length, so a chunked
 	// body cannot exceed the limit either.
 	body := http.MaxBytesReader(w, r.Body, lim.MaxBytes+1)
