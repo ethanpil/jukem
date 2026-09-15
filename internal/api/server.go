@@ -61,6 +61,14 @@ type Options struct {
 	// stores and applies new ones.
 	Settings       func() store.Settings
 	UpdateSettings func(ctx context.Context, set store.Settings) error
+
+	// Alerter records and dismisses alerts. The functions below are the
+	// maintenance operations of the running application.
+	Alerter       *watchdog.Alerter
+	Snapshot      func(ctx context.Context) (string, error)
+	Restart       func() error
+	StoreTLS      func(certPEM, keyPEM string) error
+	SelfSignedTLS func() error
 }
 
 // Server is the HTTP surface in normal operation.
@@ -113,6 +121,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Scheduler != nil {
 		s.registerSchedule(hapi)
+	}
+	if opts.Alerter != nil {
+		s.registerSystemOps(hapi)
 	}
 	if opts.Events != nil {
 		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)

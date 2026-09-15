@@ -66,7 +66,18 @@ func runServe(args []string) error {
 		return err
 	}
 	defer a.Close()
-	return serveHTTP(ctx, cfg.Listen, a.Handler(), logger)
+	// A restart from the UI ends the servers; the supervisor starts jukem
+	// again. The short delay lets the answer reach the browser.
+	sctx, stopServing := context.WithCancel(ctx)
+	defer stopServing()
+	a.Restart = func() { time.AfterFunc(500*time.Millisecond, stopServing) }
+	if cert, key, ok := a.TLSFiles(); ok {
+		return serveTLS(sctx, cfg.Listen, cfg.ListenTLS, cert, key, a.Handler(), logger)
+	}
+	if a.Settings().HTTPSEnabled {
+		logger.Warn("HTTPS is switched on but no certificate is stored, serving HTTP")
+	}
+	return serveHTTP(sctx, cfg.Listen, a.Handler(), logger)
 }
 
 // buildStamp returns the build time from the linker, or the binary's
@@ -100,23 +111,80 @@ func serveHTTP(ctx context.Context, listen string, h http.Handler, logger *slog.
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
-	logger.Info("listening", "addr", ln.Addr().String())
-	select {
-	case err := <-errc:
+	return runServers(ctx, logger, server{ln: ln, h: h})
+}
+
+// serveTLS serves the application over TLS and redirects plain HTTP to
+// it. The redirect keeps the host name and uses the TLS port when it is
+// not 443.
+func serveTLS(ctx context.Context, listen, listenTLS, cert, key string, h http.Handler, logger *slog.Logger) error {
+	tlsLn, err := listenWithRetry(ctx, listenTLS, logger)
+	if err != nil {
 		return err
+	}
+	plainLn, err := listenWithRetry(ctx, listen, logger)
+	if err != nil {
+		tlsLn.Close()
+		return err
+	}
+	_, port, _ := net.SplitHostPort(tlsLn.Addr().String())
+	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
+		target := "https://" + host
+		if port != "443" {
+			target += ":" + port
+		}
+		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusPermanentRedirect)
+	})
+	return runServers(ctx, logger, server{ln: tlsLn, h: h, cert: cert, key: key}, server{ln: plainLn, h: redirect})
+}
+
+// server is one listener with its handler.
+type server struct {
+	ln        net.Listener
+	h         http.Handler
+	cert, key string // set for TLS
+}
+
+// runServers serves every listener until one fails or ctx ends, then
+// drains all of them.
+func runServers(ctx context.Context, logger *slog.Logger, servers ...server) error {
+	errc := make(chan error, len(servers))
+	var running []*http.Server
+	for _, s := range servers {
+		srv := &http.Server{
+			Handler:           s.h,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		running = append(running, srv)
+		go func(s server, srv *http.Server) {
+			if s.cert != "" {
+				errc <- srv.ServeTLS(s.ln, s.cert, s.key)
+				return
+			}
+			errc <- srv.Serve(s.ln)
+		}(s, srv)
+		logger.Info("listening", "addr", s.ln.Addr().String(), "tls", s.cert != "")
+	}
+	var err error
+	select {
+	case err = <-errc:
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
 	case <-ctx.Done():
 		logger.Info("shutting down")
-		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(sctx)
 	}
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, srv := range running {
+		srv.Shutdown(sctx)
+	}
+	return err
 }
 
 // listenWithRetry opens the port, and tries again every few seconds until

@@ -13,7 +13,6 @@ import (
 	"jukem/internal/events"
 	"jukem/internal/library"
 	"jukem/internal/mpdctl"
-	"jukem/internal/player"
 	"jukem/internal/store"
 )
 
@@ -56,10 +55,6 @@ func (a *App) watchMPD(ctx context.Context) {
 		}
 	}
 }
-
-// onSongChange runs when a new track starts. Later steps record history
-// here.
-func (a *App) onSongChange(st player.Status) {}
 
 // resolveSource turns a queue action into an ordered list of files.
 func (a *App) resolveSource(ctx context.Context, q api.QueueAction) ([]string, error) {

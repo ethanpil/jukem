@@ -477,6 +477,23 @@ func (p *Player) Update(path string) (int, error) {
 	return job, err
 }
 
+// Stats reports the number of songs MPD knows and when its database was
+// last updated.
+func (p *Player) Stats() (songs int, dbUpdate time.Time, err error) {
+	err = p.pool.Do(func(c *mpd.Client) error {
+		a, err := c.Stats()
+		if err != nil {
+			return err
+		}
+		songs, _ = strconv.Atoi(a["songs"])
+		if sec, err := strconv.ParseInt(a["db_update"], 10, 64); err == nil && sec > 0 {
+			dbUpdate = time.Unix(sec, 0)
+		}
+		return nil
+	})
+	return songs, dbUpdate, err
+}
+
 // Ping reports whether MPD answers.
 func (p *Player) Ping() error {
 	return p.pool.Do(func(c *mpd.Client) error { return c.Ping() })

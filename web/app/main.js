@@ -10,7 +10,7 @@ import { libraryView } from './views/library.js';
 import { playlistsView } from './views/playlists.js';
 import { scheduleView } from './views/schedule.js';
 import { settingsView } from './views/settings.js';
-import { healthView } from './views/health.js';
+import { healthView, historyView } from './views/health.js';
 import { wizardView } from './views/wizard.js';
 
 export const state = {
@@ -64,6 +64,24 @@ document.addEventListener('upload-progress', (e) => {
   }
 });
 
+// Active alerts show as a banner on every screen, with the count in the
+// top bar. The Health page has the detail and the dismiss buttons.
+async function refreshAlerts() {
+  if (!state.session?.authenticated) return;
+  let alerts = [];
+  try { alerts = (await A.alerts()).alerts; } catch { return; }
+  const banner = document.getElementById('alert-banner');
+  const badge = document.getElementById('alert-badge');
+  clear(banner);
+  banner.classList.toggle('d-none', !alerts.length);
+  badge.classList.toggle('d-none', !alerts.length);
+  if (!alerts.length) return;
+  const first = alerts[0];
+  banner.append(icon('exclamation-triangle-fill', 'me-2'), first.message, ' ',
+    h('a.alert-link', { href: '#/health' }, alerts.length > 1 ? `${alerts.length} alerts` : 'Details'));
+  clear(badge).append(h('span.badge.text-bg-warning', { title: 'Active alerts' }, String(alerts.length)));
+}
+
 // The event stream says what changed; the client refetches. A slow poll
 // stays as a fallback for a stream that silently died.
 let es = null;
@@ -88,6 +106,7 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) refreshStatus();
+    if (ev.type === 'alerts') refreshAlerts();
     if (ev.type === 'upload') document.dispatchEvent(new CustomEvent('jukem-upload-done', { detail: ev }));
     refreshCurrent(ev.type);
   };
@@ -150,6 +169,8 @@ function showLogin() {
   if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
   if (es) { es.close(); es = null; }
   document.getElementById('now-bar').classList.add('d-none');
+  document.getElementById('alert-banner').classList.add('d-none');
+  document.getElementById('alert-badge').classList.add('d-none');
   loginView(document.getElementById('main'), onSignedIn);
 }
 
@@ -160,6 +181,7 @@ async function onSignedIn(sess) {
   if (!routesRegistered) registerRoutes();
   connectEvents();
   await refreshStatus();
+  refreshAlerts();
   if (!statusTimer) statusTimer = setInterval(refreshStatus, 60000);
   start();
 }
@@ -173,6 +195,7 @@ function registerRoutes() {
   route('/schedule', scheduleView);
   route('/settings', settingsView);
   route('/health', healthView);
+  route('/history', historyView);
   route('/setup', wizardView);
 }
 

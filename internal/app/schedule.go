@@ -12,11 +12,6 @@ import (
 	"jukem/internal/store"
 )
 
-// ownerNow reports the owner for the API and the health report.
-func (a *App) ownerNow() player.Owner {
-	return a.Scheduler.Owner(context.Background())
-}
-
 // resolveProgram resolves a schedule source to files, without the
 // do-not-play tracks.
 func (a *App) resolveProgram(ctx context.Context, src scheduler.Source) ([]string, bool, error) {
@@ -62,14 +57,6 @@ func (a *App) resolveProgram(ctx context.Context, src scheduler.Source) ([]strin
 		files = files[:player.MaxQueue]
 	}
 	return files, truncated, nil
-}
-
-// onSchedulerProblem receives dead-air reports. Build step 10 turns them
-// into alerts.
-func (a *App) onSchedulerProblem(kind, message string) {
-	if kind == "dead_air" {
-		a.log.Error("dead air: the schedule says play and playback fails", "reason", message)
-	}
 }
 
 // holdForPerson records a transport action while the scheduler is on, so

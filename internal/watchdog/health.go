@@ -2,6 +2,8 @@
 // health in plain language.
 package watchdog
 
+import "jukem/internal/store"
+
 // Status is the state of one health check.
 type Status string
 
@@ -26,6 +28,8 @@ type Report struct {
 	Reason      string  `json:"reason,omitempty" doc:"Why jukem is in maintenance mode"`
 	Fix         string  `json:"fix,omitempty" doc:"How to leave maintenance mode"`
 	Checks      []Check `json:"checks"`
+	// Alerts are the active alerts; the UI shows them on every screen.
+	Alerts []store.Alert `json:"alerts"`
 }
 
 // Worst returns the most severe status in the report's checks.

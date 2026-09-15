@@ -273,7 +273,7 @@ export async function settingsView(main, rest) {
     const adays = h('input.form-control', { type: 'number', min: 1, value: settings.alert_days });
     body.append(
       h('p', `Version ${info?.version ?? '?'} · schema ${info?.schema_version ?? '?'} · runtime ${info?.runtime ?? '?'}`),
-      h('p', h('a', { href: '#/health' }, 'Health page'), ' · ', h('a', { href: '#/system/history' }, 'Play history'), ' · ', h('a', { href: '/api/v1/docs', target: '_blank', rel: 'noopener' }, 'API docs')),
+      h('p', h('a', { href: '#/health' }, 'Health page'), ' · ', h('a', { href: '#/history' }, 'Play history'), ' · ', h('a', { href: '/api/v1/docs', target: '_blank', rel: 'noopener' }, 'API docs')),
       h('form', { onsubmit: async (e) => { e.preventDefault(); await save({ alert_webhook_url: url.value, alert_webhook_preset: preset.value, history_days: Number(days.value), history_rows: Number(rows.value), alert_days: Number(adays.value) }); } },
         h('h3.h6', 'Alerts'),
         h('div.row.g-2', h('div.col-md-8', h('label.form-label', 'Webhook URL (JSON POST)'), url), h('div.col-md-4', h('label.form-label', 'Format'), preset)),

@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     ports:
       - "80:8080"
+      - "443:8443"                   # only used when HTTPS is switched on
     group_add:
       - "29"                         # host audio GID: getent group audio | cut -d: -f3
     device_cgroup_rules:

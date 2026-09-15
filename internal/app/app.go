@@ -52,6 +52,9 @@ type App struct {
 	Playlists *library.Playlists
 	Scheduler *scheduler.Scheduler
 	Clock     *scheduler.Clock
+	Alerter   *watchdog.Alerter
+	// Restart stops the service cleanly; the command sets it.
+	Restart func()
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -92,6 +95,10 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
 	a.Playlists = library.NewPlaylists(paths.PlaylistDir, func() string { return a.Settings().MusicRoot }, db)
 	a.Clock = scheduler.NewClock(ctx, db, buildTime)
+	a.Alerter = watchdog.NewAlerter(db, a.Events, log, func() watchdog.Webhook {
+		set := a.Settings()
+		return watchdog.Webhook{URL: set.AlertWebhookURL, Preset: set.AlertWebhookPreset}
+	})
 	a.Scheduler = scheduler.New(ctx, scheduler.Deps{
 		Store: db, Player: a.Player, Events: a.Events, Clock: a.Clock, Log: log,
 		Settings:      a.Settings,
@@ -121,12 +128,15 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.watchMPD(ctx)
 	go a.Files.Run(ctx)
 	go a.Scheduler.Run(ctx)
+	go a.runWatchdog(ctx)
+	go a.runNightly(ctx)
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
+		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart, StoreTLS: a.StoreTLS, SelfSignedTLS: a.SelfSignedTLS,
 	})
 	if err != nil {
 		a.Close()
@@ -216,6 +226,8 @@ func (a *App) onMPDEvent(ev mpdctl.Event) {
 		a.Scheduler.Kick()
 	case mpdctl.EventUnstable:
 		a.log.Error("mpd keeps failing", "error", ev.Err)
+		a.Alerter.Raise(context.Background(), "mpd_unstable", "MPD keeps failing ("+ev.Err.Error()+"). jukem keeps restarting it.",
+			"Read the log for MPD's own message. A missing or busy output device is the usual cause.")
 	}
 }
 
@@ -301,7 +313,77 @@ func (a *App) Health() watchdog.Report {
 		}
 		checks = append(checks, watchdog.Check{Name: "Audio", Status: watchdog.StatusOK, Summary: summary})
 	}
-	return watchdog.Report{Status: watchdog.Worst(checks), Checks: checks}
+	checks = append(checks, a.libraryChecks()...)
+	alerts, err := a.Store.ActiveAlerts(context.Background())
+	if err != nil {
+		a.log.Warn("cannot list alerts", "error", err)
+	}
+	return watchdog.Report{Status: watchdog.Worst(checks), Checks: checks, Alerts: alerts}
+}
+
+// libraryChecks reports the library, the storage and the last track
+// change.
+func (a *App) libraryChecks() []watchdog.Check {
+	set := a.Settings()
+	loc, err := time.LoadLocation(set.TimeZone)
+	if err != nil {
+		loc = time.UTC
+	}
+	var checks []watchdog.Check
+	if songs, updated, err := a.Player.Stats(); err == nil {
+		summary := fmt.Sprintf("OK, %s tracks", withCommas(songs))
+		if !updated.IsZero() {
+			summary += ", last scan " + updated.In(loc).Format("Mon 15:04")
+		}
+		st := watchdog.Check{Name: "Library", Status: watchdog.StatusOK, Summary: summary}
+		if songs == 0 {
+			st.Status, st.Fix = watchdog.StatusWarning, "Upload music in Library, or check the music root in Settings > Library."
+		}
+		checks = append(checks, st)
+	}
+	stor := library.Stat(set.MusicRoot)
+	switch {
+	case stor.Missing || stor.Problem != "":
+		checks = append(checks, watchdog.Check{Name: "Storage", Status: watchdog.StatusError, Summary: stor.Problem, Fix: "Check the music root in Settings > Library."})
+	case stor.TotalBytes > 0:
+		used := 100 * (stor.TotalBytes - stor.FreeBytes) / stor.TotalBytes
+		c := watchdog.Check{Name: "Storage", Status: watchdog.StatusOK, Summary: fmt.Sprintf("%d%% used, %s free", used, humanBytes(stor.FreeBytes))}
+		if stor.FreeBytes < set.FreeSpaceReserve {
+			c.Status, c.Fix = watchdog.StatusWarning, "Below the free space reserve: uploads are refused. Delete music or enlarge the disk."
+		}
+		if stor.ReadOnly {
+			c.Summary += ", read-only"
+		}
+		checks = append(checks, c)
+	}
+	if last, ok, err := a.Store.LastHistoryAt(context.Background()); err == nil && ok {
+		checks = append(checks, watchdog.Check{Name: "Last track change", Status: watchdog.StatusOK, Summary: ago(time.Since(last))})
+	} else if err == nil {
+		checks = append(checks, watchdog.Check{Name: "Last track change", Status: watchdog.StatusOK, Summary: "nothing played yet"})
+	}
+	return checks
+}
+
+// ago writes a duration as "2m ago".
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh %dm ago", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+}
+
+// withCommas writes 8412 as 8,412.
+func withCommas(n int) string {
+	s := fmt.Sprint(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // checkDataDir verifies that the data directory exists and is writable.

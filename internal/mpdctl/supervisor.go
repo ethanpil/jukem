@@ -124,6 +124,14 @@ func (s *Supervisor) Reconfigure(conf Config) error {
 	return nil
 }
 
+// Restart asks the loop to restart MPD with the same config.
+func (s *Supervisor) Restart() {
+	select {
+	case s.restartCh <- struct{}{}:
+	default:
+	}
+}
+
 // Stop ends MPD and the restart loop. The loop waits up to five seconds
 // for a clean exit and then kills the process.
 func (s *Supervisor) Stop() {
