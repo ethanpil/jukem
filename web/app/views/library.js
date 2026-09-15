@@ -31,7 +31,9 @@ export async function libraryView(main, rest) {
   let storage = null;
   let preview = null;
   let scanTimer = null;
+  let scanWatching = false; // one poll chain at a time
   let scanStart = 0;
+  let destroyed = false;
 
   function hashFor(p, q) {
     return '#/library' + (p ? '/' + encodeURIComponent(p) : '') + (q ? (p ? '' : '/') + '?q=' + encodeURIComponent(q) : '');
@@ -275,25 +277,30 @@ export async function libraryView(main, rest) {
   // watchScan polls the scan state every two seconds while MPD scans.
   // MPD gives no percentage, so the bar moves without a figure and the
   // track count shows what the scan found. started is true right after a
-  // rescan request, because MPD can take a moment to report the scan.
+  // rescan request: MPD can take a moment to report the scan, so one
+  // extra check waits for it.
   async function watchScan(started = false) {
-    if (scanTimer) return;
-    let graceChecks = started ? 3 : 0;
+    if (scanWatching) return;
+    scanWatching = true;
+    let graceChecks = started ? 1 : 0;
     const poll = async () => {
       scanTimer = null;
       let s;
-      try { s = await A.api.get('/library/scan'); } catch { clear(scanBox); return; }
-      if (!s.updating && graceChecks-- <= 0) {
-        if (scanStart) {
-          scanStart = 0;
-          clear(scanBox);
-          load(false);
-        }
+      try { s = await A.api.get('/library/scan'); } catch { s = null; }
+      if (destroyed) { scanWatching = false; return; }
+      if (!s) { scanWatching = false; scanStart = 0; clear(scanBox); return; }
+      if (s.updating || graceChecks-- > 0) {
+        if (s.updating && !scanStart) scanStart = Date.now();
+        renderScan(s);
+        scanTimer = setTimeout(poll, 2000);
         return;
       }
-      if (s.updating && !scanStart) scanStart = Date.now();
-      renderScan(s);
-      scanTimer = setTimeout(poll, 2000);
+      // The scan is over. The list reloads once if the bar was showing.
+      scanWatching = false;
+      const shown = scanBox.hasChildNodes();
+      scanStart = 0;
+      clear(scanBox);
+      if (shown) load(false);
     };
     await poll();
   }
@@ -320,6 +327,7 @@ export async function libraryView(main, rest) {
     },
     destroy() {
       stopPreview();
+      destroyed = true;
       clearTimeout(scanTimer);
       scanTimer = null;
     },
