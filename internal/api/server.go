@@ -41,6 +41,7 @@ type Options struct {
 	Devices *audio.Manager
 	Mixer   *audio.Mixer
 	Library *library.Browser
+	Files   *library.Files
 	// Owner reports who decides playback now.
 	Owner func() player.Owner
 	// Transport runs play, pause or stop for a caller, creating an override
@@ -98,6 +99,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Library != nil {
 		s.registerLibrary(hapi, apiMux)
+	}
+	if opts.Files != nil {
+		s.registerUpload(hapi, apiMux)
 	}
 	if opts.Events != nil {
 		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)

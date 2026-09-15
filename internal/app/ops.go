@@ -45,6 +45,9 @@ func (a *App) watchMPD(ctx context.Context) {
 			a.Events.Publish(events.Queue, "")
 		case "update", "database":
 			a.Events.Publish(events.Library, "")
+			if st, err := a.Player.Status(); err == nil {
+				a.Files.NoteUpdate(st.Updating)
+			}
 		case "output":
 			a.Events.Publish(events.Devices, "")
 		}
@@ -218,6 +221,12 @@ func (a *App) UpdateSettings(ctx context.Context, set store.Settings) error {
 		a.Events.Publish(events.Schedule, "")
 	}
 	return nil
+}
+
+// uploadLimits returns the upload rules from the settings.
+func (a *App) uploadLimits() library.Limits {
+	set := a.Settings()
+	return library.Limits{MaxBytes: set.UploadMaxBytes, Reserve: set.FreeSpaceReserve, Extension: set.ExtensionAllowed}
 }
 
 // volumeLimits returns the configured floor and ceiling.

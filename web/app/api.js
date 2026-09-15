@@ -77,3 +77,7 @@ export const systemInfo = () => api.get('/system/info');
 export const apiKeys = () => api.get('/api-keys');
 export const createApiKey = (name, expires_at) => api.post('/api-keys', expires_at ? { name, expires_at } : { name });
 export const deleteApiKey = (id) => api.del(`/api-keys/${id}`);
+
+// csrf exposes the token for requests made outside this module, such as
+// XMLHttpRequest uploads.
+export function csrf() { return csrfToken; }

@@ -12,6 +12,7 @@ import { scheduleView } from './views/schedule.js';
 import { settingsView } from './views/settings.js';
 import { healthView } from './views/health.js';
 import { wizardView } from './views/wizard.js';
+import * as upload from './upload.js';
 
 export const state = {
   session: null,
@@ -53,6 +54,35 @@ function markActive() {
 }
 document.addEventListener('route', markActive);
 
+// File operations the Library view delegates to the shell.
+document.addEventListener('library-fileop', async (e) => {
+  const { kind, paths, path, reload } = e.detail;
+  if (kind === 'upload') {
+    e.preventDefault();
+    upload.open(paths?.[0] ?? path);
+  } else if (kind === 'new_folder') {
+    e.preventDefault();
+    const name = prompt('New folder name:');
+    if (!name) return;
+    try {
+      await A.api.post('/library/folders', { path: (path ? path + '/' : '') + name.trim() });
+      toast(`Folder "${name.trim()}" created`, 'success');
+      reload();
+    } catch (err) { toast(err.problem?.errors?.[0]?.message ? `${err.message} ${err.problem.errors[0].message}` : err.message, 'danger', 8000); }
+  }
+});
+
+// The Library tab shows the upload progress while a batch runs.
+document.addEventListener('upload-progress', (e) => {
+  const { running, done, total } = e.detail;
+  for (const a of document.querySelectorAll('[data-section="library"]')) {
+    let badge = a.querySelector('.upload-badge');
+    if (!running) { if (badge) badge.remove(); continue; }
+    if (!badge) { badge = h('span.badge.text-bg-primary.upload-badge.ms-1'); a.append(badge); }
+    badge.textContent = `${done}/${total}`;
+  }
+});
+
 // The event stream says what changed; the client refetches. A slow poll
 // stays as a fallback for a stream that silently died.
 let es = null;
@@ -77,6 +107,7 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (['player', 'devices', 'health', 'schedule', 'settings'].includes(ev.type)) refreshStatus();
+    if (ev.type === 'upload') document.dispatchEvent(new CustomEvent('jukem-upload-done', { detail: ev }));
     refreshCurrent(ev.type);
   };
   es.onopen = () => refreshStatus();

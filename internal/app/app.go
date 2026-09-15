@@ -47,6 +47,7 @@ type App struct {
 	Player  *player.Player
 	Events  *events.Hub
 	Library *library.Browser
+	Files   *library.Files
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -81,9 +82,10 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Devices = audio.NewManager(log)
 	paths := mpdctl.PathsFor(cfg.DataDir)
 	a.Pool = mpdctl.NewPool(paths.Socket, 3)
+	a.Events = events.New()
 	a.Player = player.New(a.Pool, a.volumeLimits)
 	a.Library = library.NewBrowser(a.Pool)
-	a.Events = events.New()
+	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
@@ -103,10 +105,11 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	a.Devices.OnChange = a.onDevices
 	go a.Devices.Run(ctx)
 	go a.watchMPD(ctx)
+	go a.Files.Run(ctx)
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
-		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library,
+		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files,
 		Owner: a.Owner, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
 	})

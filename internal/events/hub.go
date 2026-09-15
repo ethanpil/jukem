@@ -22,6 +22,7 @@ const (
 	Alerts   Type = "alerts"   // alerts raised or dismissed
 	Settings Type = "settings" // settings changed
 	Health   Type = "health"   // health status changed
+	Upload   Type = "upload"   // the scan after a batch of uploads ended; Ref is the folder
 )
 
 // Event is one notification.

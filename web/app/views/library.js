@@ -125,14 +125,15 @@ export async function libraryView(main, rest) {
     if (showSpinner) { clear(listBox).append(spinner()); clear(pager); }
     try {
       await loadStorage();
+      // The toolbar does not need MPD, so uploads work while it restarts.
+      renderCrumbs();
+      renderTools();
       if (query) {
         const r = await A.api.get(`/library/search?q=${encodeURIComponent(query)}`);
         current = { entries: r.entries, search: query, limited: r.limited };
       } else {
         current = await A.api.get(`/library/browse?path=${encodeURIComponent(path)}&page=${page}`);
       }
-      renderCrumbs();
-      renderTools();
       renderList(current);
       renderPager(current);
     } catch (e) {
