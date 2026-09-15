@@ -2,7 +2,8 @@ import * as A from '../api.js';
 import { h, clear, icon, confirmDialog, modal, spinner, errorBox } from '../dom.js';
 import { libraryPicker, fail } from '../fileops.js';
 
-const DAYS = [['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri', 16], ['Sat', 32], ['Sun', 64]];
+// The week starts on Sunday. The bits are the API's: Monday is 1, Sunday is 64.
+const DAYS = [['Sun', 64], ['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri', 16], ['Sat', 32]];
 
 // scheduleView shows the week of expanded intervals, the rule list with
 // enable switches, the rule editor, and the exceptions calendar.
@@ -39,11 +40,11 @@ export async function scheduleView(main) {
     return `${p.year}-${p.month}-${p.day}`;
   }
 
-  // mondayOf returns the Monday on or before a YYYY-MM-DD date, shifted by
+  // sundayOf returns the Sunday on or before a YYYY-MM-DD date, shifted by
   // weekOffset weeks. Day arithmetic runs in UTC on the date only.
-  function mondayOf(date) {
+  function sundayOf(date) {
     const d = new Date(date + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7) + weekOffset * 7);
+    d.setUTCDate(d.getUTCDate() - d.getUTCDay() + weekOffset * 7);
     return d.toISOString().slice(0, 10);
   }
 
@@ -54,8 +55,8 @@ export async function scheduleView(main) {
     clear(weekBox).append(spinner());
     let r;
     try {
-      const monday = mondayOf(localDate(new Date(), tz));
-      r = await A.api.get(`/schedules/intervals?week=${monday}`);
+      const sunday = sundayOf(localDate(new Date(), tz));
+      r = await A.api.get(`/schedules/intervals?week=${sunday}`);
     } catch (e) { if (gen === weekGen) clear(weekBox).append(weekNav(), errorBox(e)); return; }
     if (gen !== weekGen) return;
     tz = r.time_zone;
