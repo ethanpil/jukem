@@ -16,6 +16,7 @@ import (
 	"jukem/internal/audio"
 	"jukem/internal/config"
 	"jukem/internal/events"
+	"jukem/internal/library"
 	"jukem/internal/mpdctl"
 	"jukem/internal/player"
 	"jukem/internal/store"
@@ -45,6 +46,7 @@ type App struct {
 	Pool    *mpdctl.Pool
 	Player  *player.Player
 	Events  *events.Hub
+	Library *library.Browser
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -80,6 +82,7 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 	paths := mpdctl.PathsFor(cfg.DataDir)
 	a.Pool = mpdctl.NewPool(paths.Socket, 3)
 	a.Player = player.New(a.Pool, a.volumeLimits)
+	a.Library = library.NewBrowser(a.Pool)
 	a.Events = events.New()
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
@@ -103,7 +106,7 @@ func Build(ctx context.Context, cfg config.Config, version string, log *slog.Log
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TLS: settings.HTTPSEnabled,
-		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer,
+		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library,
 		Owner: a.Owner, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
 	})

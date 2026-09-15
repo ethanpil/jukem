@@ -14,6 +14,7 @@ import (
 	"jukem/internal/audio"
 	"jukem/internal/config"
 	"jukem/internal/events"
+	"jukem/internal/library"
 	"jukem/internal/player"
 	"jukem/internal/store"
 	"jukem/internal/watchdog"
@@ -39,6 +40,7 @@ type Options struct {
 	Events  *events.Hub
 	Devices *audio.Manager
 	Mixer   *audio.Mixer
+	Library *library.Browser
 	// Owner reports who decides playback now.
 	Owner func() player.Owner
 	// Transport runs play, pause or stop for a caller, creating an override
@@ -93,6 +95,7 @@ func New(opts Options) (*Server, error) {
 		s.registerPlayer(hapi)
 		s.registerDevices(hapi)
 		s.registerSettings(hapi)
+		s.registerLibrary(hapi, apiMux)
 	}
 	if opts.Events != nil {
 		apiMux.Handle("GET "+apiPrefix+"/events", opts.Events)
