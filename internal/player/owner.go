@@ -21,6 +21,7 @@ type Owner struct {
 	State   OwnerState `json:"state" enum:"SCHEDULED,OVERRIDDEN,MANUAL,UNAVAILABLE"`
 	Reason  string     `json:"reason" doc:"For example: Morning Mix until 11:00"`
 	Program string     `json:"program,omitempty" doc:"Name of the loaded schedule rule or exception"`
+	Since   *time.Time `json:"since,omitempty" doc:"When the scheduled window started, if one runs"`
 	Until   *time.Time `json:"until,omitempty" doc:"When the current state ends, if known"`
 	Warning string     `json:"warning,omitempty" doc:"A problem that does not change the owner, such as an unset clock in manual mode"`
 }

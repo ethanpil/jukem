@@ -244,10 +244,15 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 	}
 	if v.hasOver {
 		v.owner = overrideOwner(v.override, v.now, v.overEnd, v.hasEnd, v.loc)
+		// The window that waits is named, so a screen can say which rule
+		// starts again at the end of the stop.
+		if iv, ok := Current(v.ivs, v.now); ok {
+			v.owner.Program = iv.Name
+		}
 		return v
 	}
 	if iv, ok := Current(v.ivs, v.now); ok {
-		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc)), Program: iv.Name, Until: &iv.End}
+		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc)), Program: iv.Name, Since: &iv.Start, Until: &iv.End}
 		return v
 	}
 	for _, iv := range v.ivs {
