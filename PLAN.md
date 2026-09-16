@@ -764,6 +764,10 @@ one address, which MPD plays like a file; the window ends it. A stream has
 nothing to shuffle, so the option is hidden and the server clears it. The
 do-not-play list does not apply to a stream.
 
+The address is kept as it was given and shown again in the rule list. An
+address with a name and a password in it is thus readable by every person
+who can open the UI.
+
 ### Announcements
 
 An announcement is one file that plays instead of the music: a message for
@@ -779,10 +783,16 @@ minutes gives the music back anyway. An announcement that is late by more
 than two minutes does not play, so a machine that was off does not play an
 old message when it returns.
 
-The play time is written down, which keeps one time from playing twice, and
-the position of a cycle is written down with it, so a restart does not repeat
-the same file. The Play button in the UI plays an announcement at once to
-hear it, and does not take the place of the next play.
+The play time is written down before the file plays. That keeps one time
+from playing twice. The position of a cycle is written down with it, so a
+restart does not repeat the same file. The Play button in the UI plays an
+announcement at once to hear it. It does not take the place of the next
+play.
+
+An announcement plays only while music plays and the clock is correct. It
+interrupts the music, so there must be music to interrupt, and a wrong clock
+would play it at the wrong time of the day. One announcement plays at a
+time.
 
 ### Switching the scheduler off
 

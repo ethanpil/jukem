@@ -3,7 +3,7 @@
 // lists them and holds the editor.
 
 import * as A from './api.js';
-import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox } from './dom.js';
+import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox, dotsMenu, menuItem, menuDivider, problemMessage } from './dom.js';
 import { libraryPicker, fail, baseOf } from './fileops.js';
 
 // The week starts on Sunday, as everywhere else. The bits are the API's:
@@ -39,10 +39,15 @@ export function announcementsPanel() {
     h('div.tools', h('button.btn.btn-sm.btn-outline-secondary', { type: 'button', onclick: () => editor(null) }, icon('plus-lg'), 'Add announcement')));
   const el = h('div.panel.clip', head, body);
 
-  async function load() {
-    clear(body).append(spinner());
+  let gen = 0;
+  let destroyed = false;
+  async function load(showSpinner = true) {
+    const mine = ++gen;
+    if (showSpinner && !body.firstChild) body.append(spinner());
     let list;
-    try { list = (await A.api.get('/announcements')).announcements; } catch (e) { clear(body).append(h('div.panel-body', errorBox(e))); return; }
+    try { list = (await A.api.get('/announcements')).announcements; } catch (e) { if (mine === gen) clear(body).append(h('div.panel-body', errorBox(e))); return; }
+    // Only the newest answer draws, and a panel that is gone draws nothing.
+    if (mine !== gen || destroyed) return;
     clear(body);
     if (!list.length) {
       body.append(h('div.panel-empty', 'No announcements. Add one to play a message, an offer or an advertisement between the music.'));
@@ -51,19 +56,34 @@ export function announcementsPanel() {
     const rows = h('div.rows');
     for (const a of list) {
       const sw = h('input.form-check-input', { type: 'checkbox', role: 'switch', checked: a.enabled, 'aria-label': `Enable ${a.name}`, onchange: async () => {
-        try { await A.api.put(`/announcements/${a.id}`, { ...a, enabled: sw.checked }); } catch (err) { sw.checked = !sw.checked; fail(err); }
+        const want = sw.checked;
+        try {
+          await A.api.put(`/announcements/${a.id}`, { ...a, enabled: want });
+          a.enabled = want;
+        } catch (err) { sw.checked = !want; fail(err); }
       } });
       rows.append(h('div.row-item.tall',
         h('div.form-check.form-switch.switch-only', sw),
         h('div.row-main', h('div.row-title.fw-semibold', a.name), h('div.row-sub.text-wrap', summary(a))),
-        h('button.btn.btn-outline-secondary.btn-icon', { type: 'button', 'aria-label': `Play ${a.name} now`, title: 'Play it now. The music continues afterwards.', onclick: () => playNow(a) }, icon('megaphone')),
-        h('button.btn.btn-outline-secondary.btn-icon', { type: 'button', 'aria-label': `Edit ${a.name}`, title: 'Edit', onclick: () => editor(a) }, icon('pencil')),
-        h('button.btn.btn-outline-danger.btn-icon', { type: 'button', 'aria-label': `Delete ${a.name}`, title: 'Delete', onclick: async () => {
-          if (!await confirmDialog({ title: 'Delete announcement', body: `Delete "${a.name}"?`, confirmText: 'Delete', danger: true })) return;
-          try { await A.api.del(`/announcements/${a.id}`); load(); } catch (err) { fail(err); }
-        } }, icon('trash'))));
+        h('div.row-actions.only-desktop',
+          h('button.btn.btn-outline-secondary.btn-icon', { type: 'button', 'aria-label': `Play ${a.name} now`, title: 'Play it now. The music continues afterwards.', onclick: () => playNow(a) }, icon('megaphone')),
+          h('button.btn.btn-outline-secondary.btn-icon', { type: 'button', 'aria-label': `Edit ${a.name}`, title: 'Edit', onclick: () => editor(a) }, icon('pencil')),
+          h('button.btn.btn-outline-danger.btn-icon', { type: 'button', 'aria-label': `Delete ${a.name}`, title: 'Delete', onclick: () => remove(a) }, icon('trash'))),
+        // A phone has no room for three buttons beside the text.
+        dotsMenu(`Actions for ${a.name}`, [
+          h('li', h('h6.dropdown-header', a.name)),
+          menuItem('megaphone', 'Play it now', () => playNow(a)),
+          menuItem('pencil', 'Edit', () => editor(a)),
+          menuDivider(),
+          menuItem('trash', 'Delete', () => remove(a), 'text-danger'),
+        ], 'btn-ghost s34 only-mobile')));
     }
     body.append(rows);
+  }
+
+  async function remove(a) {
+    if (!await confirmDialog({ title: 'Delete announcement', body: `Delete "${a.name}"?`, confirmText: 'Delete', danger: true })) return;
+    try { await A.api.del(`/announcements/${a.id}`); load(false); } catch (err) { fail(err); }
   }
 
   async function playNow(a) {
@@ -84,10 +104,10 @@ export function announcementsPanel() {
     const mode = h('select.form-select',
       h('option', { value: 'at', selected: init.mode !== 'every' }, 'Once a day, at a time'),
       h('option', { value: 'every', selected: init.mode === 'every' }, 'Again and again, between two times'));
-    const atTime = h('input.form-control', { type: 'time', value: init.at_time || '10:15' });
-    const startTime = h('input.form-control', { type: 'time', value: init.start_time || '09:00' });
-    const endTime = h('input.form-control', { type: 'time', value: init.end_time || '17:00' });
-    const every = h('input.form-control', { type: 'number', min: 1, max: 1440, value: init.every_minutes ?? 30 });
+    const atTime = h('input.form-control', { type: 'time', value: init.at_time || '10:15', required: true });
+    const startTime = h('input.form-control', { type: 'time', value: init.start_time || '09:00', required: true });
+    const endTime = h('input.form-control', { type: 'time', value: init.end_time || '17:00', required: true });
+    const every = h('input.form-control', { type: 'number', min: 1, max: 1440, value: init.every_minutes ?? 30, required: true });
     const atRow = h('div.mt-2', h('label.form-label', 'Time'), atTime);
     const everyRow = h('div.row.g-2.mt-2',
       h('div.col-4', h('label.form-label', 'From'), startTime),
@@ -100,7 +120,7 @@ export function announcementsPanel() {
     const ref = h('input.form-control.mono', { type: 'text', value: init.source_ref || '', placeholder: 'announcements/closing.mp3', 'aria-label': 'File or folder' });
     const browse = h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => {
       if (kind.value === 'file') {
-        libraryPicker({ title: 'Choose the file', files: true, onPick: (files) => { if (files.length) ref.value = files[0]; } });
+        libraryPicker({ title: 'Choose the file', files: true, single: true, onPick: (files) => { if (files.length) ref.value = files[0]; } });
       } else {
         libraryPicker({ title: 'Choose the folder', start: ref.value, onPick: (p) => { ref.value = p; } });
       }
@@ -113,8 +133,13 @@ export function announcementsPanel() {
     useVol.addEventListener('change', () => { vol.disabled = !useVol.checked; });
 
     const sync = () => {
-      atRow.classList.toggle('hidden', mode.value !== 'at');
-      everyRow.classList.toggle('hidden', mode.value !== 'every');
+      const at = mode.value === 'at';
+      atRow.classList.toggle('hidden', !at);
+      everyRow.classList.toggle('hidden', at);
+      // A field that is hidden must not hold the form back, so it is
+      // switched off while it is out of the way.
+      atTime.disabled = !at;
+      for (const el of [startTime, endTime, every]) el.disabled = at;
       ref.placeholder = kind.value === 'file' ? 'announcements/closing.mp3' : 'announcements';
       kindNote.textContent = KINDS.find(([v]) => v === kind.value)[2];
     };
@@ -127,6 +152,7 @@ export function announcementsPanel() {
       e.preventDefault();
       const days = dayChecks.reduce((m, [c], i) => m | (c.checked ? DAYS[i][1] : 0), 0);
       if (!days) { err.textContent = 'Choose at least one day.'; return; }
+      if (mode.value === 'every' && endTime.value <= startTime.value) { err.textContent = 'The end must be after the start.'; return; }
       const value = ref.value.trim().replace(/^\/+|\/+$/g, '');
       if (kind.value === 'file' && !value) { err.textContent = 'Choose the file to play.'; return; }
       if (kind.value !== 'file' && !value) { err.textContent = 'Choose the folder to play from.'; return; }
@@ -142,7 +168,7 @@ export function announcementsPanel() {
         else await A.api.post('/announcements', body);
         dlg.hide();
         load();
-      } catch (ex) { err.textContent = ex.message; }
+      } catch (ex) { err.textContent = problemMessage(ex.problem, ex.message); }
     } },
       h('label.form-label', 'Name'), name,
       h('label.form-label.mt-3', 'Days'),
@@ -163,5 +189,10 @@ export function announcementsPanel() {
     });
   }
 
-  return { el, load, onEvent(type) { if (type === 'schedule') load(); }, destroy() {} };
+  return {
+    el,
+    load,
+    onEvent(type) { if (type === 'schedule') load(false); },
+    destroy() { destroyed = true; },
+  };
 }

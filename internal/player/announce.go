@@ -1,6 +1,7 @@
 package player
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/fhs/gompd/v2/mpd"
@@ -15,6 +16,9 @@ func (p *Player) InsertNext(file string) (int, error) {
 		attrs, err := c.Status()
 		if err != nil {
 			return err
+		}
+		if st := parseStatus(attrs); st.QueueLength >= MaxQueue {
+			return fmt.Errorf("the queue is full (%d entries)", st.QueueLength)
 		}
 		// A current entry exists while playing, paused, or stopped inside
 		// the queue. The insert goes after it, otherwise on top.

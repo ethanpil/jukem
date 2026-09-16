@@ -47,15 +47,17 @@ export async function rename(path, reload) {
 }
 
 // libraryPicker browses the library in a dialog. With files off it picks
-// a folder; with files on it picks tracks or a whole folder.
-export function libraryPicker({ title, start = '', files = false, onPick }) {
+// a folder; with files on it picks tracks or a whole folder. With single on
+// it takes one file, for a setting that holds one.
+export function libraryPicker({ title, start = '', files = false, single = false, onPick }) {
   let path = start;
   const selected = new Set();
   const crumb = h('div.mono.small.mb-2');
   const list = h('div.list-group');
   const count = h('span.text-body-secondary.small.me-auto');
-  const pickBtn = h('button.btn.btn-primary', { type: 'button', disabled: files, onclick: () => { dlg.hide(); onPick(files ? [...selected] : path); } }, files ? 'Add selected' : 'Choose this folder');
-  const folderBtn = files ? h('button.btn.btn-outline-primary', { type: 'button', onclick: async () => {
+  const pickBtn = single ? null
+    : h('button.btn.btn-primary', { type: 'button', disabled: files, onclick: () => { dlg.hide(); onPick(files ? [...selected] : path); } }, files ? 'Add selected' : 'Choose this folder');
+  const folderBtn = files && !single ? h('button.btn.btn-outline-primary', { type: 'button', onclick: async () => {
     try {
       const all = [];
       for (let page = 0; ; page++) {
@@ -67,7 +69,11 @@ export function libraryPicker({ title, start = '', files = false, onPick }) {
       onPick(all);
     } catch (e) { toast(e.message, 'danger'); }
   } }, 'Add all tracks here') : null;
-  function refreshCount() { if (files) { count.textContent = `${selected.size} selected`; pickBtn.disabled = !selected.size; } }
+  function refreshCount() {
+    if (!files || single) return;
+    count.textContent = `${selected.size} selected`;
+    pickBtn.disabled = !selected.size;
+  }
   let loadGen = 0;
   async function load() {
     const gen = ++loadGen;
@@ -90,6 +96,10 @@ export function libraryPicker({ title, start = '', files = false, onPick }) {
       for (const e of entries) {
         if (e.type === 'directory') {
           list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { path = e.path; load(); } }, icon('folder-fill', 'folder-icon'), e.name));
+        } else if (single) {
+          // One file: the tap picks it and closes the dialog.
+          list.append(h('button.list-group-item.list-group-item-action', { type: 'button', onclick: () => { dlg.hide(); onPick([e.path]); } },
+            icon('music-note-beamed'), e.title || e.name, h('span.small.ms-2.mono', fmtDuration(e.duration))));
         } else if (files) {
           const ic = icon(selected.has(e.path) ? 'check-square-fill' : 'square', 'me-2');
           list.append(h('button', { type: 'button', class: `list-group-item list-group-item-action ${selected.has(e.path) ? 'active' : ''}`, onclick: (ev) => {

@@ -66,6 +66,9 @@ type Scheduler struct {
 	kick      chan struct{}
 	suspended atomic.Int32
 
+	// tickMu is held while a tick runs, so Suspend can wait for it.
+	tickMu sync.Mutex
+
 	mu     sync.Mutex
 	ivs    []Interval
 	ivsAt  time.Time // zero when the cache is stale
@@ -121,6 +124,10 @@ func (s *Scheduler) Kick() {
 func (s *Scheduler) Suspend() func() {
 	s.suspended.Add(1)
 	s.cancelFade(nil)
+	// A tick that is already running holds tickMu. Waiting for it here
+	// means the loop cannot act after Suspend returns.
+	s.tickMu.Lock()
+	s.tickMu.Unlock() //nolint:staticcheck // the lock is a handshake, not a guard
 	return func() {
 		s.suspended.Add(-1)
 		s.Kick()
@@ -392,6 +399,10 @@ func (s *Scheduler) Loaded() Program {
 
 // Tick runs one reconciliation.
 func (s *Scheduler) Tick(ctx context.Context) {
+	// The lock is taken first, so a Suspend that waits for this tick knows
+	// the loop is done when it returns.
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
 	if s.suspended.Load() > 0 {
 		return
 	}

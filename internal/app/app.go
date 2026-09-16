@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"jukem/internal/api"
@@ -55,6 +56,11 @@ type App struct {
 	Alerter   *watchdog.Alerter
 	// Restart stops the service cleanly; the command sets it.
 	Restart func()
+
+	// announceMu lets one announcement play at a time, and announcing is
+	// true while it plays, so the play history skips it.
+	announceMu sync.Mutex
+	announcing atomic.Bool
 
 	mu               sync.Mutex
 	settings         store.Settings
@@ -155,7 +161,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TrustedProxies: cfg.TrustedProxies,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
-		Settings: a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.PlayAnnouncement,
+		Settings: a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.StartAnnouncement,
 		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart,
 	})
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"path"
 	"sort"
 	"strings"
 	"time"
@@ -25,7 +24,7 @@ import (
 const announceTick = 20 * time.Second
 
 // announceMax is the longest an announcement may hold the music.
-const announceMax = 10 * time.Minute
+const announceMax = 5 * time.Minute
 
 // runAnnouncements plays every announcement that becomes due.
 func (a *App) runAnnouncements(ctx context.Context) {
@@ -41,10 +40,26 @@ func (a *App) runAnnouncements(ctx context.Context) {
 	}
 }
 
+// announcementsWanted reports whether an announcement may play now. An
+// announcement plays instead of the music, so it needs music that plays and
+// a clock it can trust.
+func (a *App) announcementsWanted(ctx context.Context) bool {
+	if !a.MPD.Status().Running {
+		return false
+	}
+	if !a.Clock.Trusted(ctx) {
+		// A clock that is wrong plays the announcement at the wrong time of
+		// the day, which is worse than not playing it.
+		return false
+	}
+	st, err := a.Player.Status()
+	return err == nil && st.State == "play"
+}
+
 // playDueAnnouncements plays the announcements that are due now, one after
 // the other.
 func (a *App) playDueAnnouncements(ctx context.Context) {
-	if !a.MPD.Status().Running {
+	if !a.announcementsWanted(ctx) {
 		return
 	}
 	list, err := a.Store.ListAnnouncements(ctx)
@@ -62,21 +77,69 @@ func (a *App) playDueAnnouncements(ctx context.Context) {
 		}
 		if err := a.PlayAnnouncement(ctx, ann, due); err != nil {
 			a.log.Warn("announcement failed", "name", ann.Name, "error", err)
-			a.Alerter.Raise(ctx, "announcement", fmt.Sprintf("The announcement %q did not play.", ann.Name),
-				"Check the file in Schedule > Announcements.")
+			a.Alerter.Raise(ctx, announcementAlert(ann), fmt.Sprintf("The announcement %q did not play.", ann.Name),
+				"Check its file or folder in Schedule > Announcements.")
 		}
 	}
 }
 
-// PlayAnnouncement plays one announcement now and gives the music back.
-// The play time is recorded, so the same time does not play twice.
+// announcementAlert is the alert kind of one announcement, so two broken
+// announcements do not become one message.
+func announcementAlert(ann store.Announcement) string {
+	return fmt.Sprintf("announcement_%d", ann.ID)
+}
+
+// StartAnnouncement starts an announcement for a person who wants to hear
+// it now. It answers when the announcement starts: the file lasts as long
+// as it lasts, and the caller must not wait for it. A source that cannot
+// play is reported at once.
+func (a *App) StartAnnouncement(ctx context.Context, ann store.Announcement, due time.Time) error {
+	if !a.announcementsWanted(ctx) {
+		if !a.MPD.Status().Running {
+			return errors.New("MPD is not running")
+		}
+		if !a.Clock.Trusted(ctx) {
+			return errors.New("the clock is not set")
+		}
+		return errors.New("nothing is playing, so there is nothing to interrupt")
+	}
+	if _, _, err := a.announcementFile(ctx, ann); err != nil {
+		return err
+	}
+	free := context.WithoutCancel(ctx)
+	go func() {
+		if err := a.PlayAnnouncement(free, ann, due); err != nil {
+			a.log.Warn("the test play failed", "name", ann.Name, "error", err)
+		}
+	}()
+	return nil
+}
+
+// PlayAnnouncement plays one announcement and gives the music back. A zero
+// due time is a test from the UI: it moves a cycle on, but it does not take
+// the place of the next play of the schedule.
 func (a *App) PlayAnnouncement(ctx context.Context, ann store.Announcement, due time.Time) error {
+	// One announcement at a time. Two of them would each try to give the
+	// music back to the other one.
+	if !a.announceMu.TryLock() {
+		return errors.New("another announcement is playing")
+	}
+	defer a.announceMu.Unlock()
+
 	file, next, err := a.announcementFile(ctx, ann)
 	if err != nil {
 		return err
 	}
+	// The play is written down before it happens. A record that fails after
+	// the play would let the same time play again every twenty seconds.
+	if err := a.markAnnouncement(ctx, ann, due, next); err != nil {
+		return err
+	}
+
 	release := a.Scheduler.Suspend()
 	defer release()
+	a.announcing.Store(true)
+	defer a.announcing.Store(false)
 
 	before, err := a.Player.Status()
 	if err != nil {
@@ -90,7 +153,9 @@ func (a *App) PlayAnnouncement(ctx context.Context, ann store.Announcement, due 
 	defer a.restoreAfterAnnouncement(before, id)
 
 	if ann.Volume != nil {
-		if err := a.Player.SetVolumeRaw(*ann.Volume); err != nil {
+		// The volume of an announcement keeps the floor and the ceiling of
+		// the settings, like every other volume a person sets.
+		if _, err := a.Player.SetVolume(*ann.Volume); err != nil {
 			a.log.Warn("cannot set the announcement volume", "error", err)
 		}
 	}
@@ -99,22 +164,21 @@ func (a *App) PlayAnnouncement(ctx context.Context, ann store.Announcement, due 
 	}
 	a.Events.Publish(events.Player, "")
 	a.waitForAnnouncement(ctx, id)
-
-	// A test play from the UI passes no due time: it moves the cycle on, but
-	// it does not take the place of the next play of the schedule.
-	played := due
-	if played.IsZero() {
-		if ann.LastPlayed != nil {
-			played = *ann.LastPlayed
-		} else {
-			played = time.Unix(0, 0).UTC()
-		}
-	}
-	if err := a.Store.MarkAnnouncementPlayed(ctx, ann.ID, played, next); err != nil {
-		a.log.Warn("cannot record the announcement", "error", err)
-	}
+	a.Alerter.Clear(ctx, announcementAlert(ann))
 	a.Events.Publish(events.Schedule, "")
 	return nil
+}
+
+// markAnnouncement writes the play time and the next position of a cycle.
+// The write does not follow the caller's context: a browser that goes away
+// must not leave the announcement due again.
+func (a *App) markAnnouncement(ctx context.Context, ann store.Announcement, due time.Time, next int) error {
+	free := context.WithoutCancel(ctx)
+	if due.IsZero() {
+		// A test play keeps the time of the schedule and moves the cycle.
+		return a.Store.SetAnnouncementCycle(free, ann.ID, next)
+	}
+	return a.Store.MarkAnnouncementPlayed(free, ann.ID, due, next)
 }
 
 // waitForAnnouncement returns when the entry is no longer the current one,
@@ -152,19 +216,32 @@ func (a *App) restoreAfterAnnouncement(before player.Status, id int) {
 			a.log.Warn("cannot put the volume back", "error", err)
 		}
 	}
-	if before.Song == nil {
+	if before.Song == nil || before.State == "stop" {
+		// Nothing played before, or it was stopped. It stays that way.
 		if err := a.Player.Stop(); err != nil {
 			a.log.Warn("cannot stop after the announcement", "error", err)
 		}
 		a.Events.Publish(events.Player, "")
 		return
 	}
-	if err := a.Player.PlayID(before.Song.ID); err != nil {
+	now, err := a.Player.Status()
+	if err == nil && now.Song != nil && now.Song.ID == before.Song.ID {
+		// The track is the current one again. To start it once more would
+		// play it from the beginning, and a stream would load again.
+		if now.State != "play" {
+			if err := a.Player.Play(); err != nil {
+				a.log.Warn("cannot start the music again", "error", err)
+			}
+		}
+	} else if err := a.Player.PlayID(before.Song.ID); err != nil {
+		// The entry is gone, or MPD started again. The reconciler puts the
+		// program back on its next tick.
 		a.log.Warn("cannot start the music again", "error", err)
 		a.Events.Publish(events.Player, "")
 		return
 	}
-	if before.Elapsed > 0 {
+	// A stream has no position to go back to, and MPD refuses the seek.
+	if before.Elapsed > 0 && !isStream(before.Song.File) {
 		if err := a.Player.Seek(before.Elapsed); err != nil {
 			a.log.Warn("cannot go back to the point in the track", "error", err)
 		}
@@ -177,15 +254,20 @@ func (a *App) restoreAfterAnnouncement(before player.Status, id int) {
 	a.Events.Publish(events.Player, "")
 }
 
+// isStream reports whether a queue entry is an address and not a file.
+func isStream(file string) bool {
+	return strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://")
+}
+
 // announcementFile chooses the file to play and the next position of a
 // cycle.
 func (a *App) announcementFile(ctx context.Context, ann store.Announcement) (string, int, error) {
 	ref := strings.Trim(ann.SourceRef, "/")
+	if ref == "" {
+		return "", 0, errors.New("the announcement has no file or folder")
+	}
 	switch ann.SourceKind {
 	case "file":
-		if ref == "" {
-			return "", 0, errors.New("the announcement has no file")
-		}
 		return ref, ann.CycleIndex, nil
 	case "random", "cycle":
 		files, err := a.Player.ListFiles(ref)
@@ -196,8 +278,8 @@ func (a *App) announcementFile(ctx context.Context, ann store.Announcement) (str
 		if len(files) == 0 {
 			return "", 0, fmt.Errorf("the folder %q holds no tracks", ann.SourceRef)
 		}
-		// The order of a cycle must not change when a file is added, so
-		// the files are sorted by name.
+		// The order of a cycle comes from the names, so it does not follow
+		// the order MPD gives.
 		sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i]) < strings.ToLower(files[j]) })
 		if ann.SourceKind == "random" {
 			return files[rand.IntN(len(files))], ann.CycleIndex, nil
@@ -211,7 +293,8 @@ func (a *App) announcementFile(ctx context.Context, ann store.Announcement) (str
 	return "", 0, fmt.Errorf("unknown announcement source %q", ann.SourceKind)
 }
 
-// withoutDoNotPlay drops the tracks that must never play.
+// withoutDoNotPlay drops the tracks that must never play. The list comes
+// from MPD and belongs to this call, so it is filtered in place.
 func (a *App) withoutDoNotPlay(ctx context.Context, files []string) []string {
 	dnp, err := a.Store.DoNotPlaySet(ctx)
 	if err != nil || len(dnp) == 0 {
@@ -224,13 +307,4 @@ func (a *App) withoutDoNotPlay(ctx context.Context, files []string) []string {
 		}
 	}
 	return kept
-}
-
-// AnnouncementSourceName is the file or folder an announcement plays, for a
-// message to a person.
-func AnnouncementSourceName(ann store.Announcement) string {
-	if ann.SourceKind == "file" {
-		return path.Base(ann.SourceRef)
-	}
-	return ann.SourceRef
 }

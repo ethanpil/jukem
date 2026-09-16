@@ -111,13 +111,15 @@ func (s *Store) CreateAnnouncement(ctx context.Context, a Announcement) (Announc
 	return a, err
 }
 
-// UpdateAnnouncement replaces one. The cycle position and the last play
-// stay as they are.
+// UpdateAnnouncement replaces one. The last play stays as it is. The cycle
+// starts again when the source changed, because its position counts files
+// of the old folder.
 func (s *Store) UpdateAnnouncement(ctx context.Context, a Announcement) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE announcements SET name = ?, enabled = ?, days = ?, mode = ?, at_time = ?,
-		start_time = ?, end_time = ?, every_minutes = ?, source_kind = ?, source_ref = ?, volume = ? WHERE id = ?`,
+		start_time = ?, end_time = ?, every_minutes = ?, source_kind = ?, source_ref = ?, volume = ?,
+		cycle_index = CASE WHEN source_kind = ? AND source_ref = ? THEN cycle_index ELSE 0 END WHERE id = ?`,
 		a.Name, a.Enabled, a.Days, a.Mode, nullString(a.AtTime), nullString(a.StartTime), nullString(a.EndTime),
-		nullInt(a.EveryMinutes), a.SourceKind, a.SourceRef, nullInt(a.Volume), a.ID)
+		nullInt(a.EveryMinutes), a.SourceKind, a.SourceRef, nullInt(a.Volume), a.SourceKind, a.SourceRef, a.ID)
 	return err
 }
 
@@ -132,6 +134,13 @@ func (s *Store) DeleteAnnouncement(ctx context.Context, id int64) error {
 func (s *Store) MarkAnnouncementPlayed(ctx context.Context, id int64, at time.Time, cycleIndex int) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE announcements SET last_played = ?, cycle_index = ? WHERE id = ?`,
 		format(at.UTC()), cycleIndex, id)
+	return err
+}
+
+// SetAnnouncementCycle moves a cycle on without a play time, for a test
+// play from the UI.
+func (s *Store) SetAnnouncementCycle(ctx context.Context, id int64, cycleIndex int) error {
+	_, err := s.w.ExecContext(ctx, `UPDATE announcements SET cycle_index = ? WHERE id = ?`, cycleIndex, id)
 	return err
 }
 

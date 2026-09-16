@@ -65,8 +65,9 @@ type Options struct {
 	Settings       func() store.Settings
 	UpdateSettings func(ctx context.Context, set store.Settings) error
 
-	// PlayAnnouncement plays one announcement at once, for a test from the
-	// UI. A zero due time does not change the schedule of the announcement.
+	// PlayAnnouncement starts one announcement for a test from the UI. It
+	// answers when the announcement starts, not when it ends. A zero due
+	// time does not change the schedule of the announcement.
 	PlayAnnouncement func(ctx context.Context, a store.Announcement, due time.Time) error
 
 	// Alerter records and dismisses alerts. The functions below are the

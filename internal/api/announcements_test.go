@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// signIn creates the first password and returns a client that carries the
-// session and the CSRF token.
-func signIn(t *testing.T, base string) *client {
+// firstUser creates the first password and returns a client that carries
+// the session and the CSRF token.
+func firstUser(t *testing.T, base string) *client {
 	t.Helper()
 	c := &client{t: t, base: base}
 	if resp, out := c.do("POST", "/api/v1/auth/setup", map[string]string{"password": "correct horse"}); resp.StatusCode != 201 {
@@ -18,7 +18,7 @@ func signIn(t *testing.T, base string) *client {
 
 func TestAnnouncementsCRUD(t *testing.T) {
 	ts := newTestServer(t)
-	c := signIn(t, ts.URL)
+	c := firstUser(t, ts.URL)
 
 	resp, out := c.do("GET", "/api/v1/announcements", nil)
 	if resp.StatusCode != 200 {
@@ -85,15 +85,16 @@ func TestAnnouncementsCRUD(t *testing.T) {
 
 func TestAnnouncementsValidation(t *testing.T) {
 	ts := newTestServer(t)
-	c := signIn(t, ts.URL)
+	c := firstUser(t, ts.URL)
 
 	for name, body := range map[string]map[string]any{
-		"no name":          {"name": "  ", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "a.mp3"},
-		"at without time":  {"name": "a", "days": 1, "mode": "at", "source_kind": "file", "source_ref": "a.mp3"},
-		"every without":    {"name": "a", "days": 1, "mode": "every", "start_time": "09:00", "source_kind": "file", "source_ref": "a.mp3"},
-		"end before start": {"name": "a", "days": 1, "mode": "every", "start_time": "17:00", "end_time": "09:00", "every_minutes": 30, "source_kind": "file", "source_ref": "a.mp3"},
-		"file without ref": {"name": "a", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": ""},
-		"path escape":      {"name": "a", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "../secrets.mp3"},
+		"no name":            {"name": "  ", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "a.mp3"},
+		"at without time":    {"name": "a", "days": 1, "mode": "at", "source_kind": "file", "source_ref": "a.mp3"},
+		"every without":      {"name": "a", "days": 1, "mode": "every", "start_time": "09:00", "source_kind": "file", "source_ref": "a.mp3"},
+		"end before start":   {"name": "a", "days": 1, "mode": "every", "start_time": "17:00", "end_time": "09:00", "every_minutes": 30, "source_kind": "file", "source_ref": "a.mp3"},
+		"file without ref":   {"name": "a", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": ""},
+		"folder without ref": {"name": "a", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "random", "source_ref": ""},
+		"path escape":        {"name": "a", "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "../secrets.mp3"},
 	} {
 		if resp, out := c.do("POST", "/api/v1/announcements", body); resp.StatusCode != 422 {
 			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
@@ -110,5 +111,46 @@ func TestAnnouncementsValidation(t *testing.T) {
 		if resp, out := c.do("POST", "/api/v1/announcements", body); resp.StatusCode != 422 {
 			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
 		}
+	}
+}
+
+// The announcements are behind the login, like every other setting, and a
+// state change needs the CSRF header.
+func TestAnnouncementsNeedAuth(t *testing.T) {
+	ts := newTestServer(t)
+	anon := &client{t: t, base: ts.URL}
+	if resp, _ := anon.do("GET", "/api/v1/announcements", nil); resp.StatusCode != 401 {
+		t.Fatalf("list without a session: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.do("POST", "/api/v1/announcements", map[string]any{"name": "a"}); resp.StatusCode != 401 {
+		t.Fatalf("create without a session: %d", resp.StatusCode)
+	}
+
+	c := firstUser(t, ts.URL)
+	saved := c.csrf
+	c.csrf = ""
+	body := map[string]any{"name": "a", "enabled": true, "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "a.mp3"}
+	if resp, _ := c.do("POST", "/api/v1/announcements", body); resp.StatusCode != 403 {
+		t.Fatalf("create without the CSRF header: %d", resp.StatusCode)
+	}
+	c.csrf = saved
+	if resp, _ := c.do("POST", "/api/v1/announcements", body); resp.StatusCode != 201 {
+		t.Fatalf("create with the header: %d", resp.StatusCode)
+	}
+}
+
+// The play route exists only when the application can play.
+func TestAnnouncementPlayNeedsThePlayer(t *testing.T) {
+	ts := newTestServer(t)
+	c := firstUser(t, ts.URL)
+	body := map[string]any{"name": "a", "enabled": true, "days": 1, "mode": "at", "at_time": "10:15", "source_kind": "file", "source_ref": "a.mp3"}
+	resp, out := c.do("POST", "/api/v1/announcements", body)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	id := int(out["id"].(float64))
+	// This server has no player, so the route is not registered at all.
+	if resp, _ := c.do("POST", "/api/v1/announcements/"+strconv.Itoa(id)+"/play", nil); resp.StatusCode != 404 {
+		t.Fatalf("play without a player: %d", resp.StatusCode)
 	}
 }

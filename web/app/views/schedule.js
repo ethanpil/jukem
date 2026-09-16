@@ -2,6 +2,7 @@ import * as A from '../api.js';
 import { h, clear, icon, confirmDialog, modal, spinner, errorBox } from '../dom.js';
 import { libraryPicker, fail } from '../fileops.js';
 import { automationCard } from '../automation.js';
+import { announcementsPanel } from '../announcements.js';
 
 // The week starts on Sunday. The bits are the API's: Monday is 1, Sunday is 64.
 const DAYS = [['Sun', 64], ['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri', 16], ['Sat', 32]];
@@ -15,6 +16,7 @@ export async function scheduleView(main) {
   // The status card says whether the scheduler runs, and what it plays now.
   // It is made when the zone is known, so it asks for no settings of its own.
   let status = null;
+  const announcements = announcementsPanel();
   const weekBox = h('div.panel.panel-pad');
   const rulesBox = h('div.panel.clip');
   const excBox = h('div.panel.clip');
@@ -35,8 +37,8 @@ export async function scheduleView(main) {
     clear(box).append(
       h('div.page-head', h('h1.page-title', 'Schedule'),
         h('div.tools', h('button.btn.btn-primary.raised', { type: 'button', onclick: () => ruleEditor(null) }, icon('plus-lg'), 'New rule'))),
-      h('div.stack', status.el, weekBox, rulesBox, excBox));
-    await Promise.all([loadWeek(), loadRules(), loadExceptions()]);
+      h('div.stack', status.el, weekBox, rulesBox, excBox, announcements.el));
+    await Promise.all([loadWeek(), loadRules(), loadExceptions(), announcements.load()]);
   }
 
   // localDate gives the YYYY-MM-DD of an instant in the configured zone.
@@ -311,8 +313,9 @@ export async function scheduleView(main) {
   return {
     onEvent(type) {
       status?.onEvent(type);
+      announcements.onEvent(type);
       if (type === 'schedule' || type === 'settings') { loadWeek(); loadRules(); loadExceptions(); }
     },
-    destroy() { status?.destroy(); },
+    destroy() { status?.destroy(); announcements.destroy(); },
   };
 }

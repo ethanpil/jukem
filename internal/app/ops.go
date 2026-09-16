@@ -37,6 +37,12 @@ func (a *App) watchMPD(ctx context.Context) {
 				if err != nil || st.Song == nil {
 					continue
 				}
+				// An announcement is not a track of the program: it must
+				// not go into the play history, and it must not become the
+				// track the reconciler thinks is playing.
+				if a.announcing.Load() {
+					continue
+				}
 				a.Player.NoteSong(st)
 				a.Scheduler.Kick()
 				key := fmt.Sprintf("%d/%d/%s", a.MPD.Status().PID, st.Song.ID, st.Song.File)

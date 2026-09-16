@@ -49,8 +49,13 @@ func validateAnnouncement(a store.Announcement) (store.Announcement, error) {
 	if err != nil {
 		return a, huma.Error422UnprocessableEntity("the source path is not allowed")
 	}
-	if clean == "" && a.SourceKind == "file" {
-		return a, huma.Error422UnprocessableEntity("choose the file to play")
+	if clean == "" {
+		if a.SourceKind == "file" {
+			return a, huma.Error422UnprocessableEntity("choose the file to play")
+		}
+		// An empty folder reference is the whole library, which is not an
+		// announcement.
+		return a, huma.Error422UnprocessableEntity("choose the folder to play from")
 	}
 	a.SourceRef = clean
 	return a, nil
@@ -151,9 +156,9 @@ func (s *Server) registerAnnouncements(api huma.API) {
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "play-announcement", Method: http.MethodPost, Path: "/announcements/{id}/play", Tags: []string{"schedule"},
-		Summary: "Play an announcement now",
-		Description: "Plays the announcement at once, to hear it. The music continues afterwards at the point it stopped. " +
-			"The play time of the schedule is not changed.",
+		Summary: "Play an announcement now", DefaultStatus: http.StatusAccepted,
+		Description: "Starts the announcement, to hear it. The music continues afterwards at the point it stopped. " +
+			"The answer comes before the announcement ends, and the play time of the schedule is not changed.",
 	}, func(ctx context.Context, in *idInput) (*struct{}, error) {
 		a, ok, err := s.store.GetAnnouncement(ctx, in.ID)
 		if err != nil {
@@ -162,8 +167,9 @@ func (s *Server) registerAnnouncements(api huma.API) {
 		if !ok {
 			return nil, huma.Error404NotFound("no such announcement")
 		}
-		// A test play keeps the schedule of the announcement as it is, so
-		// the next real play still happens.
+		// The call answers when the announcement starts. A request that
+		// waited for the end would hold a connection for minutes, and a
+		// browser that goes away would stop the music in the middle.
 		if err := s.opts.PlayAnnouncement(ctx, a, time.Time{}); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
