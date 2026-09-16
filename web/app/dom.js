@@ -41,7 +41,21 @@ function append(el, children) {
 // menu that places itself against the window, and not against the card, is
 // not cut off by it. Bootstrap makes the menu objects itself, so the rule
 // belongs with its defaults.
-bootstrap.Dropdown.Default.popperConfig = (config) => ({ ...config, strategy: 'fixed' });
+// The now-playing bar and the tab bar cover the lower part of the window,
+// so a menu keeps clear of them and turns upwards when it does not fit.
+const menuGap = () => {
+  const bars = matchMedia('(max-width: 900px)').matches ? 64 + 56 : 64;
+  return { top: 70, bottom: bars + 12, left: 8, right: 8 };
+};
+bootstrap.Dropdown.Default.popperConfig = (config) => ({
+  ...config,
+  strategy: 'fixed',
+  modifiers: [
+    ...(config.modifiers || []),
+    { name: 'flip', options: { padding: menuGap() } },
+    { name: 'preventOverflow', options: { padding: menuGap() } },
+  ],
+});
 
 // openMenu is the row menu that is open now, if there is one. A list can be
 // rebuilt while a menu in it is open, and Bootstrap keeps the listeners of a
