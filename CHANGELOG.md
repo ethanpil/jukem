@@ -7,6 +7,16 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- A changelog, a short readme with a guide beside it, and a workflow that
+  attaches an unsigned apk to each release (3d16f3d, f177274).
+
+### Fixed
+
+- A path test expected the Windows result on every system, so the tests
+  failed on Linux.
+
 ## [0.1.8] - 2026-09-16
 
 ### Changed

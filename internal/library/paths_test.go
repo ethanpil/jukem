@@ -3,6 +3,7 @@ package library
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,6 @@ func TestCleanRel(t *testing.T) {
 		"/":                      "",
 		"Rock/Band/01 Song.flac": "Rock/Band/01 Song.flac",
 		"Christmas/2026/":        "Christmas/2026",
-		"a\\b":                   "a/b",
 		"ünïcödé/naïve.mp3":      "ünïcödé/naïve.mp3",
 	}
 	for in, want := range good {
@@ -22,6 +22,16 @@ func TestCleanRel(t *testing.T) {
 			t.Errorf("CleanRel(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
+	// A backslash is a separator on Windows only. On the other systems it
+	// is a usual character in a name.
+	wantBack := "a\\b"
+	if runtime.GOOS == "windows" {
+		wantBack = "a/b"
+	}
+	if got, err := CleanRel("a\\b"); err != nil || got != wantBack {
+		t.Errorf("CleanRel(%q) = %q, %v; want %q", "a\\b", got, err, wantBack)
+	}
+
 	bad := []string{
 		"../x", "a/../b", "a/./b", "a//b", ".hidden/x.mp3", "a/.jukem-tmp/x", "/etc/passwd", "/Christmas",
 		"a\x00b", "a\nb", strings.Repeat("x", 256) + ".mp3", ".", "..",
