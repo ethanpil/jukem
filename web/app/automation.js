@@ -16,7 +16,7 @@ const STOPS = [
 
 // automationCard returns {el, destroy}. On the Schedule page it carries the
 // other title and names the rule that plays.
-export function automationCard({ title = 'Automation', playingLabel = 'Scheduled' } = {}) {
+export function automationCard({ title = 'Scheduler', playingLabel = 'Scheduled' } = {}) {
   const body = h('div.auto-body');
   const el = h('div.panel.clip', h('div.panel-head', h('h2.panel-title', title), h('span.auto-state')), body);
   let settings = null;
