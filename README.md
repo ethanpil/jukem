@@ -1,24 +1,29 @@
-# jukem
+<img width="459" height="163" alt="image" src="https://github.com/user-attachments/assets/58ded212-45e4-43b8-92e2-7c2e57dba6dc" />
 
-jukem is a jukebox for a shop, a bar or an office. It plays music on a
-weekly schedule through the sound hardware of its machine. A web page and a
-REST API control it. MPD plays the audio. jukem starts MPD and keeps it
-running.
+# JukeM
 
-Announcements play between the music: a message, an offer or an
-advertisement. The music fades out for them and fades in again.
+JukeM is a jukebox server designed for commercial spaces. It plays music 
+on schedule through the sound hardware of its machine. Control JukeM via 
+web page and/or included REST API. You can schedule local files or HTTP
+streams, as well as timed announcements that pause the music.
 
 ## System requirements
 
 - Alpine Linux 3.21 or later, on x86_64 or aarch64. Make the community
   repository available. The [guide](docs/guide.md) shows how to use Docker
   instead.
-- A sound card, a USB DAC, or an HDMI output.
-- 256 MB of memory, and 300 MB of disk for the program. The music needs
-  more.
-- A correct clock, because the schedule uses it. chrony keeps the clock
-  correct.
+- A sound card, a USB DAC, or an HDMI output. (Pass through on VM or Docker)
+- 256mb RAM, and 300mb Disk. (Plus the space for your library files)
+- An accurate clock on the server for scheduling
 - A web browser from 2023 or later, on a computer or on a telephone.
+
+## Basic Architecture
+
+The `jukem` package installs a binary that manages and monitors `mpd` on
+the server. JukeM monitors mpd to ensure everything is healthy. You control
+the JukeM instance via its web interface.
+
+JukeM is developed as a GoLang application, with help from LLMs.
 
 ## Installation
 
