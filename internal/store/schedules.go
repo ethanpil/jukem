@@ -27,8 +27,8 @@ type Schedule struct {
 	Days       int    `json:"days" minimum:"1" maximum:"127" doc:"Bit mask, Monday is 1, Sunday is 64. A day is the day the window starts."`
 	StartTime  string `json:"start_time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" doc:"Local wall-clock time HH:MM"`
 	EndTime    string `json:"end_time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" doc:"Local wall-clock time HH:MM. Earlier than the start means past midnight."`
-	SourceType string `json:"source_type" enum:"directory,playlist"`
-	SourceRef  string `json:"source_ref" doc:"A path under the music root, or a playlist id"`
+	SourceType string `json:"source_type" enum:"directory,playlist,stream"`
+	SourceRef  string `json:"source_ref" doc:"A path under the music root, a playlist id, or the address of a stream"`
 	Shuffle    bool   `json:"shuffle"`
 	Volume     *int   `json:"volume,omitempty" minimum:"0" maximum:"100" doc:"Applied at the window start, clamped to the limits"`
 }
@@ -40,7 +40,7 @@ type Exception struct {
 	Note       string  `json:"note,omitempty" maxLength:"200"`
 	StartTime  *string `json:"start_time,omitempty" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$"`
 	EndTime    *string `json:"end_time,omitempty" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$"`
-	SourceType *string `json:"source_type,omitempty" enum:"directory,playlist"`
+	SourceType *string `json:"source_type,omitempty" enum:"directory,playlist,stream"`
 	SourceRef  *string `json:"source_ref,omitempty"`
 	Shuffle    *bool   `json:"shuffle,omitempty"`
 	Volume     *int    `json:"volume,omitempty" minimum:"0" maximum:"100"`

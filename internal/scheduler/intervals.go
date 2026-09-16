@@ -13,7 +13,7 @@ import (
 
 // Source is what an interval plays.
 type Source struct {
-	Type string `json:"type" enum:"directory,playlist"`
+	Type string `json:"type" enum:"directory,playlist,stream"`
 	Ref  string `json:"ref"`
 }
 

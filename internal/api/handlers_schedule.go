@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +38,20 @@ func (s *Server) validateSource(ctx context.Context, typ, ref string) (string, e
 			return "", huma.Error422UnprocessableEntity("no such playlist")
 		}
 		return strconv.FormatInt(id, 10), nil
+	case "stream":
+		ref = strings.TrimSpace(ref)
+		u, err := url.Parse(ref)
+		if err != nil || u.Host == "" {
+			return "", huma.Error422UnprocessableEntity("the stream address is not an address")
+		}
+		switch u.Scheme {
+		case "http", "https":
+		default:
+			return "", huma.Error422UnprocessableEntity("the stream address must start with http:// or https://")
+		}
+		return ref, nil
 	}
-	return "", huma.Error422UnprocessableEntity("source_type must be directory or playlist")
+	return "", huma.Error422UnprocessableEntity("source_type must be directory, playlist or stream")
 }
 
 func (s *Server) loc() *time.Location {
@@ -91,6 +104,11 @@ func (s *Server) saveRule(ctx context.Context, r store.Schedule) (*struct{ Body 
 		return nil, err
 	}
 	r.SourceRef = ref
+	// A stream is one address that plays until the window ends, so there is
+	// nothing to shuffle.
+	if r.SourceType == "stream" {
+		r.Shuffle = false
+	}
 	if err := s.checkConflicts(ctx, r); err != nil {
 		return nil, err
 	}

@@ -13,7 +13,8 @@ export async function scheduleView(main) {
   const box = h('section.page.page-wide', spinner());
   main.append(box);
   // The status card says whether the scheduler runs, and what it plays now.
-  const status = automationCard({ title: 'Scheduler Status', playingLabel: 'Currently Playing' });
+  // It is made when the zone is known, so it asks for no settings of its own.
+  let status = null;
   const weekBox = h('div.panel.panel-pad');
   const rulesBox = h('div.panel.clip');
   const excBox = h('div.panel.clip');
@@ -30,6 +31,7 @@ export async function scheduleView(main) {
       tz = set.time_zone;
       defaultShuffle = set.default_shuffle;
     } catch { /* the zone arrives with the intervals */ }
+    status = automationCard({ title: 'Scheduler Status', playingLabel: 'Currently Playing', timeZone: tz });
     clear(box).append(
       h('div.page-head', h('h1.page-title', 'Schedule'),
         h('div.tools', h('button.btn.btn-primary.raised', { type: 'button', onclick: () => ruleEditor(null) }, icon('plus-lg'), 'New rule'))),
@@ -127,9 +129,10 @@ export async function scheduleView(main) {
       const sw = h('input.form-check-input', { type: 'checkbox', role: 'switch', checked: s.enabled, 'aria-label': `Enable ${s.name}`, onchange: async () => {
         try { await A.api.put(`/schedules/${s.id}`, { ...s, enabled: sw.checked }); } catch (err) { sw.checked = !sw.checked; fail(err); }
       } });
+      const summary = `${dayLabel(s.days)} · ${s.start_time}–${s.end_time}${s.end_time <= s.start_time ? ' (next day)' : ''} · ${sourceLabel(s)}${s.shuffle ? ' · shuffle' : ''}${s.volume != null ? ` · vol ${s.volume}` : ''}`;
       list.append(h('div.row-item.tall',
         h('div.form-check.form-switch.switch-only', sw),
-        h('div.row-main', h('div.row-title.fw-semibold', s.name), h('div.row-sub.text-wrap', `${dayLabel(s.days)} · ${s.start_time}–${s.end_time}${s.end_time <= s.start_time ? ' (next day)' : ''} · ${sourceLabel(s)}${s.shuffle ? ' · shuffle' : ''}${s.volume != null ? ` · vol ${s.volume}` : ''}`)),
+        h('div.row-main', h('div.row-title.fw-semibold', s.name), h('div.row-sub.text-wrap', { title: summary }, summary)),
         h('button.btn.btn-outline-secondary.btn-icon', { type: 'button', 'aria-label': `Edit ${s.name}`, title: 'Edit', onclick: () => ruleEditor(s) }, icon('pencil')),
         h('button.btn.btn-outline-danger.btn-icon', { type: 'button', 'aria-label': `Delete ${s.name}`, title: 'Delete', onclick: async () => {
           if (!await confirmDialog({ title: 'Delete rule', body: `Delete "${s.name}"?`, confirmText: 'Delete', danger: true })) return;
@@ -147,42 +150,59 @@ export async function scheduleView(main) {
   }
   function sourceLabel(s) {
     if (s.source_type === 'playlist') { const pl = playlists.find((p) => String(p.id) === String(s.source_ref)); return `playlist ${pl ? pl.name : '#' + s.source_ref}`; }
+    if (s.source_type === 'stream') return `stream ${s.source_ref}`;
     return `folder /${s.source_ref}`;
   }
 
   // sourceFields builds the shared source and options inputs.
   function sourceFields(init) {
-    const type = h('select.form-select', h('option', { value: 'directory', selected: init.source_type !== 'playlist' }, 'Folder'), h('option', { value: 'playlist', selected: init.source_type === 'playlist' }, 'Playlist'));
-    const dir = h('input.form-control.mono', { type: 'text', value: init.source_type === 'playlist' ? '' : (init.source_ref || ''), placeholder: 'Whole library' });
+    const kind = init.source_type === 'playlist' || init.source_type === 'stream' ? init.source_type : 'directory';
+    const type = h('select.form-select',
+      h('option', { value: 'directory', selected: kind === 'directory' }, 'Folder'),
+      h('option', { value: 'playlist', selected: kind === 'playlist' }, 'Playlist'),
+      h('option', { value: 'stream', selected: kind === 'stream' }, 'Stream'));
+    const dir = h('input.form-control.mono', { type: 'text', value: kind === 'directory' ? (init.source_ref || '') : '', placeholder: 'Whole library' });
     const pick = h('button.btn.btn-outline-secondary', { type: 'button', onclick: () => libraryPicker({ title: 'Choose a folder', start: dir.value, onPick: (p) => { dir.value = p; } }) }, 'Browse…');
     const pl = h('select.form-select');
     for (const p of playlists) pl.append(h('option', { value: String(p.id), selected: String(p.id) === String(init.source_ref) }, p.name));
     if (!playlists.length) pl.append(h('option', { value: '' }, 'No playlists yet'));
+    const stream = h('input.form-control.mono', { type: 'url', value: kind === 'stream' ? (init.source_ref || '') : '', placeholder: 'https://stream.example.com/live.mp3', 'aria-label': 'Stream address' });
     const dirRow = h('div.input-row', dir, pick);
-    const sync = () => { dirRow.classList.toggle('hidden', type.value === 'playlist'); pl.classList.toggle('hidden', type.value !== 'playlist'); };
+    const shuffle = h('input', { type: 'checkbox', checked: !!init.shuffle });
+    // A stream is one address that plays until the window ends, so it has
+    // nothing to shuffle.
+    const shuffleLine = h('label.check-line', shuffle, 'Shuffle');
+    const sync = () => {
+      dirRow.classList.toggle('hidden', type.value !== 'directory');
+      pl.classList.toggle('hidden', type.value !== 'playlist');
+      stream.classList.toggle('hidden', type.value !== 'stream');
+      shuffleLine.classList.toggle('hidden', type.value === 'stream');
+    };
     type.addEventListener('change', sync);
     sync();
-    const shuffle = h('input', { type: 'checkbox', checked: !!init.shuffle });
     const useVol = h('input', { type: 'checkbox', checked: init.volume != null });
     const vol = h('input.form-range.mt-1', { type: 'range', min: 0, max: 100, value: init.volume ?? 60, disabled: init.volume == null, 'aria-label': 'Start volume' });
     const volLabel = h('span.mono', String(init.volume ?? 60));
     vol.addEventListener('input', () => { volLabel.textContent = vol.value; });
     useVol.addEventListener('change', () => { vol.disabled = !useVol.checked; });
     const el = [
-      h('label.form-label', 'Source'), h('div.row.g-2', h('div.col-sm-4', type), h('div.col-sm-8', dirRow, pl)),
-      h('label.check-line', shuffle, 'Shuffle'),
+      h('label.form-label', 'Source'), h('div.row.g-2', h('div.col-sm-4', type), h('div.col-sm-8', dirRow, pl, stream)),
+      shuffleLine,
       h('label.check-line', useVol, 'Set volume at the start:', volLabel),
       vol,
     ];
     // value returns the source, or an error message when it is incomplete.
     const value = () => {
+      const ref = { playlist: () => pl.value, stream: () => stream.value.trim() }[type.value]
+        || (() => dir.value.trim().replace(/^\/+|\/+$/g, ''));
       const v = {
         source_type: type.value,
-        source_ref: type.value === 'playlist' ? pl.value : dir.value.trim().replace(/^\/+|\/+$/g, ''),
-        shuffle: shuffle.checked,
+        source_ref: ref(),
+        shuffle: type.value === 'stream' ? false : shuffle.checked,
         volume: useVol.checked ? Number(vol.value) : null,
       };
       if (v.source_type === 'playlist' && !v.source_ref) return { error: 'Choose a playlist.' };
+      if (v.source_type === 'stream' && !/^https?:\/\/.+/.test(v.source_ref)) return { error: 'Give the stream address, starting with http:// or https://' };
       return v;
     };
     return { el, value };
@@ -290,9 +310,9 @@ export async function scheduleView(main) {
   await loadAll();
   return {
     onEvent(type) {
-      status.onEvent(type);
+      status?.onEvent(type);
       if (type === 'schedule' || type === 'settings') { loadWeek(); loadRules(); loadExceptions(); }
     },
-    destroy() { status.destroy(); },
+    destroy() { status?.destroy(); },
   };
 }

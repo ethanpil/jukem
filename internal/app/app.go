@@ -149,12 +149,13 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.Scheduler.Run(ctx)
 	go a.runWatchdog(ctx)
 	go a.runNightly(ctx)
+	go a.runAnnouncements(ctx)
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TrustedProxies: cfg.TrustedProxies,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
-		Settings: a.Settings, UpdateSettings: a.UpdateSettings,
+		Settings: a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.PlayAnnouncement,
 		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart,
 	})
 	if err != nil {

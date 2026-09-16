@@ -65,6 +65,10 @@ type Options struct {
 	Settings       func() store.Settings
 	UpdateSettings func(ctx context.Context, set store.Settings) error
 
+	// PlayAnnouncement plays one announcement at once, for a test from the
+	// UI. A zero due time does not change the schedule of the announcement.
+	PlayAnnouncement func(ctx context.Context, a store.Announcement, due time.Time) error
+
 	// Alerter records and dismisses alerts. The functions below are the
 	// maintenance operations of the running application.
 	Alerter  *watchdog.Alerter
@@ -123,6 +127,8 @@ func New(opts Options) (*Server, error) {
 	if opts.Scheduler != nil {
 		s.registerSchedule(hapi)
 	}
+	// The announcements need only the store; the test play needs the app.
+	s.registerAnnouncements(hapi)
 	if opts.Alerter != nil {
 		s.registerSystemOps(hapi)
 	}

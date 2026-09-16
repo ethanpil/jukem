@@ -757,6 +757,33 @@ No override outlasts the next scheduled event, so the appliance can't be left si
 
 Overrides are stored with their source (the web UI, or an API key's name) and their *mode*, not a fixed end instant. "Until next scheduled event" is resolved against the current intervals every time the reconciler runs, so editing the rules while an override is active changes when it ends, as it should. A timed override stores its duration's end instant and still ends early at the next event. A pause survives a reboot until it expires.
 
+### Streams
+
+A rule can play a stream instead of files. The source type `stream` holds
+one address, which MPD plays like a file; the window ends it. A stream has
+nothing to shuffle, so the option is hidden and the server clears it. The
+do-not-play list does not apply to a stream.
+
+### Announcements
+
+An announcement is one file that plays instead of the music: a message for
+customers, an offer, an advertisement. Each one has its own days and either
+a time of day, or a window with a number of minutes between plays. What
+plays is one file, any file of a folder, or the files of a folder in turn.
+
+The reconciler is held while an announcement plays, so it cannot put the
+program back. jukem remembers the track and the position, puts the
+announcement directly after the current entry, plays it, and then starts the
+track again at the point it stopped. A play that takes longer than ten
+minutes gives the music back anyway. An announcement that is late by more
+than two minutes does not play, so a machine that was off does not play an
+old message when it returns.
+
+The play time is written down, which keeps one time from playing twice, and
+the position of a cycle is written down with it, so a restart does not repeat
+the same file. The Play button in the UI plays an announcement at once to
+hear it, and does not take the place of the next play.
+
 ### Switching the scheduler off
 
 Settings > Schedule has an on/off switch that puts the appliance in `MANUAL`, and the scheduler card has the same switch as Permanent Stop and Enable Scheduler: the reconciler does nothing, any active override is cleared, transport and queue actions work without creating overrides, and the watchdog raises no dead-air alerts. It survives reboots, and since MPD restores its state paused, a rebooted appliance in manual mode stays silent until someone presses play. Switching it back on applies the current schedule immediately.
@@ -924,7 +951,7 @@ Reordering works by dragging, with Move up, Move down, and Move to... in every r
 | Now Playing | Scheduler card, track and source, transport, volume, paged queue with remove and reorder, do-not-play button |
 | Library | Breadcrumb, search, folders and tracks, row menu (Play Now, Play Next, Add to Queue, add to playlist, rename, move, delete), select mode, New folder, Upload, permission warnings |
 | Playlists | List with the three queue actions per playlist, detail view with reorder, add tracks from a library picker, missing-file warnings |
-| Schedule | Scheduler Status card, week view of the expanded intervals, rule list with enable switches, rule editor in a modal, exceptions calendar |
+| Schedule | Scheduler Status card, week view of the expanded intervals, rule list with enable switches, rule editor in a modal, exceptions calendar, announcements |
 | Settings | Seven sections, below |
 | Health | Plain-language system status. Not a sixth tab: tapping the owner badge opens it, and it's linked from Settings > System. Requires login. |
 

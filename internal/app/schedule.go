@@ -24,6 +24,10 @@ func (a *App) resolveProgram(ctx context.Context, src scheduler.Source) ([]strin
 	switch src.Type {
 	case "directory":
 		files, err = a.Player.ListFiles(strings.Trim(src.Ref, "/"))
+	case "stream":
+		// MPD plays an address the same way it plays a file. A stream has
+		// no end, so the window itself ends it.
+		return []string{src.Ref}, false, nil
 	case "playlist":
 		id, perr := strconv.ParseInt(src.Ref, 10, 64)
 		if perr != nil {
