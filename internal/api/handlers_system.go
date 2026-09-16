@@ -155,14 +155,14 @@ func (s *Server) registerUpdate(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-update", Method: http.MethodGet, Path: "/system/update", Tags: []string{"system"},
 		Summary: "Result of the last check for a new release",
-	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Status }, error) {
-		return &struct{ Body update.Status }{Body: s.opts.UpdateStatus(ctx)}, nil
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Result }, error) {
+		return &struct{ Body update.Result }{Body: s.opts.UpdateStatus(ctx)}, nil
 	})
 
 	huma.Register(api, huma.Operation{
 		OperationID: "check-update", Method: http.MethodPost, Path: "/system/update/check", Tags: []string{"system"},
 		Summary: "Ask GitHub now whether a newer release exists",
-	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Status }, error) {
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Result }, error) {
 		if _, err := webSession(ctx); err != nil {
 			return nil, err
 		}
@@ -170,7 +170,7 @@ func (s *Server) registerUpdate(api huma.API) {
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
 		}
-		return &struct{ Body update.Status }{Body: st}, nil
+		return &struct{ Body update.Result }{Body: st}, nil
 	})
 
 }

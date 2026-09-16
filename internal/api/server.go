@@ -63,8 +63,8 @@ type Options struct {
 	SelectOutput func(ctx context.Context, id *audio.Identity) error
 	// UpdateStatus reports the last check for a new release, and
 	// CheckUpdate asks GitHub now.
-	UpdateStatus func(ctx context.Context) update.Status
-	CheckUpdate  func(ctx context.Context) (update.Status, error)
+	UpdateStatus func(ctx context.Context) update.Result
+	CheckUpdate  func(ctx context.Context) (update.Result, error)
 
 	// Settings returns the current settings; UpdateSettings validates,
 	// stores and applies new ones.

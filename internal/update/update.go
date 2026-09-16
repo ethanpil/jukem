@@ -39,10 +39,14 @@ type Release struct {
 	Error       string    `json:"error,omitempty" doc:"Why the last check failed"`
 }
 
-// Status is the answer for the UI. Available is computed against the
+// Result is the answer for the UI. Available is computed against the
 // running version at each read, so an upgrade clears it without a new
 // check.
-type Status struct {
+//
+// The name must stay different from every other type that the API
+// returns: the OpenAPI registry keys a schema by the name of its type,
+// and two types with one name make the server stop at the start.
+type Result struct {
 	Current   string `json:"current" doc:"Version that runs now"`
 	Available bool   `json:"available" doc:"True when the release is newer than the running version"`
 	Release
@@ -73,8 +77,8 @@ func New(st *store.Store, log *slog.Logger, current string, enabled func() bool)
 }
 
 // Status returns the last result with the running version.
-func (c *Checker) Status(ctx context.Context) Status {
-	st := Status{Current: c.current}
+func (c *Checker) Status(ctx context.Context) Result {
+	st := Result{Current: c.current}
 	if _, err := c.store.GetState(ctx, stateKey, &st.Release); err != nil {
 		c.log.Warn("cannot read the last update check", "error", err)
 		return st
@@ -85,7 +89,7 @@ func (c *Checker) Status(ctx context.Context) Status {
 
 // Check asks GitHub now and stores the result, also when it failed: the
 // UI shows why the last check did not work.
-func (c *Checker) Check(ctx context.Context) (Status, error) {
+func (c *Checker) Check(ctx context.Context) (Result, error) {
 	rel, err := c.fetch(ctx)
 	rel.CheckedAt = time.Now().UTC()
 	if err != nil {
@@ -100,7 +104,7 @@ func (c *Checker) Check(ctx context.Context) (Status, error) {
 	if e := c.store.SetState(ctx, stateKey, rel); e != nil {
 		c.log.Warn("cannot store the update check", "error", e)
 	}
-	st := Status{Current: c.current, Release: rel, Available: Newer(rel.Version, c.current)}
+	st := Result{Current: c.current, Release: rel, Available: Newer(rel.Version, c.current)}
 	return st, err
 }
 

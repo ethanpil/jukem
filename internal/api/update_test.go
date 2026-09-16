@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"jukem/internal/events"
+	"jukem/internal/mpdctl"
+	"jukem/internal/player"
 	"jukem/internal/store"
 	"jukem/internal/update"
 	"jukem/internal/watchdog"
@@ -17,7 +19,7 @@ import (
 
 // newUpdateServer builds a server whose update functions answer with the
 // given status and error, so the tests do not reach GitHub.
-func newUpdateServer(t *testing.T, st update.Status, checkErr error) *httptest.Server {
+func newUpdateServer(t *testing.T, st update.Result, checkErr error) *httptest.Server {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "jukem.db"))
@@ -30,12 +32,18 @@ func newUpdateServer(t *testing.T, st update.Status, checkErr error) *httptest.S
 	t.Cleanup(func() { db.Close() })
 	ev := events.New()
 	log := slog.New(slog.DiscardHandler)
+	// The player is here although these tests do not use it: it puts
+	// player.Status in the OpenAPI registry beside the answer of the
+	// update endpoints. Two registered types with one name stop the
+	// server at the start, and this server must find that.
+	pl := player.New(mpdctl.NewPool(filepath.Join(dir, "mpd.sock"), 1), func() (int, int) { return 0, 100 }, 0, func(int64) {})
 	s, err := New(Options{
-		Version: "0.1.8", Static: web.Files, Store: db,
+		Version: "0.1.8", Static: web.Files, Store: db, Player: pl, Events: ev,
 		Health:       func() watchdog.Report { return watchdog.Report{Status: watchdog.StatusOK} },
 		Alerter:      watchdog.NewAlerter(db, ev, log, func() watchdog.Webhook { return watchdog.Webhook{} }),
-		UpdateStatus: func(context.Context) update.Status { return st },
-		CheckUpdate:  func(context.Context) (update.Status, error) { return st, checkErr },
+		Owner:        func() player.Owner { return player.Owner{} },
+		UpdateStatus: func(context.Context) update.Result { return st },
+		CheckUpdate:  func(context.Context) (update.Result, error) { return st, checkErr },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +54,7 @@ func newUpdateServer(t *testing.T, st update.Status, checkErr error) *httptest.S
 }
 
 func TestUpdateStatusAndCheck(t *testing.T) {
-	st := update.Status{Current: "0.1.8", Available: true}
+	st := update.Result{Current: "0.1.8", Available: true}
 	st.Version, st.URL = "0.1.9", "https://example.test/r/v0.1.9"
 	ts := newUpdateServer(t, st, nil)
 	c := firstUser(t, ts.URL)
@@ -63,7 +71,7 @@ func TestUpdateStatusAndCheck(t *testing.T) {
 
 // A check that cannot reach GitHub is a fault of the other side.
 func TestUpdateCheckThatFails(t *testing.T) {
-	ts := newUpdateServer(t, update.Status{Current: "0.1.8"}, errors.New("cannot reach GitHub"))
+	ts := newUpdateServer(t, update.Result{Current: "0.1.8"}, errors.New("cannot reach GitHub"))
 	c := firstUser(t, ts.URL)
 	if resp, out := c.do("POST", "/api/v1/system/update/check", nil); resp.StatusCode != 502 {
 		t.Fatalf("check: %d %v", resp.StatusCode, out)
@@ -73,7 +81,7 @@ func TestUpdateCheckThatFails(t *testing.T) {
 // The check is behind the login, and it needs a web session: an API key
 // must not make the appliance send requests to the outside.
 func TestUpdateNeedsAuth(t *testing.T) {
-	ts := newUpdateServer(t, update.Status{Current: "0.1.8"}, nil)
+	ts := newUpdateServer(t, update.Result{Current: "0.1.8"}, nil)
 	anon := &client{t: t, base: ts.URL}
 	if resp, _ := anon.do("GET", "/api/v1/system/update", nil); resp.StatusCode != 401 {
 		t.Fatalf("status without a session: %d", resp.StatusCode)
