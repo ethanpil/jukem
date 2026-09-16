@@ -49,6 +49,7 @@ type Settings struct {
 	// System
 	AlertWebhookURL    string `json:"alert_webhook_url" doc:"JSON POST target for alerts; empty disables"`
 	AlertWebhookPreset string `json:"alert_webhook_preset" enum:"generic,ntfy" doc:"Body format for the webhook"`
+	UpdateCheck        bool   `json:"update_check" doc:"Ask GitHub once a day whether a newer release exists"`
 	HistoryDays        int    `json:"history_days" minimum:"1" doc:"Play history retention in days"`
 	HistoryRows        int    `json:"history_rows" minimum:"100" doc:"Play history retention in rows"`
 	AlertDays          int    `json:"alert_days" minimum:"1" doc:"Dismissed alert retention in days"`
@@ -74,6 +75,7 @@ func DefaultSettings() Settings {
 		FreeSpaceReserve:   1 << 30,
 		NightlyRescanHour:  3,
 		AlertWebhookPreset: "generic",
+		UpdateCheck:        true,
 		HistoryDays:        90,
 		HistoryRows:        50000,
 		AlertDays:          30,

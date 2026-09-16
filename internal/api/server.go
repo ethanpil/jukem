@@ -20,6 +20,7 @@ import (
 	"jukem/internal/player"
 	"jukem/internal/scheduler"
 	"jukem/internal/store"
+	"jukem/internal/update"
 	"jukem/internal/watchdog"
 )
 
@@ -60,6 +61,11 @@ type Options struct {
 	QueueAction func(ctx context.Context, a QueueAction, source string) (QueueResult, error)
 	// SelectOutput saves and applies an output selection.
 	SelectOutput func(ctx context.Context, id *audio.Identity) error
+	// UpdateStatus reports the last check for a new release, and
+	// CheckUpdate asks GitHub now.
+	UpdateStatus func(ctx context.Context) update.Status
+	CheckUpdate  func(ctx context.Context) (update.Status, error)
+
 	// Settings returns the current settings; UpdateSettings validates,
 	// stores and applies new ones.
 	Settings       func() store.Settings

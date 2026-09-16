@@ -300,9 +300,11 @@ export async function settingsView(main, rest) {
     const days = h('input.form-control', { type: 'number', min: 1, value: settings.history_days });
     const rows = h('input.form-control', { type: 'number', min: 100, value: settings.history_rows });
     const adays = h('input.form-control', { type: 'number', min: 1, value: settings.alert_days });
+    const upd = h('div.upd');
     body.append(heading('System'),
       h('div.meta-line', `jukem ${info?.version ?? '?'} · schema ${info?.schema_version ?? '?'} · runtime ${info?.runtime ?? '?'}`),
       h('div.link-line', h('a', { href: '#/health' }, 'Health page'), h('a', { href: '#/history' }, 'Play history'), h('a', { href: '/api/v1/docs', target: '_blank', rel: 'noopener' }, 'API docs ↗')),
+      upd,
       h('form', { onsubmit: async (e) => { e.preventDefault(); await save({ alert_webhook_url: url.value, alert_webhook_preset: preset.value, history_days: Number(days.value), history_rows: Number(rows.value), alert_days: Number(adays.value) }); } },
         h('h3', 'Alerts'),
         h('span.form-label.d-block', 'Webhook URL (JSON POST)'),
@@ -317,6 +319,54 @@ export async function settingsView(main, rest) {
       h('div.set-sub',
         h('p.small-note.mb-1', 'Log file: /var/log/jukem/jukem.log (or stdout in Docker).'),
         h('p.small-note.mb-0', 'Logo: "Music Library 2" from the Solar icon set by 480 Design, CC BY 4.0. jukem changed the colours.')));
+    drawUpdate(upd, null, true);
+    A.updateStatus().then((u) => drawUpdate(upd, u)).catch((e) => drawUpdate(upd, { error: e.message }));
+  }
+
+  // drawUpdate shows the result of the last check for a new release. jukem
+  // does not install the package: the commands below do that.
+  function drawUpdate(box, u, loading) {
+    clear(box);
+    box.classList.toggle('new', !!u?.available);
+    if (loading) { box.append(h('div.upd-line', 'Looking for a new version…')); return; }
+    if (u?.available) {
+      box.append(h('div.upd-line', icon('arrow-up-circle'),
+        h('span', h('b', `Version ${u.version} is available.`), ` This appliance has ${u.current}.`),
+        u.url ? h('a', { href: u.url, target: '_blank', rel: 'noopener' }, 'Release notes ↗') : null));
+      const cmd = installCommands(u.version);
+      box.append(h('p.small-note.mb-0.mt-2', 'Install it as root over SSH:'), h('pre.pre-wrap', cmd));
+    } else {
+      box.append(h('div.upd-line', icon('check2-circle'),
+        u?.version ? `Version ${u.version} is the newest one. This appliance is up to date.` : 'No release has been found yet.'));
+    }
+    box.append(h('p.small-note.mb-0.mt-2',
+      u?.checked_at ? `Last checked: ${fmtTime(u.checked_at)}` : 'Not checked yet.'));
+    if (u?.error) box.append(h('p.small-note.mb-0', `The last check failed: ${u.error}`));
+
+    const auto = h('input.form-check-input', { type: 'checkbox', checked: settings.update_check, onchange: async () => {
+      if (!await save({ update_check: auto.checked })) auto.checked = !auto.checked;
+    } });
+    box.append(h('div.set-actions',
+      h('button.btn.btn-outline-secondary', { type: 'button', onclick: async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        drawUpdate(box, null, true);
+        try { drawUpdate(box, await A.checkUpdate()); } catch (ex) { toast(ex.message, 'danger'); drawUpdate(box, u); }
+      } }, icon('arrow-repeat'), 'Check now'),
+      u?.available ? h('button.btn.btn-outline-secondary', { type: 'button', onclick: async () => {
+        try { await copyText(installCommands(u.version)); toast('Commands copied', 'success'); } catch (ex) { toast(ex.message, 'danger'); }
+      } }, icon('clipboard'), 'Copy commands') : null,
+      h('label.form-check.form-switch.switch-only.ms-auto', auto, h('span.ms-2', 'Check every day'))));
+  }
+
+  // installCommands is the same procedure as the readme, with the version
+  // filled in.
+  function installCommands(version) {
+    return `ARCH=$(apk --print-arch)
+`
+      + `wget https://github.com/ethanpil/jukem/releases/download/v${version}/jukem-${version}-$ARCH.apk
+`
+      + `apk add --allow-untrusted ./jukem-${version}-$ARCH.apk`;
   }
 
   function renderMaintenance(body) {

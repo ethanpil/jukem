@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -249,5 +250,46 @@ func TestStateRoundTrip(t *testing.T) {
 	ok, _ = s.GetState(ctx, "x", &v)
 	if ok {
 		t.Fatal("key should be gone")
+	}
+}
+
+// A person can leave out releases. An upgrade from any older schema must
+// therefore reach the newest schema in one run, and it must keep a
+// snapshot of the schema it started from.
+func TestMigrateFromEachOlderVersion(t *testing.T) {
+	ms, err := Migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for from := 1; from < len(ms); from++ {
+		t.Run(fmt.Sprintf("from-v%d", from), func(t *testing.T) {
+			s, dir := openTest(t)
+			ctx := context.Background()
+			snaps := filepath.Join(dir, "snapshots")
+			// Put the database at the older schema, as an older release
+			// left it.
+			if err := s.migrate(ctx, snaps, ms[:from]); err != nil {
+				t.Fatal(err)
+			}
+			if v, err := s.Version(ctx); err != nil || v != from {
+				t.Fatalf("version %d err %v, want %d", v, err, from)
+			}
+			if err := s.Migrate(ctx, snaps); err != nil {
+				t.Fatalf("upgrade from %d: %v", from, err)
+			}
+			if v, err := s.Version(ctx); err != nil || v != len(ms) {
+				t.Fatalf("version %d err %v, want %d", v, err, len(ms))
+			}
+			if _, ok := LatestSnapshot(snaps, from); !ok {
+				t.Errorf("no snapshot of schema %d before the upgrade", from)
+			}
+			// The store works on the new schema after the jump.
+			if err := s.SaveSettings(ctx, DefaultSettings()); err != nil {
+				t.Errorf("settings: %v", err)
+			}
+			if _, err := s.ListAnnouncements(ctx); err != nil {
+				t.Errorf("announcements: %v", err)
+			}
+		})
 	}
 }

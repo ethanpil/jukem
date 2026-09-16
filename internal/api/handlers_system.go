@@ -11,6 +11,7 @@ import (
 
 	"jukem/internal/library"
 	"jukem/internal/store"
+	"jukem/internal/update"
 )
 
 type alertsOutput struct {
@@ -131,6 +132,10 @@ func (s *Server) registerSystemOps(api huma.API) {
 		return out, nil
 	})
 
+	if s.opts.UpdateStatus != nil {
+		s.registerUpdate(api)
+	}
+
 	huma.Register(api, huma.Operation{
 		OperationID: "restart-service", Method: http.MethodPost, Path: "/system/restart", Tags: []string{"system"},
 		Summary: "Stop the service; the supervisor starts it again", DefaultStatus: http.StatusAccepted,
@@ -143,4 +148,29 @@ func (s *Server) registerSystemOps(api huma.API) {
 		}
 		return nil, nil
 	})
+}
+
+// registerUpdate adds the two endpoints of the check for a new release.
+func (s *Server) registerUpdate(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-update", Method: http.MethodGet, Path: "/system/update", Tags: []string{"system"},
+		Summary: "Result of the last check for a new release",
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Status }, error) {
+		return &struct{ Body update.Status }{Body: s.opts.UpdateStatus(ctx)}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "check-update", Method: http.MethodPost, Path: "/system/update/check", Tags: []string{"system"},
+		Summary: "Ask GitHub now whether a newer release exists",
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body update.Status }, error) {
+		if _, err := webSession(ctx); err != nil {
+			return nil, err
+		}
+		st, err := s.opts.CheckUpdate(ctx)
+		if err != nil {
+			return nil, huma.Error502BadGateway(err.Error())
+		}
+		return &struct{ Body update.Status }{Body: st}, nil
+	})
+
 }

@@ -86,6 +86,8 @@ export const settings = () => api.get('/settings');
 export const saveSettings = (body) => api.put('/settings', body);
 export const health = () => api.get('/health');
 export const systemInfo = () => api.get('/system/info');
+export const updateStatus = () => api.get('/system/update');
+export const checkUpdate = () => api.post('/system/update/check');
 export const alerts = () => api.get('/alerts');
 export const dismissAlert = (id) => api.del(`/alerts/${id}`);
 export const history = (beforeID, limit = 100) => api.get(`/history?limit=${limit}${beforeID ? '&before_id=' + beforeID : ''}`);

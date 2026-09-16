@@ -900,6 +900,12 @@ button.device:hover { border-color: var(--accent-soft-border); }
 .meta-line { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
 .link-line { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 16px; }
 .tool-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.upd { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; background: var(--surface-2); }
+.upd.new { background: var(--accent-soft); border-color: var(--accent-soft-border); }
+.upd-line { font-size: 14px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.upd-line i { color: var(--accent); }
+.upd pre { font-size: 12px; margin: 10px 0 0; overflow-wrap: anywhere; }
+.upd .set-actions { margin-top: 12px; }
 @media (max-width: 900px) {
   .set-grid { grid-template-columns: 1fr; gap: 14px; }
   .set-nav { position: sticky; top: 54px; z-index: 5; flex-direction: row; overflow-x: auto; padding: 5px; scrollbar-width: none; }

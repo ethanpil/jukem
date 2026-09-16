@@ -22,6 +22,7 @@ import (
 	"jukem/internal/player"
 	"jukem/internal/scheduler"
 	"jukem/internal/store"
+	"jukem/internal/update"
 	"jukem/internal/watchdog"
 	"jukem/web"
 )
@@ -54,6 +55,7 @@ type App struct {
 	Scheduler *scheduler.Scheduler
 	Clock     *scheduler.Clock
 	Alerter   *watchdog.Alerter
+	Update    *update.Checker
 	// Restart stops the service cleanly; the command sets it.
 	Restart func()
 
@@ -132,6 +134,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 		DevicePresent: func() bool { return a.Devices.Snapshot().Selected != nil },
 		OnProblem:     a.onSchedulerProblem,
 	})
+	a.Update = update.New(db, log, version, func() bool { return a.Settings().UpdateCheck })
 	a.MPD = mpdctl.New(cfg.DataDir, "mpd", log, a.onMPDEvent)
 
 	// The first scan runs before MPD starts, so the config lists every
@@ -156,6 +159,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 	go a.runWatchdog(ctx)
 	go a.runNightly(ctx)
 	go a.runAnnouncements(ctx)
+	go a.Update.Run(ctx)
 
 	srv, err := api.New(api.Options{
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TrustedProxies: cfg.TrustedProxies,
@@ -163,6 +167,7 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
 		Settings: a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.StartAnnouncement,
 		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart,
+		UpdateStatus: a.Update.Status, CheckUpdate: a.Update.Check,
 	})
 	if err != nil {
 		a.Close()
