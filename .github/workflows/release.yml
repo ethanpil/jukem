@@ -9,7 +9,29 @@ permissions:
   packages: write
 
 jobs:
+  # The signed release needs a key. Without one this whole workflow does
+  # nothing, and the unsigned package comes from the Release package
+  # workflow instead.
+  keys:
+    runs-on: ubuntu-24.04
+    outputs:
+      signed: ${{ steps.check.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -n "$KEY" ] && [ -f packaging/keys/jukem.rsa.pub ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No APK_SIGNING_KEY secret or public key file. This workflow stops here."
+          fi
+
   test:
+    needs: keys
+    if: needs.keys.outputs.signed == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +52,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Check signing material
-        env:
-          KEY: ${{ secrets.APK_SIGNING_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::error::The APK_SIGNING_KEY secret is not set. See packaging/keys/README.md."; exit 1
-          fi
-          if [ ! -f packaging/keys/jukem.rsa.pub ]; then
-            echo "::error::packaging/keys/jukem.rsa.pub is missing. See packaging/keys/README.md."; exit 1
-          fi
       - name: Write signing key
         env:
           KEY: ${{ secrets.APK_SIGNING_KEY }}

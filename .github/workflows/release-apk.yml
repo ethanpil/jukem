@@ -1,0 +1,76 @@
+name: Release package
+
+# A new release gets an unsigned apk for each architecture. apk installs an
+# unsigned package with --allow-untrusted, which the readme shows.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to build, for example v0.1.8
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  package:
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the unsigned package
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: scripts/package.sh ${{ matrix.arch }} "$TAG"
+      - name: Install it on Alpine
+        # Go builds both architectures on this runner, but only the native
+        # one can run here.
+        if: matrix.arch == 'amd64'
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" alpine:3.21 sh -ec '
+            sed -i "s|^#\(.*community\)|\1|" /etc/apk/repositories
+            apk add --no-cache --allow-untrusted /dist/jukem-*.apk
+            jukem version
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.arch }}
+          path: dist/*.apk
+
+  attach:
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: dist
+          merge-multiple: true
+      - name: List the files with their checksums
+        run: cd dist && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS
