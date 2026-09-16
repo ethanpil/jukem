@@ -177,7 +177,7 @@ export function announcementsPanel() {
       h('label.form-label.mt-3', 'What plays'), kind, kindNote,
       h('div.input-row.mt-2', ref, browse),
       h('label.check-line', useVol, 'Play it at its own volume:', volLabel), vol,
-      h('div.form-text', 'The music stops for the announcement and starts again where it was.'),
+      h('div.form-text', 'The music fades out for the announcement and fades in again where it stopped. With no music, the announcement plays on its own.'),
       err);
     const dlg = modal({
       title: ann ? 'Edit announcement' : 'New announcement',

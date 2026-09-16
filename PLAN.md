@@ -789,8 +789,14 @@ restart does not repeat the same file. The Play button in the UI plays an
 announcement at once to hear it. It does not take the place of the next
 play.
 
-An announcement plays only while music plays and the clock is correct. It
-interrupts the music, so there must be music to interrupt, and a wrong clock
+An announcement plays at its time, whatever the music does. Music that plays
+fades out over the fade-out time of the settings, and the track holds its
+position. The announcement plays at its own level. Then the track starts
+again at that position and fades in over the fade-in time. With no music,
+the announcement plays on its own and the player returns to the state it
+had.
+
+An announcement needs MPD and a clock that is correct, because a wrong clock
 would play it at the wrong time of the day. One announcement plays at a
 time.
 

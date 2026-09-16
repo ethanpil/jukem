@@ -703,12 +703,19 @@ func (s *Scheduler) fadeOutStop(ctx context.Context) {
 	s.d.Events.Publish(events.Player, "")
 }
 
-// fadeTo steps the volume from one level to another over seconds, in
-// twenty steps, and stops early when ctx ends.
+// fadeTo steps the volume from one level to another over seconds.
 func (s *Scheduler) fadeTo(ctx context.Context, from, to, seconds int) {
+	Fade(ctx, s.d.Player.SetVolumeRaw, from, to, seconds)
+}
+
+// Fade steps the volume from one level to another over seconds, in twenty
+// steps. It stops early when ctx ends or when a step fails. Seconds of zero
+// sets the level at once. The announcements fade with it too, so a fade
+// sounds the same wherever it comes from.
+func Fade(ctx context.Context, setVolume func(int) error, from, to, seconds int) {
 	const steps = 20
-	if seconds <= 0 {
-		s.d.Player.SetVolumeRaw(to)
+	if seconds <= 0 || from == to {
+		setVolume(to)
 		return
 	}
 	pause := time.Duration(seconds) * time.Second / steps
@@ -719,7 +726,7 @@ func (s *Scheduler) fadeTo(ctx context.Context, from, to, seconds int) {
 		case <-time.After(pause):
 		}
 		v := from + (to-from)*i/steps
-		if err := s.d.Player.SetVolumeRaw(v); err != nil {
+		if err := setVolume(v); err != nil {
 			return
 		}
 	}
