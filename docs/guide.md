@@ -160,6 +160,29 @@ jukem copies the database to `/var/lib/jukem/snapshots/` before every schema
 migration and when you press Database snapshot in Settings > Maintenance.
 The Health page shows the rollback steps when a migration fails.
 
+## Upgrades
+
+jukem tells you when a newer release exists. Settings > System shows the
+version of the newest release, and the commands that install it. The
+appliance asks GitHub once a day. It does not download the package and it
+does not install it: a person does that. The switch **Check every day**
+stops the daily request, for example on a network with no way out. The
+button **Check now** always works.
+
+To upgrade, install the new package with `apk add`, as the
+[readme](../README.md) shows. The service starts again by itself.
+
+**You can leave out releases.** An upgrade from 0.1.3 to 0.1.9 is the same
+procedure as an upgrade from 0.1.8 to 0.1.9. jukem finds the schema version
+of the database, applies each newer migration in order in its own
+transaction, and stops at the first one that fails. Before the first
+change it copies the database to `/var/lib/jukem/snapshots/`, so a rollback
+to the old version is possible. The Health page shows the steps.
+
+Do not go back to an older release while the database has a newer schema.
+The old binary sees the newer schema version and refuses to start, because
+it must not write data that the new schema needs.
+
 ## Configuration file
 
 `/etc/jukem/config.yaml`:
@@ -206,6 +229,26 @@ The web UI is plain ES modules under `web/app`, embedded in the binary.
 Restart the server to see a change. `tools/apksign` signs the package the
 way abuild does, with RSA-SHA256, so apk accepts it without
 `--allow-untrusted`.
+
+### Rules for a schema change
+
+A person can leave out releases, so each release must accept the database
+of every older release.
+
+- Add a new file `internal/store/migrations/000N_name.sql`. Give it the
+  next number. The numbers must have no gap.
+- Never change a migration that a release contains. It has already run on
+  the machines of other people.
+- SQLite cannot change a `CHECK` constraint. To make a constraint wider,
+  build the new table, copy the rows, remove the old table and give the new
+  table the old name. `0003_stream_source.sql` is an example.
+- Keep the migration in one file: each file is one transaction, and a
+  failure must leave a schema that still works.
+- `TestMigrateFromEachOlderVersion` starts at every older schema and
+  upgrades to the newest one. Keep it passing.
+- Code that reads a row must accept a value that an older release wrote.
+  `LoadSettings` puts the stored settings over the defaults, so a new
+  setting has a value on an old database.
 
 ## Licence
 

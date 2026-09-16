@@ -48,7 +48,12 @@ password, the time zone, the music folder and the sound output. It plays a
 track at the end. Setup is complete when you hear that track.
 
 To go to a newer version, get the new package and do `apk add` again. The
-service starts again by itself.
+service starts again by itself. You can leave out releases: the database
+moves up from any older version in one step.
+
+Settings > System tells you when a newer release exists, and gives the
+commands. jukem asks GitHub once a day. It does not install anything by
+itself.
 
 ## More
 

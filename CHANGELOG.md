@@ -9,8 +9,15 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
+- Settings > System tells you when a newer release exists. jukem asks
+  GitHub once a day, shows the version and the install commands, and has a
+  Check now button. It downloads nothing and installs nothing. The switch
+  Check every day stops the daily request.
 - A changelog, a short readme with a guide beside it, and a workflow that
   attaches an unsigned apk to each release (3d16f3d, f177274).
+- The guide gives the rules for a schema change, and a test upgrades from
+  each older schema to the newest one, because a person can leave out
+  releases.
 
 ### Fixed
 
