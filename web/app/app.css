@@ -105,6 +105,8 @@
   --header-height: 60px;
   --now-bar-height: 64px;
   --tab-bar-height: 56px;
+  /* The bars at the foot of the window. A menu keeps this much space free. */
+  --bars-height: calc(var(--now-bar-height) + env(safe-area-inset-bottom));
 }
 
 [data-bs-theme=dark] {
@@ -435,6 +437,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 
 .only-mobile, .only-mobile-menu { display: none !important; }
 @media (max-width: 900px) {
+  :root { --bars-height: calc(var(--now-bar-height) + var(--tab-bar-height) + env(safe-area-inset-bottom)); }
   .only-mobile-menu { display: list-item !important; }
   body { padding-bottom: calc(var(--now-bar-height) + var(--tab-bar-height) + 20px + env(safe-area-inset-bottom)); }
   .app-header { display: none; }
@@ -625,7 +628,7 @@ button.row-item.selected:hover { background: var(--accent-soft); }
 .btn-round.btn-outline-secondary { --bs-btn-color: var(--text-label); }
 .btn-play { width: 68px; height: 68px; font-size: 32px; box-shadow: 0 6px 16px var(--accent-shadow); }
 
-/* A segmented group with a leading label, such as Hold schedule. */
+/* A segmented group with a leading label, such as Stop Scheduler. */
 .seg { display: inline-flex; align-items: stretch; border: 1px solid var(--border-strong); border-radius: 9px; overflow: hidden; background: var(--surface); }
 .seg > * { padding: 8px 12px; font-size: 13px; border: none; background: none; color: var(--text-label); border-right: 1px solid var(--divider); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .seg > *:last-child { border-right: none; }
@@ -707,8 +710,10 @@ button.row-item.selected:hover { background: var(--accent-soft); }
   --bs-dropdown-divider-bg: var(--divider); --bs-dropdown-divider-margin-y: 4px;
   --bs-dropdown-header-color: var(--text-4); --bs-dropdown-header-padding-x: 10px; --bs-dropdown-header-padding-y: 5px;
   min-width: 210px; max-width: 280px; box-shadow: var(--shadow-pop);
-  /* A menu that is taller than the window scrolls inside itself. */
-  max-height: min(60vh, 420px); overflow-y: auto;
+  /* A menu that is taller than the space between the top of the window and
+     the bars at the foot scrolls inside itself. */
+  max-height: min(420px, calc(100vh - 82px - var(--bars-height, 76px)));
+  overflow-y: auto; overflow-x: hidden;
 }
 .dropdown-menu.show { z-index: 1040; }
 .dropdown-item { display: flex; align-items: center; gap: 9px; }

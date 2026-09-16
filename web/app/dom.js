@@ -37,23 +37,30 @@ function append(el, children) {
   return el;
 }
 
+// The now-playing bar and the tab bar cover the lower part of the window, so
+// a menu keeps clear of them and turns upwards when it does not fit. The
+// heights come from the bars themselves, which carry the safe area of the
+// device and are not there at all before sign-in.
+function menuGap() {
+  let bars = 0;
+  for (const id of ['now-bar', 'tab-bar']) {
+    const el = document.getElementById(id);
+    if (el && !el.classList.contains('hidden')) bars += el.getBoundingClientRect().height;
+  }
+  return { top: 70, bottom: Math.round(bars) + 12, left: 8, right: 8 };
+}
 // The rows of a list are in a card that hides what goes past its edge. A
 // menu that places itself against the window, and not against the card, is
 // not cut off by it. Bootstrap makes the menu objects itself, so the rule
 // belongs with its defaults.
-// The now-playing bar and the tab bar cover the lower part of the window,
-// so a menu keeps clear of them and turns upwards when it does not fit.
-const menuGap = () => {
-  const bars = matchMedia('(max-width: 900px)').matches ? 64 + 56 : 64;
-  return { top: 70, bottom: bars + 12, left: 8, right: 8 };
-};
 bootstrap.Dropdown.Default.popperConfig = (config) => ({
   ...config,
   strategy: 'fixed',
   modifiers: [
     ...(config.modifiers || []),
+    // altAxis moves the menu along the axis the padding above is about.
     { name: 'flip', options: { padding: menuGap() } },
-    { name: 'preventOverflow', options: { padding: menuGap() } },
+    { name: 'preventOverflow', options: { padding: menuGap(), altAxis: true } },
   ],
 });
 

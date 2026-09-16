@@ -1,6 +1,8 @@
 // Hash router. Routes are '#/section/rest'. The rest goes to the view
 // unparsed, so a view can carry a path such as a library folder.
 
+import { h } from './dom.js';
+
 const routes = [];
 let current = null;
 let generation = 0;
@@ -52,7 +54,17 @@ async function dispatch() {
   // A view can await network calls. Only the newest dispatch keeps its
   // result; an older one that resolves late is destroyed at once.
   const gen = ++generation;
-  const view = await match.view(main, rest);
+  let view;
+  try {
+    view = await match.view(main, rest);
+  } catch (e) {
+    // A view that fails half way may already hold listeners and timers.
+    // Its own destroy is gone with it, so the parts it registered are
+    // dropped here and the page says what happened.
+    console.error(e);
+    if (gen === generation) main.append(h('div.alert.alert-danger', 'This page could not be shown: ' + (e?.message || e)));
+    return;
+  }
   if (gen !== generation) {
     if (view && view.destroy) view.destroy();
     return;

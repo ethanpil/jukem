@@ -112,7 +112,11 @@ export async function refreshStatus() {
   if (updating && !state.scanSince) state.scanSince = Date.now();
   if (!updating) state.scanSince = 0;
   renderNowBar();
-  for (const fn of state.statusListeners) fn(state.status);
+  // A listener that throws must not stop the others, or the page stops
+  // following the player.
+  for (const fn of state.statusListeners) {
+    try { fn(state.status); } catch (e) { console.error(e); }
+  }
 }
 
 function connectEvents() {
@@ -140,7 +144,7 @@ function connectEvents() {
 function ownerShort(owner) {
   switch (owner?.state) {
     case 'SCHEDULED': return 'scheduled';
-    case 'OVERRIDDEN': return 'on hold';
+    case 'OVERRIDDEN': return 'stopped';
     case 'UNAVAILABLE': return 'unavailable';
     case 'MANUAL': return 'manual';
     default: return owner?.state ? String(owner.state).toLowerCase() : 'offline';

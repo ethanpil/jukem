@@ -244,9 +244,14 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 	}
 	if v.hasOver {
 		v.owner = overrideOwner(v.override, v.now, v.overEnd, v.hasEnd, v.loc)
-		// The window that waits is named, so a screen can say which rule
-		// starts again at the end of the stop.
-		if iv, ok := Current(v.ivs, v.now); ok {
+		// The rule that plays when the schedule takes over again is the one
+		// of that moment, not the one of now: a stop usually ends where the
+		// window of now ends.
+		if v.hasEnd {
+			if iv, ok := Current(v.ivs, v.overEnd); ok {
+				v.owner.Program = iv.Name
+			}
+		} else if iv, ok := Current(v.ivs, v.now); ok {
 			v.owner.Program = iv.Name
 		}
 		return v
@@ -279,7 +284,7 @@ func overrideOwner(o store.Override, now, end time.Time, hasEnd bool, loc *time.
 	if hasEnd {
 		reason += ", schedule resumes " + fmtWhen(end, now, loc)
 	} else {
-		reason += " until Resume schedule"
+		reason += " until you start the scheduler"
 	}
 	out := player.Owner{State: player.OwnerOverridden, Reason: reason}
 	if hasEnd {

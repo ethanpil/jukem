@@ -753,7 +753,7 @@ So every command jukem sends is recorded as an intent: what was asked for, again
 | Timed | After 15 minutes, an hour, or a custom duration, or at the next scheduled event if that comes first |
 | Play Now | The chosen tracks finish, or at the next scheduled event if that comes first |
 
-No override outlasts the next scheduled event, so the appliance can't be left silent by someone who pauses the music and goes home. Pause and stop create an "until next scheduled event" override unless a timed option is picked; the scheduler card starts the scheduler again at once. If the schedule has no event in the coming week, an override lasts until somebody starts the scheduler.
+No override outlasts the next scheduled event, so the appliance can't be left silent by someone who pauses the music and goes home. Pause and stop create an "until next scheduled event" override unless a timed option is picked; clearing the override is what gives the schedule back, which the scheduler card does with "Start the scheduler now". If the schedule has no event in the coming week, an override lasts until somebody starts the scheduler.
 
 Overrides are stored with their source (the web UI, or an API key's name) and their *mode*, not a fixed end instant. "Until next scheduled event" is resolved against the current intervals every time the reconciler runs, so editing the rules while an override is active changes when it ends, as it should. A timed override stores its duration's end instant and still ends early at the next event. A pause survives a reboot until it expires.
 
@@ -925,18 +925,18 @@ Reordering works by dragging, with Move up, Move down, and Move to... in every r
 | Library | Breadcrumb, search, folders and tracks, row menu (Play Now, Play Next, Add to Queue, add to playlist, rename, move, delete), select mode, New folder, Upload, permission warnings |
 | Playlists | List with the three queue actions per playlist, detail view with reorder, add tracks from a library picker, missing-file warnings |
 | Schedule | Scheduler Status card, week view of the expanded intervals, rule list with enable switches, rule editor in a modal, exceptions calendar |
+| Settings | Seven sections, below |
+| Health | Plain-language system status. Not a sixth tab: tapping the owner badge opens it, and it's linked from Settings > System. Requires login. |
 
 The scheduler card is the one place that says who chooses the music. It
 names the rule that plays and the start and the end of its window, and it
 holds the controls that change the owner: Stop Scheduler for 15 minutes, for
 1 hour, until the next event, or Permanent Stop, which turns the scheduler
-off. While the scheduler is stopped, the card names the rule that waits and
-the time it starts again, with a button to start it at once. While the
-scheduler is off, the card has the button that turns it on. The Schedule
-page shows the same card under the name Scheduler Status. Now Playing shows
-it under the name Scheduler.
-| Settings | Seven sections, below |
-| Health | Plain-language system status. Not a sixth tab: tapping the owner badge opens it, and it's linked from Settings > System. Requires login. |
+off. While the scheduler is stopped, the card names the rule that plays when
+it starts again and the time of that, with a button to start it at once.
+While the scheduler is off, or while it cannot act, the card says so and
+gives the button that turns it on. Now Playing shows the card as Scheduler;
+Schedule shows it as Scheduler Status.
 
 Settings is one page with seven sections, not a second navigation tree:
 

@@ -14,7 +14,7 @@ image that installs that same package.
 - Plays a folder or a playlist during weekly windows, with date exceptions
   for holidays and one-off events.
 - Lets a person press play, pause or stop at any time. The schedule resumes
-  at the next window, or when the person presses Resume schedule.
+  at the next window, or when a person starts the scheduler again.
 - Fades in and out at window boundaries. Applies a volume floor and ceiling
   to people and API clients.
 - Accepts uploads from the browser, moves and renames files, and keeps
