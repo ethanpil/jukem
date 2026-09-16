@@ -753,13 +753,13 @@ So every command jukem sends is recorded as an intent: what was asked for, again
 | Timed | After 15 minutes, an hour, or a custom duration, or at the next scheduled event if that comes first |
 | Play Now | The chosen tracks finish, or at the next scheduled event if that comes first |
 
-No override outlasts the next scheduled event, so the appliance can't be left silent by someone who pauses the music and goes home. Pause and stop create an "until next scheduled event" override unless a timed option is picked; Resume schedule clears any override. If the schedule has no event in the coming week, an override lasts until Resume schedule.
+No override outlasts the next scheduled event, so the appliance can't be left silent by someone who pauses the music and goes home. Pause and stop create an "until next scheduled event" override unless a timed option is picked; the automation card starts the scheduler again at once. If the schedule has no event in the coming week, an override lasts until somebody starts the scheduler.
 
 Overrides are stored with their source (the web UI, or an API key's name) and their *mode*, not a fixed end instant. "Until next scheduled event" is resolved against the current intervals every time the reconciler runs, so editing the rules while an override is active changes when it ends, as it should. A timed override stores its duration's end instant and still ends early at the next event. A pause survives a reboot until it expires.
 
 ### Switching the scheduler off
 
-Settings > Schedule has an on/off switch that puts the appliance in `MANUAL`: the reconciler does nothing, any active override is cleared, Resume schedule disappears, transport and queue actions work without creating overrides, and the watchdog raises no dead-air alerts. It survives reboots, and since MPD restores its state paused, a rebooted appliance in manual mode stays silent until someone presses play. Switching it back on applies the current schedule immediately.
+Settings > Schedule has an on/off switch that puts the appliance in `MANUAL`, and the automation card has the same switch as Permanent Stop and Enable Scheduler: the reconciler does nothing, any active override is cleared, transport and queue actions work without creating overrides, and the watchdog raises no dead-air alerts. It survives reboots, and since MPD restores its state paused, a rebooted appliance in manual mode stays silent until someone presses play. Switching it back on applies the current schedule immediately.
 
 ### Clock
 
@@ -921,10 +921,19 @@ Reordering works by dragging, with Move up, Move down, and Move to... in every r
 
 | Screen | Contents |
 |---|---|
-| Now Playing | Track and source, transport, volume, override buttons (15 min, 1 hour, until next scheduled event) and Resume schedule, paged queue with remove and reorder, do-not-play button |
+| Now Playing | Automation card, track and source, transport, volume, paged queue with remove and reorder, do-not-play button |
 | Library | Breadcrumb, search, folders and tracks, row menu (Play Now, Play Next, Add to Queue, add to playlist, rename, move, delete), select mode, New folder, Upload, permission warnings |
 | Playlists | List with the three queue actions per playlist, detail view with reorder, add tracks from a library picker, missing-file warnings |
-| Schedule | Week view of the expanded intervals, rule list with enable switches, rule editor in a modal, exceptions calendar |
+| Schedule | Scheduler Status card, week view of the expanded intervals, rule list with enable switches, rule editor in a modal, exceptions calendar |
+
+The automation card is the one place that says who chooses the music. It
+names the rule that plays and the start and the end of its window, and it
+holds the controls that change the owner: Stop Scheduler for 15 minutes, for
+1 hour, until the next event, or Permanent Stop, which turns the scheduler
+off. While the scheduler is stopped, the card names the rule that waits and
+the time it starts again, with a button to start it at once. While the
+scheduler is off, the card has the button that turns it on. The Schedule
+page shows the same card under the name Scheduler Status.
 | Settings | Seven sections, below |
 | Health | Plain-language system status. Not a sixth tab: tapping the owner badge opens it, and it's linked from Settings > System. Requires login. |
 

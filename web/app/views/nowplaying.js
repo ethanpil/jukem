@@ -1,12 +1,13 @@
 import * as A from '../api.js';
 import { h, clear, icon, toast, fmtDuration, confirmDialog, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import { state, refreshStatus } from '../main.js';
+import { automationCard } from '../automation.js';
 
 const PAGE = 200;
 
-// nowPlayingView shows the player card: the track, the transport, the
-// position, the volume and the holds. Below it is the queue card, with the
-// last tracks that played above the queue.
+// nowPlayingView shows the automation card, then the player card with the
+// track, the transport, the position and the volume. Below them is the
+// queue card, with the last tracks that played above the queue.
 export async function nowPlayingView(main) {
   clear(main);
   const trackBox = h('div.player-track');
@@ -14,12 +15,15 @@ export async function nowPlayingView(main) {
   const seekRow = h('div.seek-row');
   const volumeRow = h('div.volume-row');
   const optionsRow = h('div.options-row');
-  const ownerRow = h('div.owner-row');
   const queueFig = h('span.queue-fig');
   const recentBox = h('div');
   const queueBox = h('div');
+  // The automation card is above the player, because it says who chooses
+  // the music that the player shows.
+  const automation = automationCard();
   main.append(h('section.page.page-narrow.stack',
-    h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, ownerRow, optionsRow),
+    automation.el,
+    h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, optionsRow),
     h('div.panel.clip',
       h('div.panel-head', h('h2.panel-title', 'Queue'), queueFig),
       recentBox, queueBox)));
@@ -70,7 +74,6 @@ export async function nowPlayingView(main) {
     clear(transport);
     clear(optionsRow);
     if (!st) {
-      clear(ownerRow);
       trackBox.append(h('div.art', icon('wifi-off')), h('div.flex-1', h('div.track-title', 'jukem is not reachable'), h('div.track-sub', 'The page tries again on its own.')));
       return;
     }
@@ -123,54 +126,11 @@ export async function nowPlayingView(main) {
       h('button', { type: 'button', class: `btn btn-sm ${p.shuffle ? 'btn-soft' : 'btn-outline-secondary'}`, 'aria-pressed': String(!!p.shuffle), onclick: async () => {
         try { await A.setOptions({ shuffle: !p.shuffle }); } catch (e) { toast(e.message, 'danger'); }
       } }, icon('shuffle'), 'Shuffle'));
-    if (st.owner?.state !== 'MANUAL') {
-      // A hold keeps the music as it is now, playing or paused. The
-      // schedule does not change it until the hold ends. A timed hold also
-      // ends at the next scheduled start or end, when that comes first.
-      const why = 'A hold keeps the music as it is now. The schedule takes over again at the end of the hold or at its next start or end.';
-      const hold = h('div.seg', { role: 'group', 'aria-label': 'Hold the schedule', title: why }, h('span.seg-label', 'Hold schedule'));
-      for (const [label, minutes, tip] of [['15 min', 15, 'Hold the schedule for 15 minutes'], ['1 hour', 60, 'Hold the schedule for 1 hour'], ['Until next event', 0, 'Hold the schedule until its next start or end']]) {
-        hold.append(h('button', { type: 'button', title: tip, onclick: () => override(minutes) }, label));
-      }
-      optionsRow.append(hold);
-      if (st.owner?.state === 'OVERRIDDEN') {
-        optionsRow.append(h('button.btn.btn-sm.btn-warning', { type: 'button', onclick: resumeSchedule }, icon('calendar-check'), 'Resume schedule'));
-      }
-      // The buttons need the sentence beside them, because a phone shows no
-      // tooltip.
-      optionsRow.append(h('p.options-note', why));
-    }
     if (song) {
-      optionsRow.append(h('button.btn.btn-sm.btn-outline-danger.push', { type: 'button', onclick: () => doNotPlay(song) }, icon('slash-circle'), 'Do not play'));
-    }
-    // The owner line says who plays the music and what is wrong with it. The
-    // top bar holds the same words, but it is one word wide on a phone.
-    clear(ownerRow);
-    if (st.owner?.reason) ownerRow.append(h('span.owner-reason', icon(ownerIcon(st.owner.state)), st.owner.reason));
-    if (st.owner?.warning) ownerRow.append(h('span.chip.chip-warn', icon('exclamation-triangle-fill'), st.owner.warning));
-  }
-
-  function ownerIcon(state) {
-    switch (state) {
-      case 'SCHEDULED': return 'calendar-week';
-      case 'OVERRIDDEN': return 'pause-circle';
-      case 'UNAVAILABLE': return 'exclamation-triangle';
-      default: return 'hand-index';
+      optionsRow.append(h('button.btn.btn-sm.btn-outline-danger.push', { type: 'button', title: 'Never play this song again in any playlist.', onclick: () => doNotPlay(song) }, icon('slash-circle'), 'Do not play'));
     }
   }
 
-  async function override(minutes) {
-    try {
-      const r = await A.createOverride(minutes ? { mode: 'timed', minutes } : { mode: 'until_next' });
-      // The server gives the real end: the next scheduled event can come
-      // before the chosen time.
-      const until = r.ends_at ? new Date(r.ends_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-      toast(until ? `Schedule on hold until ${until}` : 'Schedule on hold until you resume it', 'warning');
-    } catch (e) { toast(e.message, 'danger'); }
-  }
-  async function resumeSchedule() {
-    try { await A.clearOverride(); toast('Schedule resumed', 'success'); } catch (e) { toast(e.message, 'danger'); }
-  }
   async function doNotPlay(song) {
     if (!await confirmDialog({ title: 'Do not play', body: `Keep "${song.title || song.file}" out of all future scheduled playback?`, confirmText: 'Do not play' })) return;
     try {
@@ -340,6 +300,7 @@ export async function nowPlayingView(main) {
   let shownShuffle = !!state.status?.player?.shuffle;
   return {
     onEvent(type) {
+      automation.onEvent(type);
       if (type === 'queue') loadQueue();
       if (type === 'player') {
         const id = state.status?.player?.song?.id;
@@ -351,6 +312,7 @@ export async function nowPlayingView(main) {
     destroy() {
       clearInterval(tick);
       state.statusListeners.delete(listener);
+      automation.destroy();
       if (sortable) sortable.destroy();
     },
   };
