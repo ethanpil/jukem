@@ -505,7 +505,10 @@ button.row-item.selected:hover { background: var(--accent-soft); }
 /* A row link covers its whole row, so a finger hits it beside the name too.
    The buttons of the row stay above it. */
 .row-link::after { content: ''; position: absolute; inset: 0; }
-.row-item .btn, .row-item .dropdown { position: relative; z-index: 1; }
+/* The buttons come after the link in the row, so they paint over it and
+   take their own taps. They get no z-index: that would hold an open menu
+   inside the row and let the next rows paint over the menu. */
+.row-item .btn, .row-item .dropdown { position: relative; }
 .row-item.current .row-title { font-weight: 700; }
 .row-sub { font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
 .row-sub.mono { font-size: 11px; }
