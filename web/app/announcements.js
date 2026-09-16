@@ -12,8 +12,8 @@ const DAYS = [['Sun', 64], ['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri
 
 const KINDS = [
   ['file', 'This file', 'The same file plays every time.'],
-  ['random', 'Any file of a folder', 'One file of the folder plays, chosen at random.'],
-  ['cycle', 'The files of a folder in turn', 'The next file of the folder plays each time.'],
+  ['random', 'Random File from Specified Folder', 'Randomly select one file from the folder each time.'],
+  ['cycle', 'Cycle Through Specified Folder', 'Play one file at a time, in order.'],
 ];
 
 function dayLabel(mask) {
@@ -102,8 +102,8 @@ export function announcementsPanel() {
     });
 
     const mode = h('select.form-select',
-      h('option', { value: 'at', selected: init.mode !== 'every' }, 'Once a day, at a time'),
-      h('option', { value: 'every', selected: init.mode === 'every' }, 'Again and again, between two times'));
+      h('option', { value: 'at', selected: init.mode !== 'every' }, 'At Specific Time'),
+      h('option', { value: 'every', selected: init.mode === 'every' }, 'At An Interval'));
     const atTime = h('input.form-control', { type: 'time', value: init.at_time || '10:15', required: true });
     const startTime = h('input.form-control', { type: 'time', value: init.start_time || '09:00', required: true });
     const endTime = h('input.form-control', { type: 'time', value: init.end_time || '17:00', required: true });
