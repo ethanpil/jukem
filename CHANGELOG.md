@@ -7,6 +7,8 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-16
+
 ### Added
 
 - Settings > System tells you when a newer release exists. jukem asks
@@ -129,7 +131,8 @@ The first appliance that works from end to end.
 - A REST API with an OpenAPI document, and an event stream for the UI.
 - An Alpine apk for x86_64 and aarch64, and a Docker image.
 
-[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/ethanpil/jukem/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/ethanpil/jukem/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/ethanpil/jukem/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/ethanpil/jukem/compare/v0.1.5...v0.1.6
