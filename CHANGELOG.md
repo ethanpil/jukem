@@ -7,6 +7,11 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- Now Playing shows the next announcement time and names above the queue
+  (f414f69).
+
 ### Changed
 
 - Announcements that are due at the same time play back to back. The
