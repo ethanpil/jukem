@@ -192,6 +192,11 @@ func TestNewFolderAndPermissions(t *testing.T) {
 	if st, err := os.Stat(filepath.Join(root, "New", "Deep")); err != nil || !st.IsDir() {
 		t.Fatal("folder not created")
 	}
+	// MPD lists the new folder only after a scan, so one is queued.
+	if len(f.pending) != 1 || f.pending[0] != "New/Deep" || f.timer == nil {
+		t.Fatalf("pending %v", f.pending)
+	}
+	f.timer.Stop()
 	var oe *OpError
 	if err := f.NewFolder("New/Deep"); !errors.As(err, &oe) || oe.Status != http.StatusConflict {
 		t.Fatalf("duplicate: %v", err)

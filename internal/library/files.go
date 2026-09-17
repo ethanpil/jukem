@@ -450,6 +450,8 @@ func (f *Files) NewFolder(rel string) error {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return f.opError(err, parent, root)
 	}
+	// MPD lists a folder only after a scan finds it.
+	f.noteUploaded(rel)
 	f.events.Publish(events.Library, path.Dir(rel))
 	return nil
 }
