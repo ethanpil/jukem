@@ -11,6 +11,8 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 - A new folder did not show in the Library until a rescan. jukem now
   scans the folder after it makes it (93be018).
+- The Library showed the .jukem-tmp folder that holds uploads
+  (2da36d5).
 - The upload panel showed "null" before the upload started
   (d9c5b5c).
 
