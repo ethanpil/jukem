@@ -124,10 +124,12 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 			log.Warn("cannot persist the queue generation", "error", err)
 		}
 	})
-	// The shuffle belongs to jukem, not to MPD, because a shuffled queue
-	// is in a random order and MPD's random mode stays off.
+	// The shuffle belongs to jukem, not to MPD. A shuffled queue is in a
+	// random order. MPD's random mode stays off.
 	var shuffled bool
-	db.GetState(ctx, "queue_shuffle", &shuffled)
+	if _, err := db.GetState(ctx, "queue_shuffle", &shuffled); err != nil {
+		log.Warn("cannot read the stored shuffle state", "error", err)
+	}
 	a.Player.UseShuffleState(shuffled, func(on bool) {
 		if err := db.SetState(context.Background(), "queue_shuffle", on); err != nil {
 			log.Warn("cannot persist the shuffle state", "error", err)
@@ -180,7 +182,8 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 		Version: version, Static: web.Files, Store: db, Health: a.Health, TrustedProxies: cfg.TrustedProxies,
 		Player: a.Player, Events: a.Events, Devices: a.Devices, Mixer: a.Mixer, Library: a.Library, Files: a.Files, Playlists: a.Playlists, Scheduler: a.Scheduler, Clock: a.Clock,
 		Owner: a.ownerNow, Transport: a.Transport, PlayEntry: a.PlayEntry, QueueAction: a.QueueAction, SelectOutput: a.SelectOutput,
-		Settings: a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.StartAnnouncement,
+		SetShuffle: a.SetShuffle,
+		Settings:   a.Settings, UpdateSettings: a.UpdateSettings, PlayAnnouncement: a.StartAnnouncement,
 		Alerter: a.Alerter, Snapshot: a.Snapshot, Restart: a.RequestRestart,
 		UpdateStatus: a.Update.Status, CheckUpdate: a.Update.Check,
 	})

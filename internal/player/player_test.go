@@ -67,7 +67,7 @@ func TestLoadedOrder(t *testing.T) {
 	}
 	// With the loaded order the tracks go back to it. A file that the load
 	// did not bring keeps its place after the track before it.
-	order := map[string]int{"a.mp3": 0, "b.mp3": 1, "c.mp3": 2}
+	order := map[string][]int{"a.mp3": {0}, "b.mp3": {1}, "c.mp3": {2}}
 	// new.mp3 follows a.mp3, the track before it in the queue.
 	got := loadedOrder(tracks, order)
 	want := []int{3, 9, 7, 5}
@@ -79,6 +79,16 @@ func TestLoadedOrder(t *testing.T) {
 			t.Fatalf("with the loaded order: %v, want %v", got, want)
 		}
 	}
+	// A file that the load had twice gets both of its places.
+	twice := []Track{{ID: 1, File: "a.mp3"}, {ID: 2, File: "b.mp3"}, {ID: 3, File: "a.mp3"}}
+	got = loadedOrder(twice, map[string][]int{"a.mp3": {0, 2}, "b.mp3": {1}})
+	want = []int{1, 2, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("a file that is in the list twice: %v, want %v", got, want)
+		}
+	}
+
 	// After a restart there is no loaded order, so the order is by name.
 	got = loadedOrder(tracks, nil)
 	want = []int{3, 7, 5, 9}

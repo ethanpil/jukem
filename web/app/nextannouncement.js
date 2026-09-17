@@ -23,8 +23,12 @@ export function nextAnnouncementCard() {
     try {
       next = await A.api.get('/announcements/next');
     } catch {
-      // The card is a hint. When it cannot load, it is not shown.
-      if (mine === gen && !destroyed) el.classList.add('d-none');
+      // The card is a hint. When it cannot load, it is not shown, and it
+      // tries again in a minute.
+      if (mine === gen && !destroyed) {
+        el.classList.add('d-none');
+        timer = setTimeout(load, 60000);
+      }
       return;
     }
     if (mine !== gen || destroyed) return;
@@ -51,6 +55,7 @@ export function nextAnnouncementCard() {
       if (destroyed) return;
       zone = set.time_zone || null;
     } catch { /* the browser zone stays */ }
+    if (destroyed) return;
     load();
   }
 

@@ -61,6 +61,9 @@ type Options struct {
 	QueueAction func(ctx context.Context, a QueueAction, source string) (QueueResult, error)
 	// SelectOutput saves and applies an output selection.
 	SelectOutput func(ctx context.Context, id *audio.Identity) error
+	// SetShuffle turns the shuffle on or off. It holds the reconciler,
+	// because the order of the queue changes.
+	SetShuffle func(ctx context.Context, on bool) error
 	// UpdateStatus reports the last check for a new release, and
 	// CheckUpdate asks GitHub now.
 	UpdateStatus func(ctx context.Context) update.Result

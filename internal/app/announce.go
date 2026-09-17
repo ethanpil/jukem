@@ -183,6 +183,13 @@ func (a *App) playAnnouncementGroups(ctx context.Context) {
 			return
 		}
 		a.playAnnouncements(ctx, list)
+		// A track start during the group did not reach the watcher, so
+		// the queue gets its new order here.
+		if st, err := a.Player.Status(); err == nil {
+			if err := a.Player.ReshuffleAtEnd(st); err != nil {
+				a.log.Warn("cannot shuffle the queue again", "error", err)
+			}
+		}
 	}
 }
 
@@ -233,17 +240,18 @@ func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) 
 	return ready
 }
 
-// queueAnnouncements puts announcements into the queue after the current
-// entry and the after entries that follow it. The queue is the play order,
-// so MPD plays them in that order.
-func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnouncement, after int) []queuedAnnouncement {
+// queueAnnouncements puts announcements into the queue, each one after the
+// entry before it. The queue is the play order, so MPD plays them in that
+// order. afterID is the entry the first one goes after, or 0 for the
+// current entry.
+func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnouncement, afterID int) []queuedAnnouncement {
 	for _, r := range ready {
-		id, err := a.Player.InsertNext(r.file, after)
+		id, err := a.Player.InsertNext(r.file, afterID)
 		if err != nil {
 			r.fail(fmt.Errorf("cannot queue %s: %w", r.file, err))
 			continue
 		}
-		after++
+		afterID = id
 		queued = append(queued, queuedAnnouncement{ann: r.ann, id: id})
 	}
 	return queued
@@ -279,6 +287,14 @@ func (a *App) playAnnouncements(ctx context.Context, list []dueAnnouncement) {
 	// grow while it plays, so the restore reads the list at the end.
 	defer func() { a.restoreAfterAnnouncement(ctx, before, queued) }()
 
+	// With repeat on, MPD wraps to the first entry when the last
+	// announcement of the queue ends. It must stop instead, and wait for
+	// the music to come back.
+	if before.Repeat {
+		if err := a.Player.SetRepeat(false); err != nil {
+			a.log.Warn("cannot stop the repeat for the announcement", "error", err)
+		}
+	}
 	a.holdMusicForAnnouncement(ctx, before)
 	a.setAnnouncementLevel(before, queued[0].ann)
 	if err := a.Player.PlayID(queued[0].id); err != nil {
@@ -368,13 +384,13 @@ func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, qu
 			played[st.Song.ID] = true
 		}
 		if more := a.takeAnnouncements(false); len(more) > 0 {
-			// The new ones go after the rest of the group. When a music
-			// track is current, they go directly after it.
-			after := 0
+			// The new ones go after the last one of the group. When a
+			// music track is current, they go after that track.
+			afterID := 0
 			if i >= 0 {
-				after = len(queued) - 1 - i
+				afterID = queued[len(queued)-1].id
 			}
-			queued = a.queueAnnouncements(queued, a.prepareAnnouncements(ctx, more), after)
+			queued = a.queueAnnouncements(queued, a.prepareAnnouncements(ctx, more), afterID)
 		}
 		switch {
 		case i < 0 && started == len(queued):
@@ -410,6 +426,11 @@ func (a *App) restoreAfterAnnouncement(ctx context.Context, before player.Status
 	// gone, so the fade does not follow the caller's context.
 	ctx = context.WithoutCancel(ctx)
 	set := a.Settings()
+	if before.Repeat {
+		if err := a.Player.SetRepeat(true); err != nil {
+			a.log.Warn("cannot start the repeat again", "error", err)
+		}
+	}
 	// The last one goes first. When the current entry goes out of the
 	// queue, MPD plays the next one, which must not be an announcement.
 	for _, q := range slices.Backward(queued) {

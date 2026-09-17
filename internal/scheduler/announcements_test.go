@@ -111,9 +111,13 @@ func TestNextAnnouncements(t *testing.T) {
 		names string
 	}{
 		{at(loc, 14, 8, 0), at(loc, 14, 9, 0), "Offer"},
-		{at(loc, 14, 9, 0), at(loc, 14, 9, 20), "Offer"}, // the slot of now is not next
-		{at(loc, 14, 9, 21), at(loc, 14, 9, 40), "Offer,Closing"},
-		{at(loc, 14, 10, 0), at(loc, 15, 9, 0), "Offer"}, // tomorrow
+		// A slot that is due now, and did not play yet, is the next one.
+		{at(loc, 14, 9, 0), at(loc, 14, 9, 0), "Offer"},
+		{at(loc, 14, 9, 1), at(loc, 14, 9, 0), "Offer"},
+		{at(loc, 14, 9, 21), at(loc, 14, 9, 20), "Offer"}, // still inside the grace
+		{at(loc, 14, 9, 23), at(loc, 14, 9, 40), "Offer,Closing"},
+		{at(loc, 14, 10, 0), at(loc, 14, 10, 0), "Offer"}, // the last slot is due now
+		{at(loc, 14, 10, 3), at(loc, 15, 9, 0), "Offer"},  // tomorrow
 	} {
 		got, group, ok := NextAnnouncements(list, tc.now, loc)
 		names := ""

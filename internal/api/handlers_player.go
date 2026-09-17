@@ -138,7 +138,11 @@ func (s *Server) registerPlayer(api huma.API) {
 		Summary: "Set play options", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *optionsInput) (*struct{}, error) {
 		if in.Body.Shuffle != nil {
-			if err := s.opts.Player.SetShuffle(*in.Body.Shuffle); err != nil {
+			set := s.opts.Player.SetShuffle
+			if s.opts.SetShuffle != nil {
+				set = func(on bool) error { return s.opts.SetShuffle(ctx, on) }
+			}
+			if err := set(*in.Body.Shuffle); err != nil {
 				return nil, mpdError(err)
 			}
 			// MPD sends no event, because its own options did not change.

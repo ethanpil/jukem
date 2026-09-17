@@ -247,7 +247,10 @@ export async function nowPlayingView(main) {
     }
     queueBox.append(list);
     if (state.status?.player?.shuffle) {
-      queueBox.append(h('div.panel-note', icon('shuffle'), 'Shuffle is on: the tracks are in a random order, and they play from the top. The order changes again at the end of the queue.'));
+      const note = state.status.player.repeat
+        ? 'Shuffle is on: the tracks are in a random order, and they play from the top. At the end of the queue they get a new order.'
+        : 'Shuffle is on: the tracks are in a random order, and they play from the top.';
+      queueBox.append(h('div.panel-note', icon('shuffle'), note));
     }
     const pageTo = (to) => { followCurrent = false; offset = Math.max(0, to); loadQueue(); };
     const currentPos = state.status?.player?.song?.pos;

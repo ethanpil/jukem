@@ -81,13 +81,13 @@ type Player struct {
 	limits     func() (min, max int)
 	persist    func(generation int64)
 
-	// shuffle is on when the queue plays in a shuffled order. order is the
-	// position of each file in the list that Load received, so a shuffle
-	// that goes off can put the queue back. It is empty after a restart,
-	// and then the order is by file name.
+	// shuffle is on when the queue plays in a shuffled order. order holds
+	// the positions of each file in the list that Load received. A
+	// shuffle that goes off uses order to put the queue back. order is
+	// empty after a restart. Then the order is by file name.
 	shuffle        bool
 	persistShuffle func(on bool)
-	order          map[string]int
+	order          map[string][]int
 }
 
 // New creates a player. limits returns the configured volume floor and
@@ -113,16 +113,16 @@ func (p *Player) Shuffle() bool {
 	return p.shuffle
 }
 
-// setShuffle records the shuffle state and stores a change.
+// setShuffle records the shuffle state and stores a change. The store
+// write is outside the lock, because it can be slow.
 func (p *Player) setShuffle(on bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.shuffle == on {
-		return
-	}
+	changed := p.shuffle != on
 	p.shuffle = on
-	if p.persistShuffle != nil {
-		p.persistShuffle(on)
+	persist := p.persistShuffle
+	p.mu.Unlock()
+	if changed && persist != nil {
+		persist(on)
 	}
 }
 
@@ -327,11 +327,19 @@ func (p *Player) SetShuffle(on bool) error {
 		p.mu.Lock()
 		ids := loadedOrder(tracks, p.order)
 		p.mu.Unlock()
-		cl := c.BeginCommandList()
-		for i, id := range ids {
-			cl.MoveID(id, start+i)
+		// A long command list can pass the deadline of the pool, so the
+		// moves go in batches, like the adds of a load.
+		const batch = 500
+		for i := 0; i < len(ids); i += batch {
+			cl := c.BeginCommandList()
+			for j, id := range ids[i:min(i+batch, len(ids))] {
+				cl.MoveID(id, start+i+j)
+			}
+			if err := cl.End(); err != nil {
+				return err
+			}
 		}
-		return cl.End()
+		return nil
 	})
 	if err != nil {
 		return err
@@ -341,22 +349,24 @@ func (p *Player) SetShuffle(on bool) error {
 }
 
 // loadedOrder returns the queue ids of tracks in the order of the list that
-// Load received. A track that is not in that list keeps its place after
+// Load received. A file that is in that list more than once gets its
+// places in turn. A track that is not in the list keeps its place after
 // the track before it. With no list, the order is by file name.
-func loadedOrder(tracks []Track, order map[string]int) []int {
+func loadedOrder(tracks []Track, order map[string][]int) []int {
 	type keyed struct {
 		id  int
 		key string
 		idx int
 	}
+	used := make(map[string]int, len(order))
 	list := make([]keyed, len(tracks))
 	last := -1
 	for i, t := range tracks {
-		idx, ok := order[t.File]
-		if ok {
+		idx := last
+		if places := order[t.File]; len(places) > 0 {
+			idx = places[min(used[t.File], len(places)-1)]
+			used[t.File]++
 			last = idx
-		} else {
-			idx = last
 		}
 		list[i] = keyed{id: t.ID, key: strings.ToLower(t.File), idx: idx}
 	}
@@ -373,26 +383,38 @@ func loadedOrder(tracks []Track, order map[string]int) []int {
 	return ids
 }
 
-// AdoptRandomMode turns MPD's random mode into a shuffled queue. An older
-// jukem used random mode, and MPD keeps the mode in its state file.
-func (p *Player) AdoptRandomMode() error {
-	st, err := p.Status()
-	if err != nil || !st.Random {
-		return err
-	}
-	return p.SetShuffle(true)
-}
-
 // ReshuffleAtEnd gives a repeating shuffled queue a new order for its next
-// pass. It runs when the last track starts, and it shuffles the tracks
-// before that track.
+// pass. It runs when the last track starts. The other tracks are shuffled,
+// and the track that plays becomes the first entry. It keeps playing, and
+// the next pass starts with the entry after it. So no track stays at the
+// end of the queue.
 func (p *Player) ReshuffleAtEnd(st Status) error {
 	if !p.Shuffle() || !st.Repeat || st.Song == nil || st.Song.Pos != st.QueueLength-1 || st.Song.Pos < 2 {
 		return nil
 	}
+	id := st.Song.ID
 	return p.pool.Do(func(c *mpd.Client) error {
-		return c.Command("shuffle %d:%d", 0, st.Song.Pos).OK()
+		// The queue is read again here: it can have changed since the
+		// event that started this.
+		attrs, err := c.Status()
+		if err != nil {
+			return err
+		}
+		pos, err := strconv.Atoi(attrs["song"])
+		length, _ := strconv.Atoi(attrs["playlistlength"])
+		if err != nil || pos != length-1 || pos < 2 {
+			return nil
+		}
+		if err := c.Command("shuffle %d:%d", 0, pos).OK(); err != nil {
+			return err
+		}
+		return c.MoveID(id, 0)
 	})
+}
+
+// SetRepeat turns MPD's repeat on or off.
+func (p *Player) SetRepeat(on bool) error {
+	return p.pool.Do(func(c *mpd.Client) error { return c.Repeat(on) })
 }
 
 // SetCrossfade sets the crossfade in seconds.
@@ -456,11 +478,9 @@ func (p *Player) Load(files []string, shuffle bool, volume int, repeat bool) (in
 	if len(files) > MaxQueue {
 		files = files[:MaxQueue]
 	}
-	order := make(map[string]int, len(files))
+	order := make(map[string][]int, len(files))
 	for i, f := range files {
-		if _, ok := order[f]; !ok {
-			order[f] = i
-		}
+		order[f] = append(order[f], i)
 	}
 	queue := files
 	if shuffle {
@@ -552,11 +572,15 @@ func (p *Player) PlayNext(files []string) (int, error) {
 	return len(ids), err
 }
 
-// Add appends files to the end of the queue. Nothing starts playing.
+// Add puts files into the queue. Nothing starts playing. With shuffle on
+// each file goes to a place of its own after the current track, so it can
+// play soon, like a track added to a shuffled queue before. Otherwise the
+// files go to the end.
 func (p *Player) Add(files []string) (int, error) {
 	if len(files) == 0 {
 		return 0, nil
 	}
+	shuffle := p.Shuffle()
 	err := p.pool.Do(func(c *mpd.Client) error {
 		attrs, err := c.Status()
 		if err != nil {
@@ -566,7 +590,24 @@ func (p *Player) Add(files []string) (int, error) {
 		if length+len(files) > MaxQueue {
 			files = files[:max(0, MaxQueue-length)]
 		}
-		return addAll(c, files)
+		if !shuffle {
+			return addAll(c, files)
+		}
+		first := 0
+		if pos, err := strconv.Atoi(attrs["song"]); err == nil {
+			first = pos + 1
+		}
+		for _, f := range files {
+			at := length
+			if length > first {
+				at = first + rand.IntN(length-first+1)
+			}
+			if _, err := c.Command("addid %s %d", literal(f), at).Attrs(); err != nil {
+				return err
+			}
+			length++
+		}
+		return nil
 	})
 	return len(files), err
 }

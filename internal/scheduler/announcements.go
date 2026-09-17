@@ -85,7 +85,12 @@ func NextAnnouncements(list []store.Announcement, now time.Time, loc *time.Locat
 	var first time.Time
 	var group []store.Announcement
 	for _, a := range list {
-		t, ok := nextSlot(a, now, loc)
+		// A time that is due now, and did not play yet, comes first. It
+		// plays on one of the next checks.
+		t, ok := AnnouncementDue(a, now, loc)
+		if !ok {
+			t, ok = nextSlot(a, now, loc)
+		}
 		switch {
 		case !ok:
 		case group == nil || t.Before(first):
