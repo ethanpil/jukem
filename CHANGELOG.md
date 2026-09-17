@@ -14,6 +14,8 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Changed
 
+- Shuffle now puts the queue itself in a random order, so the queue shows
+  what plays next. MPD's random mode is no longer used (7e7fb60).
 - Announcements that are due at the same time play back to back. The
   music comes back after the last one, not between them. An announcement
   that comes due while others play, or a test play, joins them. A test play
