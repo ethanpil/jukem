@@ -7,6 +7,11 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- Announcements that are due at the same time play back to back. The
+  music comes back after the last one, not between them (894266a).
+
 ### Fixed
 
 - A new folder did not show in the Library until a rescan. jukem now
