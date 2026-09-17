@@ -110,8 +110,8 @@ export async function wizardView(main, _rest, opts = {}) {
     // A person who returns to the wizard has a rule already: nothing to add.
     if ((await A.api.get('/schedules')).schedules.length) { go(5); return; }
     const name = h('input.form-control', { type: 'text', value: 'Opening hours', required: true, maxlength: 100, id: 'wiz-name' });
-    const start = timeField({ value: '09:00', label: 'Start', required: true });
-    const end = timeField({ value: '17:00', label: 'End', required: true });
+    const start = timeField({ value: '09:00', label: 'Start', required: true, id: 'wiz-start' });
+    const end = timeField({ value: '17:00', label: 'End', required: true, id: 'wiz-end' });
     const weekend = h('input', { type: 'checkbox' });
     const shuffle = h('input', { type: 'checkbox', checked: set.default_shuffle });
     const err = h('div.form-error');
@@ -124,7 +124,7 @@ export async function wizardView(main, _rest, opts = {}) {
     } },
       h('p.wiz-lead', 'When should music play? The whole library plays during this window. Add more rules later in Schedule.'),
       field('Name', name, 'wiz-name'),
-      h('div.row.g-2.mt-2', h('div.col-6', field('Start', start.el)), h('div.col-6', field('End', end.el))),
+      h('div.row.g-2.mt-2', h('div.col-6', field('Start', start.el, 'wiz-start')), h('div.col-6', field('End', end.el, 'wiz-end'))),
       h('label.check-line', weekend, 'Also on Saturday and Sunday'),
       h('label.check-line', shuffle, 'Shuffle'), err),
     [next(), skip(5)]);

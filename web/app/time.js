@@ -87,8 +87,8 @@ export function fmtHM(hhmm) {
 // setting, because a browser gives a native time input the format of its
 // own language. The value is read and written as "HH:MM", the form the
 // API uses.
-export function timeField({ value = '09:00', label = 'Time', required = false } = {}) {
-  const hours = h('select.form-select.time-part', { 'aria-label': `${label}, hour`, required });
+export function timeField({ value = '09:00', label = 'Time', required = false, id = null } = {}) {
+  const hours = h('select.form-select.time-part', { 'aria-label': `${label}, hour`, required, ...(id ? { id } : {}) });
   const minutes = h('select.form-select.time-part', { 'aria-label': `${label}, minute`, required });
   const period = h('select.form-select.time-part', { 'aria-label': `${label}, AM or PM` });
   for (let i = 0; i < (is12 ? 12 : 24); i++) {

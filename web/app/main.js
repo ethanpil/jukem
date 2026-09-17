@@ -17,9 +17,6 @@ import { wizardView } from './views/wizard.js';
 export const state = {
   session: null,
   status: null,
-  // timeZone and timeFormat come from the settings. Every time in the
-  // interface follows them.
-  timeZone: null,
   statusListeners: new Set(),
   // scanSince is when this page first saw the current library scan.
   scanSince: 0,
@@ -222,13 +219,10 @@ function showLogin() {
   loginView(document.getElementById('main'), onSignedIn);
 }
 
-// loadDisplaySettings learns the zone and the time format. Every time in
-// the interface follows them.
+// loadDisplaySettings learns the time format. Every time in the interface
+// follows it.
 export async function loadDisplaySettings() {
-  let set;
-  try { set = await A.settings(); } catch { return; }
-  state.timeZone = set.time_zone || null;
-  setTimeFormat(set.time_format);
+  try { setTimeFormat((await A.settings()).time_format); } catch { /* the default stays */ }
 }
 
 // onSignedIn starts the app shell. An unfinished setup opens the wizard.

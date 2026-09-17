@@ -175,7 +175,7 @@ export async function settingsView(main, rest) {
     } });
     const tz = h('input.form-control.mono', { type: 'text', value: settings.time_zone, list: 'tz-list', placeholder: 'Europe/London' });
     const tzList = tzDatalist('tz-list');
-    const format = h('select.form-select', { onchange: async () => {
+    const format = h('select.form-select', { id: 'set-timefmt', onchange: async () => {
       if (!await save({ time_format: format.value }, 'Time format saved')) format.value = settings.time_format || '12h';
     } },
       h('option', { value: '12h', selected: (settings.time_format || '12h') === '12h' }, '12 hours (1:05 PM)'),
@@ -202,8 +202,13 @@ export async function settingsView(main, rest) {
     const bad = c.source === 'none';
     clockBox.append(h('div', { class: `info-strip ${bad ? 'bad' : ''}` }, icon(bad ? 'x-circle-fill' : 'clock'), h('span', `Clock: ${label}`), h('span.mono', c.now_local || '')));
     if (c.source === 'none' || c.source === 'manual') {
-      const date = h('input.form-control', { type: 'date', 'aria-label': 'Date' });
-      const time = timeField({ value: '12:00', label: 'Time' });
+      // The form starts at the date and the time of this browser. A
+      // person who knows them keeps them, and the clock does not go to a
+      // time that nobody chose.
+      const local = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const date = h('input.form-control', { type: 'date', 'aria-label': 'Date', value: `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}` });
+      const time = timeField({ value: `${pad(local.getHours())}:${pad(local.getMinutes())}`, label: 'Time' });
       clockBox.append(h('form.mt-3', { onsubmit: async (e) => {
         e.preventDefault();
         try {
