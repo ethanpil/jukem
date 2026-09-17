@@ -10,7 +10,9 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ### Changed
 
 - Announcements that are due at the same time play back to back. The
-  music comes back after the last one, not between them (894266a).
+  music comes back after the last one, not between them. An announcement
+  that comes due while others play, or a test play, joins them. A test play
+  no longer gives a false alert for a scheduled announcement (dd2f4cc, 894266a).
 
 ### Fixed
 
