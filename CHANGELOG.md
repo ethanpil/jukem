@@ -7,6 +7,8 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-09-17
+
 ### Added
 
 - Now Playing shows the next announcement time and names above the queue
@@ -15,7 +17,10 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ### Changed
 
 - Shuffle now puts the queue itself in a random order, so the queue shows
-  what plays next. MPD's random mode is no longer used (7e7fb60).
+  what plays next. MPD's random mode is no longer used (7e7fb60). At the
+  end of a pass the queue gets a new order. A shuffle waits for an
+  announcement group, and Add to Queue puts a track into the shuffled
+  part (bc9cd38).
 - Announcements that are due at the same time play back to back. The
   music comes back after the last one, not between them. An announcement
   that comes due while others play, or a test play, joins them. A test play
@@ -154,7 +159,8 @@ The first appliance that works from end to end.
 - A REST API with an OpenAPI document, and an event stream for the UI.
 - An Alpine apk for x86_64 and aarch64, and a Docker image.
 
-[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/ethanpil/jukem/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/ethanpil/jukem/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/ethanpil/jukem/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/ethanpil/jukem/compare/v0.1.6...v0.1.7
