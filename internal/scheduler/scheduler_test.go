@@ -184,7 +184,7 @@ func TestWindowStartsAndEnds(t *testing.T) {
 	if len(h.p.snapshot().loaded) != 0 {
 		t.Fatal("loaded before the window")
 	}
-	if o := h.s.Owner(context.Background()); o.State != player.OwnerScheduled || o.Reason != "Nothing scheduled until 09:00" {
+	if o := h.s.Owner(context.Background()); o.State != player.OwnerScheduled || o.Reason != "Nothing scheduled until 9:00 AM" {
 		t.Fatalf("owner %+v", o)
 	}
 	h.advance(90 * time.Minute) // 09:30
@@ -193,7 +193,7 @@ func TestWindowStartsAndEnds(t *testing.T) {
 	if len(p.loaded) != 1 || p.loaded[0][0] != "Morning/a.mp3" || p.state != "play" {
 		t.Fatalf("not loaded: %+v", p)
 	}
-	if o := h.s.Owner(context.Background()); o.Reason != "Morning until 11:00" {
+	if o := h.s.Owner(context.Background()); o.Reason != "Morning until 11:00 AM" {
 		t.Fatalf("owner %+v", o)
 	}
 	// A second tick inside the window changes nothing.
@@ -263,7 +263,7 @@ func TestOverrideEndsAtNextEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.tick()
-	if o := h.s.Owner(ctx); o.State != player.OwnerOverridden || o.Reason != "Paused from web UI, schedule resumes 11:00" {
+	if o := h.s.Owner(ctx); o.State != player.OwnerOverridden || o.Reason != "Paused from web UI, schedule resumes 11:00 AM" {
 		t.Fatalf("owner %+v", o)
 	}
 	if p := h.p.snapshot(); p.state != "pause" {
@@ -388,18 +388,18 @@ func TestClockSources(t *testing.T) {
 	defer st.Close()
 	c := &Clock{store: st, buildTime: time.Now().Add(-time.Hour), bootID: func() string { return "b1" }}
 	c.probe = func() (bool, bool) { return false, false }
-	if s := c.Status(context.Background(), "UTC"); s.Source != ClockNone || s.Trusted {
+	if s := c.Status(context.Background(), "UTC", "15:04"); s.Source != ClockNone || s.Trusted {
 		t.Fatalf("got %+v", s)
 	}
 	c.probe = func() (bool, bool) { return false, true }
 	c.probedAt = time.Time{}
-	if s := c.Status(context.Background(), "UTC"); s.Source != ClockRTC || !s.Trusted {
+	if s := c.Status(context.Background(), "UTC", "15:04"); s.Source != ClockRTC || !s.Trusted {
 		t.Fatalf("got %+v", s)
 	}
 	// A dead RTC battery reports a date before the build.
 	c.buildTime = time.Now().Add(time.Hour)
 	c.probedAt = time.Time{}
-	if s := c.Status(context.Background(), "UTC"); s.Source != ClockNone {
+	if s := c.Status(context.Background(), "UTC", "15:04"); s.Source != ClockNone {
 		t.Fatalf("got %+v", s)
 	}
 	// Manual setting applies an offset and survives a reload on the same boot.
@@ -421,7 +421,7 @@ func TestClockSources(t *testing.T) {
 	// NTP synchronisation drops the manual offset.
 	c.probe = func() (bool, bool) { return true, false }
 	c.probedAt = time.Time{}
-	if s := c.Status(context.Background(), "UTC"); s.Source != ClockNTP || c.manual != nil {
+	if s := c.Status(context.Background(), "UTC", "15:04"); s.Source != ClockNTP || c.manual != nil {
 		t.Fatalf("got %+v", s)
 	}
 	var m manualOffset
@@ -451,5 +451,23 @@ func TestExpiredOverrideIsRemoved(t *testing.T) {
 	}
 	if o := h.s.Owner(ctx); o.State != player.OwnerScheduled {
 		t.Fatalf("owner %+v", o)
+	}
+}
+
+// The owner reason gives the time of day in the format of the settings.
+func TestOwnerReasonFollowsTheTimeFormat(t *testing.T) {
+	h := newHarness(t)
+	h.addRule(t, "Morning", "09:00", "11:00", "Morning")
+	h.tick()
+	if o := h.s.Owner(context.Background()); o.Reason != "Nothing scheduled until 9:00 AM" {
+		t.Fatalf("12h: %q", o.Reason)
+	}
+	h.mu.Lock()
+	h.set.TimeFormat = "24h"
+	h.mu.Unlock()
+	h.s.Invalidate()
+	h.tick()
+	if o := h.s.Owner(context.Background()); o.Reason != "Nothing scheduled until 09:00" {
+		t.Fatalf("24h: %q", o.Reason)
 	}
 }

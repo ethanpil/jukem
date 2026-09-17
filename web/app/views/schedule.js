@@ -3,6 +3,7 @@ import { h, clear, icon, confirmDialog, modal, spinner, errorBox } from '../dom.
 import { libraryPicker, fail } from '../fileops.js';
 import { automationCard } from '../automation.js';
 import { announcementsPanel } from '../announcements.js';
+import { fmtHM, hour12, timeField } from '../time.js';
 
 // The week starts on Sunday. The bits are the API's: Monday is 1, Sunday is 64.
 const DAYS = [['Sun', 64], ['Mon', 1], ['Tue', 2], ['Wed', 4], ['Thu', 8], ['Fri', 16], ['Sat', 32]];
@@ -67,10 +68,13 @@ export async function scheduleView(main) {
     } catch (e) { if (gen === weekGen) clear(weekBox).append(weekNav(), errorBox(e)); return; }
     if (gen !== weekGen) return;
     tz = r.time_zone;
-    const fmt = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-    const hm = new Intl.DateTimeFormat([], { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    const clock = hour12() ? { hour: 'numeric', minute: '2-digit', hour12: true } : { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+    const fmt = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', ...clock });
+    const hm = new Intl.DateTimeFormat([], { timeZone: tz, ...clock });
     const weekday = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short' });
     const dayNum = new Intl.DateTimeFormat([], { timeZone: tz, day: 'numeric' });
+    // minutesOfDay gives the place of a block in the column, so it stays
+    // on the 24 hour clock whatever the setting says.
     const minutesOfDay = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });
     const minutes = (d) => { const p = Object.fromEntries(minutesOfDay.formatToParts(d).map((x) => [x.type, x.value])); return Number(p.hour) * 60 + Number(p.minute); };
     const days = r.days.map((d) => new Date(d));
@@ -131,7 +135,7 @@ export async function scheduleView(main) {
       const sw = h('input.form-check-input', { type: 'checkbox', role: 'switch', checked: s.enabled, 'aria-label': `Enable ${s.name}`, onchange: async () => {
         try { await A.api.put(`/schedules/${s.id}`, { ...s, enabled: sw.checked }); } catch (err) { sw.checked = !sw.checked; fail(err); }
       } });
-      const summary = `${dayLabel(s.days)} · ${s.start_time}–${s.end_time}${s.end_time <= s.start_time ? ' (next day)' : ''} · ${sourceLabel(s)}${s.shuffle ? ' · shuffle' : ''}${s.volume != null ? ` · vol ${s.volume}` : ''}`;
+      const summary = `${dayLabel(s.days)} · ${fmtHM(s.start_time)}–${fmtHM(s.end_time)}${s.end_time <= s.start_time ? ' (next day)' : ''} · ${sourceLabel(s)}${s.shuffle ? ' · shuffle' : ''}${s.volume != null ? ` · vol ${s.volume}` : ''}`;
       list.append(h('div.row-item.tall',
         h('div.form-check.form-switch.switch-only', sw),
         h('div.row-main', h('div.row-title.fw-semibold', s.name), h('div.row-sub.text-wrap', { title: summary }, summary)),
@@ -220,8 +224,8 @@ export async function scheduleView(main) {
     const init = rule || { name: '', enabled: true, days: 31, start_time: '09:00', end_time: '17:00', source_type: 'directory', source_ref: '', shuffle: defaultShuffle, volume: null };
     const name = h('input.form-control', { type: 'text', value: init.name, required: true, maxlength: 100, placeholder: 'Opening hours' });
     const dayChecks = DAYS.map(([label, bit]) => { const c = h('input.btn-check', { type: 'checkbox', id: `day-${bit}`, checked: !!(init.days & bit), autocomplete: 'off' }); return [c, h('label.btn.btn-sm', { for: `day-${bit}` }, label)]; });
-    const start = h('input.form-control', { type: 'time', value: init.start_time, required: true });
-    const end = h('input.form-control', { type: 'time', value: init.end_time, required: true });
+    const start = timeField({ value: init.start_time, label: 'Start', required: true });
+    const end = timeField({ value: init.end_time, label: 'End', required: true });
     const src = sourceFields(init);
     const err = h('div.form-error');
     const form = h('form', { onsubmit: async (e) => {
@@ -239,7 +243,7 @@ export async function scheduleView(main) {
       h('label.form-label', 'Name'), name,
       h('label.form-label.mt-3', 'Days ', h('span.muted.fw-normal', '(the day the window starts)')),
       h('div.d-flex.flex-wrap.gap-1', dayChecks.flat()),
-      h('div.row.g-2.mt-2', h('div.col-6', h('label.form-label', 'Start'), start), h('div.col-6', h('label.form-label', 'End'), end)),
+      h('div.row.g-2.mt-2', h('div.col-6', h('label.form-label', 'Start'), start.el), h('div.col-6', h('label.form-label', 'End'), end.el)),
       h('div.form-text', 'An end earlier than the start runs past midnight. Music repeats until the window ends.'),
       h('div.mt-3', src.el), err);
     const dlg = modal({ title: rule ? 'Edit rule' : 'New rule', body: form, footer: editorFooter(form) });
@@ -258,7 +262,7 @@ export async function scheduleView(main) {
     if (!upcoming.length) { excBox.append(h('div.panel-empty', 'No upcoming exceptions. Use them for holidays, closures and one-off events.')); return; }
     const list = h('div.rows');
     for (const e of upcoming) {
-      const what = e.kind === 'silent' ? 'Silent all day' : e.kind === 'hours' ? `${e.start_time}–${e.end_time} · ${sourceLabel({ source_type: e.source_type, source_ref: e.source_ref })}` : `Normal hours · ${sourceLabel({ source_type: e.source_type, source_ref: e.source_ref })}`;
+      const what = e.kind === 'silent' ? 'Silent all day' : e.kind === 'hours' ? `${fmtHM(e.start_time)}–${fmtHM(e.end_time)} · ${sourceLabel({ source_type: e.source_type, source_ref: e.source_ref })}` : `Normal hours · ${sourceLabel({ source_type: e.source_type, source_ref: e.source_ref })}`;
       list.append(h('div.row-item.tall',
         h('span.row-date', e.date),
         h('div.row-main', h('div.row-title.fw-semibold', e.note || what), e.note ? h('div.row-sub', what) : null),
@@ -279,9 +283,9 @@ export async function scheduleView(main) {
       h('option', { value: 'silent', selected: init.kind === 'silent' }, 'Silent all day'),
       h('option', { value: 'hours', selected: init.kind === 'hours' }, 'Different hours'),
       h('option', { value: 'source', selected: init.kind === 'source' }, 'Different source, normal hours'));
-    const start = h('input.form-control', { type: 'time', value: init.start_time || '09:00' });
-    const end = h('input.form-control', { type: 'time', value: init.end_time || '17:00' });
-    const hoursRow = h('div.row.g-2.mt-2', h('div.col-6', h('label.form-label', 'Start'), start), h('div.col-6', h('label.form-label', 'End'), end));
+    const start = timeField({ value: init.start_time || '09:00', label: 'Start' });
+    const end = timeField({ value: init.end_time || '17:00', label: 'End' });
+    const hoursRow = h('div.row.g-2.mt-2', h('div.col-6', h('label.form-label', 'Start'), start.el), h('div.col-6', h('label.form-label', 'End'), end.el));
     const src = sourceFields(init);
     const srcBox = h('div.mt-3', src.el);
     const sync = () => { hoursRow.classList.toggle('hidden', kind.value !== 'hours'); srcBox.classList.toggle('hidden', kind.value === 'silent'); };

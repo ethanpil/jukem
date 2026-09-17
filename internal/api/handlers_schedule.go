@@ -75,7 +75,7 @@ func (s *Server) checkConflicts(ctx context.Context, r store.Schedule) error {
 		}
 	}
 	var mine []scheduler.Conflict
-	for _, c := range scheduler.Conflicts(all, s.loc(), s.opts.Scheduler.Now()) {
+	for _, c := range scheduler.Conflicts(all, s.loc(), s.opts.Scheduler.Now(), s.opts.Settings().ClockLayout()) {
 		if c.RuleID == r.ID || c.OtherID == r.ID {
 			mine = append(mine, c)
 		}
@@ -180,7 +180,7 @@ func (s *Server) registerSchedule(api huma.API) {
 		}
 		out := &rulesOutput{}
 		out.Body.Schedules = rules
-		out.Body.Conflicts = scheduler.Conflicts(rules, s.loc(), s.opts.Scheduler.Now())
+		out.Body.Conflicts = scheduler.Conflicts(rules, s.loc(), s.opts.Scheduler.Now(), s.opts.Settings().ClockLayout())
 		if out.Body.Conflicts == nil {
 			out.Body.Conflicts = []scheduler.Conflict{}
 		}
@@ -512,7 +512,8 @@ func (s *Server) registerSchedule(api huma.API) {
 		OperationID: "get-clock", Method: http.MethodGet, Path: "/clock", Tags: []string{"schedule"},
 		Summary: "Clock source and status",
 	}, func(ctx context.Context, _ *struct{}) (*struct{ Body scheduler.ClockStatus }, error) {
-		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, s.opts.Settings().TimeZone)}, nil
+		set := s.opts.Settings()
+		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, set.TimeZone, set.ClockLayout())}, nil
 	})
 	type clockInput struct {
 		Body struct {
@@ -548,6 +549,6 @@ func (s *Server) registerSchedule(api huma.API) {
 			}
 		}
 		s.opts.Scheduler.Invalidate()
-		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone)}, nil
+		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone, s.opts.Settings().ClockLayout())}, nil
 	})
 }

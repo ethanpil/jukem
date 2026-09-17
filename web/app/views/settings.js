@@ -2,6 +2,7 @@ import * as A from '../api.js';
 import { h, clear, icon, toast, spinner, errorBox, confirmDialog, copyText, fmtTime, modal, tzDatalist } from '../dom.js';
 import { signOut } from '../main.js';
 import { dirPicker } from '../dirpicker.js';
+import { timeField } from '../time.js';
 
 // settingsView is one page with sections and a section list beside them.
 // Each section renders from the current settings and saves the whole object.
@@ -174,6 +175,11 @@ export async function settingsView(main, rest) {
     } });
     const tz = h('input.form-control.mono', { type: 'text', value: settings.time_zone, list: 'tz-list', placeholder: 'Europe/London' });
     const tzList = tzDatalist('tz-list');
+    const format = h('select.form-select', { onchange: async () => {
+      if (!await save({ time_format: format.value }, 'Time format saved')) format.value = settings.time_format || '12h';
+    } },
+      h('option', { value: '12h', selected: (settings.time_format || '12h') === '12h' }, '12 hours (1:05 PM)'),
+      h('option', { value: '24h', selected: settings.time_format === '24h' }, '24 hours (13:05)'));
     const clockBox = h('div.mt-3');
     loadClock(clockBox);
     body.append(heading('Schedule'),
@@ -181,6 +187,10 @@ export async function settingsView(main, rest) {
       h('form.mt-3', { onsubmit: async (e) => { e.preventDefault(); await save({ time_zone: tz.value }); } },
         h('div.field-row', h('label.grow', h('span.form-label.d-block', 'Time zone'), tz), h('button.btn.btn-outline-secondary', { type: 'submit' }, 'Save')), tzList,
         h('div.form-text', `Browser zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`)),
+      h('div.mt-3',
+        h('label.form-label', { for: 'set-timefmt' }, 'Time format'),
+        format,
+        h('div.form-text', 'jukem shows every time this way, and it asks for a time this way.')),
       clockBox);
   }
 
@@ -193,7 +203,7 @@ export async function settingsView(main, rest) {
     clockBox.append(h('div', { class: `info-strip ${bad ? 'bad' : ''}` }, icon(bad ? 'x-circle-fill' : 'clock'), h('span', `Clock: ${label}`), h('span.mono', c.now_local || '')));
     if (c.source === 'none' || c.source === 'manual') {
       const date = h('input.form-control', { type: 'date', 'aria-label': 'Date' });
-      const time = h('input.form-control', { type: 'time', 'aria-label': 'Time' });
+      const time = timeField({ value: '12:00', label: 'Time' });
       clockBox.append(h('form.mt-3', { onsubmit: async (e) => {
         e.preventDefault();
         try {
@@ -202,7 +212,7 @@ export async function settingsView(main, rest) {
           loadClock(clockBox);
         } catch (ex) { toast(ex.message, 'danger'); }
       } },
-        h('div.field-row', date, time, h('button.btn.btn-outline-secondary', { type: 'submit' }, 'Set clock')),
+        h('div.field-row', date, time.el, h('button.btn.btn-outline-secondary', { type: 'submit' }, 'Set clock')),
         h('div.form-text', 'Without an RTC or NTP the time must be entered again after every reboot. To fix the system clock properly, on the console: date -s "YYYY-MM-DD HH:MM" and hwclock -w')));
     }
   }

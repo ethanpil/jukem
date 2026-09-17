@@ -5,6 +5,7 @@
 import * as A from './api.js';
 import { h, clear, icon, toast, confirmDialog, modal, spinner, errorBox, dotsMenu, menuItem, menuDivider, problemMessage } from './dom.js';
 import { libraryPicker, fail, baseOf } from './fileops.js';
+import { fmtHM, timeField, setDisabled } from './time.js';
 
 // The week starts on Sunday, as everywhere else. The bits are the API's:
 // Monday is 1, Sunday is 64.
@@ -26,8 +27,8 @@ function dayLabel(mask) {
 // summary is the one line under the name of an announcement.
 function summary(a) {
   const when = a.mode === 'at'
-    ? `at ${a.at_time}`
-    : `every ${a.every_minutes} min from ${a.start_time} to ${a.end_time}`;
+    ? `at ${fmtHM(a.at_time)}`
+    : `every ${a.every_minutes} min from ${fmtHM(a.start_time)} to ${fmtHM(a.end_time)}`;
   const what = a.source_kind === 'file' ? baseOf(a.source_ref) : `${a.source_kind === 'random' ? 'any file' : 'files in turn'} of /${a.source_ref || ''}`;
   return `${dayLabel(a.days)} · ${when} · ${what}${a.volume != null ? ` · vol ${a.volume}` : ''}`;
 }
@@ -104,14 +105,14 @@ export function announcementsPanel() {
     const mode = h('select.form-select',
       h('option', { value: 'at', selected: init.mode !== 'every' }, 'At Specific Time'),
       h('option', { value: 'every', selected: init.mode === 'every' }, 'At An Interval'));
-    const atTime = h('input.form-control', { type: 'time', value: init.at_time || '10:15', required: true });
-    const startTime = h('input.form-control', { type: 'time', value: init.start_time || '09:00', required: true });
-    const endTime = h('input.form-control', { type: 'time', value: init.end_time || '17:00', required: true });
+    const atTime = timeField({ value: init.at_time || '10:15', label: 'Time', required: true });
+    const startTime = timeField({ value: init.start_time || '09:00', label: 'Start', required: true });
+    const endTime = timeField({ value: init.end_time || '17:00', label: 'End', required: true });
     const every = h('input.form-control', { type: 'number', min: 1, max: 1440, value: init.every_minutes ?? 30, required: true });
-    const atRow = h('div.mt-2', h('label.form-label', 'Time'), atTime);
+    const atRow = h('div.mt-2', h('label.form-label', 'Time'), atTime.el);
     const everyRow = h('div.row.g-2.mt-2',
-      h('div.col-4', h('label.form-label', 'From'), startTime),
-      h('div.col-4', h('label.form-label', 'To'), endTime),
+      h('div.col-4', h('label.form-label', 'From'), startTime.el),
+      h('div.col-4', h('label.form-label', 'To'), endTime.el),
       h('div.col-4', h('label.form-label', 'Every (min)'), every));
 
     const kind = h('select.form-select');
@@ -138,8 +139,10 @@ export function announcementsPanel() {
       everyRow.classList.toggle('hidden', at);
       // A field that is hidden must not hold the form back, so it is
       // switched off while it is out of the way.
-      atTime.disabled = !at;
-      for (const el of [startTime, endTime, every]) el.disabled = at;
+      setDisabled(atTime.el, !at);
+      setDisabled(startTime.el, at);
+      setDisabled(endTime.el, at);
+      every.disabled = at;
       ref.placeholder = kind.value === 'file' ? 'announcements/closing.mp3' : 'announcements';
       kindNote.textContent = KINDS.find(([v]) => v === kind.value)[2];
     };

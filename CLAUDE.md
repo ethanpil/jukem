@@ -259,6 +259,13 @@ Do not reopen these without a reason from the user.
 - **The queue list starts at the current track** and follows it.
 - **Browser preview** plays a track in the browser only. It is in the row
   button and in the row menu.
+- **One time format for the whole appliance** (2026-09-17). Settings >
+  Schedule holds `time_format` ("12h" or "24h", 12h by default). Every time
+  the interface shows, and every time it asks for, follows it.
+  `web/app/time.js` holds the formatters and the `timeField` control, which
+  replaces the native time input, because a browser gives that input the
+  format of its own language. The server writes its own times with
+  `Settings.ClockLayout()`.
 - **The allowed extension list gates uploads only.** It does not affect
   playback or the library scan.
 - **The logo** is one SVG that sets its own colour for dark mode. Firefox

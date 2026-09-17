@@ -135,17 +135,17 @@ func TestConflictsAcrossWeekdays(t *testing.T) {
 	sat := rule(2, "Saturday early", store.Saturday, "00:00", "03:00")
 	mon := rule(3, "Monday", store.Monday, "09:00", "10:00")
 	now := time.Date(2026, 1, 5, 12, 0, 0, 0, loc)
-	c := Conflicts([]store.Schedule{fri, sat, mon}, loc, now)
+	c := Conflicts([]store.Schedule{fri, sat, mon}, loc, now, "15:04")
 	if len(c) != 1 || c[0].RuleID != 1 || c[0].OtherID != 2 {
 		t.Fatalf("got %+v", c)
 	}
-	if c := Conflicts([]store.Schedule{fri, mon}, loc, now); len(c) != 0 {
+	if c := Conflicts([]store.Schedule{fri, mon}, loc, now, "15:04"); len(c) != 0 {
 		t.Fatalf("false conflict %+v", c)
 	}
 	// Two windows that touch do not overlap.
 	a := rule(4, "A", store.Monday, "09:00", "10:00")
 	b := rule(5, "B", store.Monday, "10:00", "11:00")
-	if c := Conflicts([]store.Schedule{a, b}, loc, now); len(c) != 0 {
+	if c := Conflicts([]store.Schedule{a, b}, loc, now, "15:04"); len(c) != 0 {
 		t.Fatalf("touching windows conflict %+v", c)
 	}
 }

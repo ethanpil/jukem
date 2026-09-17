@@ -106,7 +106,7 @@ func (c *Clock) Now() time.Time {
 
 // Status reports the source. As soon as the kernel reports
 // synchronisation, a manual offset is dropped.
-func (c *Clock) Status(ctx context.Context, zone string) ClockStatus {
+func (c *Clock) Status(ctx context.Context, zone, layout string) ClockStatus {
 	synced, rtc := c.probeCached()
 	c.mu.Lock()
 	if synced && c.manual != nil {
@@ -131,7 +131,7 @@ func (c *Clock) Status(ctx context.Context, zone string) ClockStatus {
 		st.Source = ClockNone
 	}
 	if loc, err := time.LoadLocation(zone); err == nil {
-		st.NowLocal = st.Now.In(loc).Format("Mon 2 Jan 2006 15:04:05")
+		st.NowLocal = st.Now.In(loc).Format("Mon 2 Jan 2006 " + layout)
 	}
 	if st.Source == ClockManual || st.Source == ClockNone {
 		st.FixHint = fmt.Sprintf("date -s '%s' && hwclock -w", st.Now.UTC().Format("2006-01-02 15:04:05 UTC"))
@@ -141,7 +141,7 @@ func (c *Clock) Status(ctx context.Context, zone string) ClockStatus {
 
 // Trusted reports whether scheduling may run.
 func (c *Clock) Trusted(ctx context.Context) bool {
-	return c.Status(ctx, "UTC").Trusted
+	return c.Status(ctx, "UTC", "15:04").Trusted
 }
 
 // SetManual stores the difference between the entered time and the

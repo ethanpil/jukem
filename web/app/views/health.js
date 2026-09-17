@@ -1,5 +1,6 @@
 import * as A from '../api.js';
 import { h, clear, icon, spinner, errorBox, fmtTime, toast } from '../dom.js';
+import { fmtTimeOfDay } from '../time.js';
 
 const statusIcon = { ok: 'check-circle-fill', warning: 'exclamation-triangle-fill', error: 'x-circle-fill' };
 
@@ -37,7 +38,7 @@ export async function healthView(main) {
         h('div', { class: `big ${status}` }, icon(statusIcon[status])),
         h('div',
           h('h1.page-title', rep.status === 'ok' ? 'System healthy' : rep.status === 'warning' ? 'System needs attention' : 'System has a problem'),
-          h('div.small-note', `Checked ${new Date().toLocaleTimeString()}`)))));
+          h('div.small-note', `Checked ${fmtTimeOfDay(new Date())}`)))));
     const stack = h('div.stack');
     box.append(stack);
     if (rep.reason) stack.append(h('div.alert.alert-danger.mb-0', icon('x-circle-fill'), h('div.flex-1', h('div.fw-semibold', rep.reason), rep.fix ? h('pre.pre-wrap.mt-2', rep.fix) : null)));

@@ -5,6 +5,7 @@
 import * as A from './api.js';
 import { h, clear, icon, toast, confirmDialog } from './dom.js';
 import { state } from './main.js';
+import { fmtWhen } from './time.js';
 
 // STOPS are the choices of the Stop Scheduler group.
 const STOPS = [
@@ -12,39 +13,6 @@ const STOPS = [
   ['1 hour', { mode: 'timed', minutes: 60 }, 'Stop the scheduler for 1 hour'],
   ['Until next event', { mode: 'until_next' }, 'Stop the scheduler until its next start or end'],
 ];
-
-// formatters keeps one set of Intl formatters per zone. A zone the browser
-// does not know falls back to the browser's own zone.
-const formatters = new Map();
-function formattersFor(zone) {
-  const key = zone || '';
-  if (formatters.has(key)) return formatters.get(key);
-  let made;
-  try {
-    const opts = zone ? { timeZone: zone } : {};
-    made = {
-      time: new Intl.DateTimeFormat([], { ...opts, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }),
-      weekday: new Intl.DateTimeFormat([], { ...opts, weekday: 'short' }),
-      day: new Intl.DateTimeFormat('en-CA', { ...opts, year: 'numeric', month: '2-digit', day: '2-digit' }),
-    };
-  } catch {
-    // An unknown zone name must not stop the card from drawing.
-    made = formattersFor('');
-  }
-  formatters.set(key, made);
-  return made;
-}
-
-// formatWhen gives the time of an instant in the zone, with the weekday
-// when it is not today there.
-export function formatWhen(iso, zone) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const f = formattersFor(zone);
-  const sameDay = f.day.format(d) === f.day.format(new Date());
-  return (sameDay ? '' : f.weekday.format(d) + ' ') + f.time.format(d);
-}
 
 // automationCard returns {el, onEvent, destroy}. timeZone is the zone of the
 // appliance; a host that has it already passes it and saves a request.
@@ -58,7 +26,7 @@ export function automationCard({ title = 'Scheduler', playingLabel = 'Scheduled'
   let destroyed = false;
   let shown = '';         // the card is drawn again only when it changes
 
-  const fmt = (iso) => formatWhen(iso, zone);
+  const fmt = (iso) => fmtWhen(iso, zone);
 
   const line = (label, value) => h('div.auto-line', h('span.auto-label', label), h('b', value));
 

@@ -358,7 +358,7 @@ func (a *App) buildHealth() watchdog.Report {
 	default:
 		checks = append(checks, watchdog.Check{Name: "Scheduler", Status: watchdog.StatusOK, Summary: owner.Reason})
 	}
-	clock := a.Clock.Status(context.Background(), set.TimeZone)
+	clock := a.Clock.Status(context.Background(), set.TimeZone, set.ClockLayout())
 	switch clock.Source {
 	case scheduler.ClockNTP:
 		checks = append(checks, watchdog.Check{Name: "Clock", Status: watchdog.StatusOK, Summary: "synchronized (NTP)"})
@@ -396,9 +396,9 @@ func (a *App) libraryChecks(set store.Settings, loc *time.Location) []watchdog.C
 		summary := fmt.Sprintf("OK, %s tracks", withCommas(songs))
 		if !updated.IsZero() {
 			// Today's scan shows the time; an older one adds the weekday.
-			layout := "15:04"
+			layout := set.ClockLayout()
 			if updated.In(loc).Format("2006-01-02") != time.Now().In(loc).Format("2006-01-02") {
-				layout = "Mon 15:04"
+				layout = "Mon " + layout
 			}
 			summary += ", last scan " + updated.In(loc).Format(layout)
 		}

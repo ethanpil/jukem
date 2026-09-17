@@ -4,7 +4,7 @@
 
 import * as A from './api.js';
 import { h, clear } from './dom.js';
-import { formatWhen } from './automation.js';
+import { fmtWhen } from './time.js';
 
 // nextAnnouncementCard returns {el, onEvent, destroy}. The card stays hidden
 // when no announcement plays in the coming week.
@@ -38,7 +38,7 @@ export function nextAnnouncementCard() {
     }
     clear(body).append(h('div.auto-line',
       h('span.auto-label', 'Next'),
-      h('b', formatWhen(next.at, zone)),
+      h('b', fmtWhen(next.at, zone)),
       h('span', next.announcements.map((a) => a.name).join(' · '))));
     el.classList.remove('d-none');
     // After the time passes, the card shows the time after it. The card

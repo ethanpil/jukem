@@ -3,6 +3,7 @@ import { h, clear, icon, toast, errorBox, tzDatalist, logo } from '../dom.js';
 import { dirPicker } from '../dirpicker.js';
 import { navigate } from '../router.js';
 import { state, refreshStatus } from '../main.js';
+import { timeField } from '../time.js';
 
 // The wizard runs on the first visit: password, time zone, music root,
 // output device, a first schedule, and a track that must be heard. Setup
@@ -109,8 +110,8 @@ export async function wizardView(main, _rest, opts = {}) {
     // A person who returns to the wizard has a rule already: nothing to add.
     if ((await A.api.get('/schedules')).schedules.length) { go(5); return; }
     const name = h('input.form-control', { type: 'text', value: 'Opening hours', required: true, maxlength: 100, id: 'wiz-name' });
-    const start = h('input.form-control', { type: 'time', value: '09:00', required: true, id: 'wiz-start' });
-    const end = h('input.form-control', { type: 'time', value: '17:00', required: true, id: 'wiz-end' });
+    const start = timeField({ value: '09:00', label: 'Start', required: true });
+    const end = timeField({ value: '17:00', label: 'End', required: true });
     const weekend = h('input', { type: 'checkbox' });
     const shuffle = h('input', { type: 'checkbox', checked: set.default_shuffle });
     const err = h('div.form-error');
@@ -123,7 +124,7 @@ export async function wizardView(main, _rest, opts = {}) {
     } },
       h('p.wiz-lead', 'When should music play? The whole library plays during this window. Add more rules later in Schedule.'),
       field('Name', name, 'wiz-name'),
-      h('div.row.g-2.mt-2', h('div.col-6', field('Start', start, 'wiz-start')), h('div.col-6', field('End', end, 'wiz-end'))),
+      h('div.row.g-2.mt-2', h('div.col-6', field('Start', start.el)), h('div.col-6', field('End', end.el))),
       h('label.check-line', weekend, 'Also on Saturday and Sunday'),
       h('label.check-line', shuffle, 'Shuffle'), err),
     [next(), skip(5)]);

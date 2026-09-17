@@ -1,6 +1,8 @@
 // DOM helpers. Track titles and file names come from uploaded files, so
 // every view builds elements with textContent and attributes, never HTML.
 
+import { fmtStamp } from './time.js';
+
 // h('tag.class#id', {attr: value, onclick: fn}, ...children)
 export function h(spec, attrs, ...children) {
   const m = /^([a-z0-9-]+)?((?:[.#][\w-]+)*)$/i.exec(spec);
@@ -190,9 +192,7 @@ export function fmtBytes(n) {
 }
 
 export function fmtTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  return fmtStamp(iso);
 }
 
 // copyText copies to the clipboard, with the execCommand fallback that

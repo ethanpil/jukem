@@ -35,6 +35,7 @@ type Settings struct {
 	// Schedule
 	SchedulerEnabled bool   `json:"scheduler_enabled" doc:"Off puts the appliance in manual mode"`
 	TimeZone         string `json:"time_zone" doc:"IANA zone name used for every schedule"`
+	TimeFormat       string `json:"time_format" enum:"12h,24h" doc:"How jukem shows and asks for a time of day"`
 
 	// Library
 	MusicRoot         string   `json:"music_root" doc:"Directory MPD reads music from"`
@@ -69,6 +70,7 @@ func DefaultSettings() Settings {
 		FadeOut:            4,
 		SchedulerEnabled:   true,
 		TimeZone:           "UTC",
+		TimeFormat:         "12h",
 		MusicRoot:          "/srv/jukem/music",
 		UploadMaxBytes:     500 << 20,
 		AllowedExtensions:  []string{"mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff"},
@@ -112,6 +114,13 @@ func (set *Settings) Validate() error {
 	}
 	if set.TimeZone == "" {
 		return fmt.Errorf("time zone is required")
+	}
+	switch set.TimeFormat {
+	case "", "12h":
+		set.TimeFormat = "12h"
+	case "24h":
+	default:
+		return fmt.Errorf("time format must be 12h or 24h")
 	}
 	if set.MusicRoot == "" {
 		return fmt.Errorf("music root is required")
@@ -167,4 +176,13 @@ func (set *Settings) ExtensionAllowed(name string) bool {
 		}
 	}
 	return false
+}
+
+// ClockLayout is the Go layout for a time of day, as the settings ask for
+// it. Every message that gives a time of day uses it.
+func (s Settings) ClockLayout() string {
+	if s.TimeFormat == "24h" {
+		return "15:04"
+	}
+	return "3:04 PM"
 }

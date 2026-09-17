@@ -2,6 +2,7 @@ import * as A from '../api.js';
 import { h, clear, icon, toast, fmtDuration, confirmDialog, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import { state, refreshStatus } from '../main.js';
 import { automationCard } from '../automation.js';
+import { fmtTimeOfDay } from '../time.js';
 import { nextAnnouncementCard } from '../nextannouncement.js';
 
 const PAGE = 200;
@@ -171,7 +172,7 @@ export async function nowPlayingView(main) {
     for (const row of rows) {
       const at = new Date(row.started_at);
       // A track from an earlier day also shows the weekday.
-      const when = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const when = fmtTimeOfDay(at);
       const label = at.toDateString() === today ? when : `${at.toLocaleDateString([], { weekday: 'short' })} ${when}`;
       recentBox.append(h('div.row-item.plain.dim',
         h('span', { class: `row-time nowrap ${older ? 'wide' : ''}` }, label),

@@ -250,7 +250,7 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 		return v
 	}
 	if v.hasOver {
-		v.owner = overrideOwner(v.override, v.now, v.overEnd, v.hasEnd, v.loc)
+		v.owner = overrideOwner(v.override, v.now, v.overEnd, v.hasEnd, v.loc, v.set.ClockLayout())
 		// The rule that plays when the schedule takes over again is the one
 		// of that moment, not the one of now: a stop usually ends where the
 		// window of now ends.
@@ -264,12 +264,12 @@ func (s *Scheduler) snapshot(ctx context.Context) view {
 		return v
 	}
 	if iv, ok := Current(v.ivs, v.now); ok {
-		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc)), Program: iv.Name, Since: &iv.Start, Until: &iv.End}
+		v.owner = player.Owner{State: player.OwnerScheduled, Reason: fmt.Sprintf("%s until %s", iv.Name, fmtWhen(iv.End, v.now, v.loc, v.set.ClockLayout())), Program: iv.Name, Since: &iv.Start, Until: &iv.End}
 		return v
 	}
 	for _, iv := range v.ivs {
 		if iv.Start.After(v.now) {
-			v.owner = player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled until " + fmtWhen(iv.Start, v.now, v.loc), Until: &iv.Start}
+			v.owner = player.Owner{State: player.OwnerScheduled, Reason: "Nothing scheduled until " + fmtWhen(iv.Start, v.now, v.loc, v.set.ClockLayout()), Until: &iv.Start}
 			return v
 		}
 	}
@@ -282,14 +282,14 @@ func (s *Scheduler) Owner(ctx context.Context) player.Owner {
 	return s.snapshot(ctx).owner
 }
 
-func overrideOwner(o store.Override, now, end time.Time, hasEnd bool, loc *time.Location) player.Owner {
+func overrideOwner(o store.Override, now, end time.Time, hasEnd bool, loc *time.Location, layout string) player.Owner {
 	what := map[string]string{"play": "Playing", "pause": "Paused", "stop": "Stopped"}[o.Intent]
 	if o.Mode == "play_now" {
 		what = "Playing a selection"
 	}
 	reason := what + " from " + o.Source
 	if hasEnd {
-		reason += ", schedule resumes " + fmtWhen(end, now, loc)
+		reason += ", schedule resumes " + fmtWhen(end, now, loc, layout)
 	} else {
 		reason += " until you start the scheduler"
 	}
@@ -300,13 +300,14 @@ func overrideOwner(o store.Override, now, end time.Time, hasEnd bool, loc *time.
 	return out
 }
 
-// fmtWhen writes a time as HH:MM today, or with the weekday further out.
-func fmtWhen(t, now time.Time, loc *time.Location) string {
+// fmtWhen writes a time of day for today, or with the weekday further
+// out. layout is the clock layout of the settings.
+func fmtWhen(t, now time.Time, loc *time.Location, layout string) string {
 	lt, nl := t.In(loc), now.In(loc)
 	if lt.Format("2006-01-02") == nl.Format("2006-01-02") {
-		return lt.Format("15:04")
+		return lt.Format(layout)
 	}
-	return lt.Format("Mon 15:04")
+	return lt.Format("Mon " + layout)
 }
 
 // overrideEnd returns when an override ends by the schedule: the next

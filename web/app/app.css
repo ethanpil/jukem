@@ -680,6 +680,10 @@ button.row-item.selected:hover { background: var(--accent-soft); }
 
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px; }
 .field-row { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
+/* The time field: hour, minute and, with the 12 hour format, AM or PM. */
+.time-field { display: flex; align-items: center; gap: 4px; }
+.time-field .time-part { width: auto; min-width: 66px; padding-right: 26px; background-position: right 6px center; }
+.time-field .time-sep { color: var(--text-3); }
 .field-row > .grow { flex: 1; min-width: 180px; }
 /* A select in a row keeps its own width, so the row does not wrap. */
 .field-row > .form-select, .input-row > .form-select { width: auto; }

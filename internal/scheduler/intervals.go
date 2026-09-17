@@ -273,7 +273,7 @@ type Conflict struct {
 
 // Conflicts expands the rules over one full week and reports every pair
 // that overlaps. Exceptions are not rules and do not count.
-func Conflicts(rules []store.Schedule, loc *time.Location, now time.Time) []Conflict {
+func Conflicts(rules []store.Schedule, loc *time.Location, now time.Time, layout string) []Conflict {
 	y, m, d := now.In(loc).Date()
 	from := dayAt(y, m, d, loc)
 	ivs := Expand(rules, nil, loc, from, dayAt(y, m, d+8, loc))
@@ -294,7 +294,7 @@ func Conflicts(rules []store.Schedule, loc *time.Location, now time.Time) []Conf
 			seen[pair] = true
 			out = append(out, Conflict{
 				RuleID: ivs[i].RuleID, RuleName: ivs[i].Name, OtherID: ivs[j].RuleID, OtherName: ivs[j].Name,
-				At: ivs[j].Start.In(loc).Format("Mon 15:04"),
+				At: ivs[j].Start.In(loc).Format("Mon " + layout),
 			})
 		}
 	}
