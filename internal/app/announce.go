@@ -231,7 +231,7 @@ func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) 
 		// The play is written down before it happens. A record that fails
 		// after the play would let the same time play again every twenty
 		// seconds.
-		if err := a.markAnnouncement(ctx, d.ann, d.due, next); err != nil {
+		if err := a.markAnnouncement(ctx, d.ann, d.due, next, file); err != nil {
 			d.fail(err)
 			continue
 		}
@@ -350,13 +350,13 @@ func (a *App) setAnnouncementLevel(before player.Status, ann store.Announcement)
 // markAnnouncement writes the play time and the next position of a cycle.
 // The write does not follow the caller's context: a browser that goes away
 // must not leave the announcement due again.
-func (a *App) markAnnouncement(ctx context.Context, ann store.Announcement, due time.Time, next int) error {
+func (a *App) markAnnouncement(ctx context.Context, ann store.Announcement, due time.Time, next int, file string) error {
 	free := context.WithoutCancel(ctx)
 	if due.IsZero() {
 		// A test play keeps the time of the schedule and moves the cycle.
 		return a.Store.SetAnnouncementCycle(free, ann.ID, next)
 	}
-	return a.Store.MarkAnnouncementPlayed(free, ann.ID, due, next)
+	return a.Store.MarkAnnouncementPlayed(free, ann.ID, due, next, file)
 }
 
 // waitForAnnouncements returns when the current entry is none of the

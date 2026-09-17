@@ -24,19 +24,20 @@ type Announcement struct {
 	CycleIndex   int        `json:"-" doc:"Position in the folder, for cycle"`
 	Volume       *int       `json:"volume,omitempty" minimum:"0" maximum:"100" doc:"Volume for the announcement. The music volume returns after it."`
 	LastPlayed   *time.Time `json:"last_played,omitempty" doc:"When it played last"`
+	LastFile     *string    `json:"last_file,omitempty" doc:"The file of that play"`
 	CreatedAt    time.Time  `json:"created_at,omitempty"`
 }
 
 const announcementColumns = `id, name, enabled, days, mode, at_time, start_time, end_time, every_minutes,
-	source_kind, source_ref, cycle_index, volume, last_played, created_at`
+	source_kind, source_ref, cycle_index, volume, last_played, last_file, created_at`
 
 func scanAnnouncement(sc interface{ Scan(...any) error }) (Announcement, error) {
 	var a Announcement
-	var at, start, end, last sql.NullString
+	var at, start, end, last, lastFile sql.NullString
 	var every, vol sql.NullInt64
 	var created string
 	err := sc.Scan(&a.ID, &a.Name, &a.Enabled, &a.Days, &a.Mode, &at, &start, &end, &every,
-		&a.SourceKind, &a.SourceRef, &a.CycleIndex, &vol, &last, &created)
+		&a.SourceKind, &a.SourceRef, &a.CycleIndex, &vol, &last, &lastFile, &created)
 	if err != nil {
 		return a, err
 	}
@@ -60,6 +61,10 @@ func scanAnnouncement(sc interface{ Scan(...any) error }) (Announcement, error) 
 	if last.Valid {
 		t := parse(last.String)
 		a.LastPlayed = &t
+	}
+	if lastFile.Valid && lastFile.String != "" {
+		f := lastFile.String
+		a.LastFile = &f
 	}
 	a.CreatedAt = parse(created)
 	return a, nil
@@ -129,11 +134,11 @@ func (s *Store) DeleteAnnouncement(ctx context.Context, id int64) error {
 	return err
 }
 
-// MarkAnnouncementPlayed records the play time and the next position of a
-// cycle, so a restart does not repeat the same file.
-func (s *Store) MarkAnnouncementPlayed(ctx context.Context, id int64, at time.Time, cycleIndex int) error {
-	_, err := s.w.ExecContext(ctx, `UPDATE announcements SET last_played = ?, cycle_index = ? WHERE id = ?`,
-		format(at.UTC()), cycleIndex, id)
+// MarkAnnouncementPlayed records the play time, the file and the next
+// position of a cycle, so a restart does not repeat the same file.
+func (s *Store) MarkAnnouncementPlayed(ctx context.Context, id int64, at time.Time, cycleIndex int, file string) error {
+	_, err := s.w.ExecContext(ctx, `UPDATE announcements SET last_played = ?, cycle_index = ?, last_file = ? WHERE id = ?`,
+		format(at.UTC()), cycleIndex, file, id)
 	return err
 }
 

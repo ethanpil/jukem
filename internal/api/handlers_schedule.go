@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -138,16 +139,24 @@ func (s *Server) registerSchedule(api huma.API) {
 	type nextAnnouncement struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
+		File string `json:"file,omitempty" doc:"The file it plays, empty when a random folder decides at the play"`
+	}
+	type pastAnnouncement struct {
+		At   time.Time `json:"at"`
+		ID   int64     `json:"id"`
+		Name string    `json:"name"`
+		File string    `json:"file,omitempty"`
 	}
 	type nextOutput struct {
 		Body struct {
 			At            *time.Time         `json:"at" doc:"The next play time, or null when none is in the coming week"`
 			Announcements []nextAnnouncement `json:"announcements" doc:"The announcements that play at that time, in their play order"`
+			Previous      *pastAnnouncement  `json:"previous" doc:"The announcement that played last, or null"`
 		}
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "next-announcements", Method: http.MethodGet, Path: "/announcements/next", Tags: []string{"schedule"},
-		Summary: "The next announcement time",
+		Summary: "The next announcement time and the one that played last",
 	}, func(ctx context.Context, _ *struct{}) (*nextOutput, error) {
 		list, err := s.store.ListAnnouncements(ctx)
 		if err != nil {
@@ -158,8 +167,21 @@ func (s *Server) registerSchedule(api huma.API) {
 		if at, group, ok := scheduler.NextAnnouncements(list, s.opts.Scheduler.Now(), s.loc()); ok {
 			out.Body.At = &at
 			for _, a := range group {
-				out.Body.Announcements = append(out.Body.Announcements, nextAnnouncement{ID: a.ID, Name: a.Name})
+				out.Body.Announcements = append(out.Body.Announcements, nextAnnouncement{ID: a.ID, Name: a.Name, File: s.announcementFile(a)})
 			}
+		}
+		for _, a := range list {
+			if a.LastPlayed == nil {
+				continue
+			}
+			if out.Body.Previous != nil && !a.LastPlayed.After(out.Body.Previous.At) {
+				continue
+			}
+			p := pastAnnouncement{At: *a.LastPlayed, ID: a.ID, Name: a.Name}
+			if a.LastFile != nil {
+				p.File = *a.LastFile
+			}
+			out.Body.Previous = &p
 		}
 		return out, nil
 	})
@@ -551,4 +573,29 @@ func (s *Server) registerSchedule(api huma.API) {
 		s.opts.Scheduler.Invalidate()
 		return &struct{ Body scheduler.ClockStatus }{Body: s.opts.Clock.Status(ctx, in.Body.TimeZone, s.opts.Settings().ClockLayout())}, nil
 	})
+}
+
+// announcementFile names the file an announcement plays next. A folder
+// that plays in turn gives the file of its position. A random folder
+// decides at the play, so it gives nothing.
+func (s *Server) announcementFile(a store.Announcement) string {
+	switch a.SourceKind {
+	case "file":
+		return a.SourceRef
+	case "cycle":
+		if s.opts.Player == nil {
+			return ""
+		}
+		files, err := s.opts.Player.ListFiles(strings.Trim(a.SourceRef, "/"))
+		if err != nil || len(files) == 0 {
+			return ""
+		}
+		sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i]) < strings.ToLower(files[j]) })
+		i := a.CycleIndex % len(files)
+		if i < 0 {
+			i = 0
+		}
+		return files[i]
+	}
+	return ""
 }

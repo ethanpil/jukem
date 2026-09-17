@@ -1,6 +1,7 @@
-// The announcements card shows the next announcement time and the names
-// that play at that time. Now Playing shows it above the queue, because an
-// announcement is in the queue only while it plays.
+// The announcements card shows the announcement that played last and the
+// next one, each with its time, its name and its file. Now Playing shows
+// the card above the queue, because an announcement is in the queue only
+// while it plays.
 
 import * as A from './api.js';
 import { h, clear } from './dom.js';
@@ -32,20 +33,40 @@ export function nextAnnouncementCard() {
       return;
     }
     if (mine !== gen || destroyed) return;
-    if (!next.at || !next.announcements.length) {
+    const upcoming = next.at && next.announcements.length;
+    if (!upcoming && !next.previous) {
       el.classList.add('d-none');
       return;
     }
-    clear(body).append(h('div.auto-line',
-      h('span.auto-label', 'Next'),
-      h('b', fmtWhen(next.at, zone)),
-      h('span', next.announcements.map((a) => a.name).join(' · '))));
+    clear(body);
+    if (next.previous) {
+      body.append(line('Previous', next.previous.at, [next.previous]));
+    }
+    if (upcoming) {
+      body.append(line('Next', next.at, next.announcements));
+    }
     el.classList.remove('d-none');
     // After the time passes, the card shows the time after it. The card
     // loads again at least every six hours, so "today" stays correct.
     const wait = new Date(next.at).getTime() - Date.now() + 5000;
     timer = setTimeout(load, Math.min(Math.max(wait, 5000), 6 * 3600 * 1000));
   }
+
+  // line is one row of the card: the label, the time, and each
+  // announcement with the file it plays. A folder that picks at random
+  // has no file until it plays.
+  function line(label, at, list) {
+    const row = h('div.auto-line', h('span.auto-label', label), h('b', fmtWhen(at, zone)));
+    list.forEach((a, i) => {
+      if (i > 0) row.append(h('span.auto-label', '·'));
+      row.append(h('span', a.name));
+      if (a.file) row.append(h('span.mono.text-body-secondary', { title: a.file }, fileName(a.file)));
+    });
+    return row;
+  }
+
+  // fileName is the last part of a path, which is what a person reads.
+  function fileName(path) { return path.slice(path.lastIndexOf('/') + 1); }
 
   // The zone of the appliance comes from the settings. Until it is known,
   // the time is in the zone of this browser.
