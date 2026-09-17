@@ -56,15 +56,17 @@ func (a *App) announcementsWanted(ctx context.Context) error {
 	return nil
 }
 
-// dueAnnouncement is an announcement with the time it plays for. A zero
-// time is a test play from the UI.
+// dueAnnouncement is a request to play an announcement. due is the time it
+// plays for, and a zero time is a test play from the UI. fail hears why it
+// did not play.
 type dueAnnouncement struct {
-	ann store.Announcement
-	due time.Time
+	ann  store.Announcement
+	due  time.Time
+	fail func(error)
 }
 
-// playDueAnnouncements plays the announcements that are due now. They play
-// back to back, and the music comes back once, after the last one.
+// playDueAnnouncements asks for the announcements that are due now. The
+// group that plays takes them in, or a new group starts.
 func (a *App) playDueAnnouncements(ctx context.Context) {
 	if err := a.announcementsWanted(ctx); err != nil {
 		return
@@ -77,20 +79,21 @@ func (a *App) playDueAnnouncements(ctx context.Context) {
 	set := a.Settings()
 	loc := set.Location()
 	now := a.Scheduler.Now()
-	var batch []dueAnnouncement
+	var due []dueAnnouncement
 	for _, ann := range list {
-		if due, ok := scheduler.AnnouncementDue(ann, now, loc); ok {
-			batch = append(batch, dueAnnouncement{ann: ann, due: due})
+		t, ok := scheduler.AnnouncementDue(ann, now, loc)
+		if !ok {
+			continue
 		}
+		due = append(due, dueAnnouncement{ann: ann, due: t, fail: func(err error) {
+			a.log.Warn("announcement failed", "name", ann.Name, "error", err)
+			// The next check can try this time again, while the grace lasts.
+			a.forgetAnnouncement(ann.ID, t)
+			a.Alerter.Raise(ctx, announcementAlert(ann), fmt.Sprintf("The announcement %q did not play.", ann.Name),
+				"Check its file or folder in Schedule > Announcements.")
+		}})
 	}
-	if len(batch) == 0 {
-		return
-	}
-	a.playAnnouncements(ctx, batch, func(ann store.Announcement, err error) {
-		a.log.Warn("announcement failed", "name", ann.Name, "error", err)
-		a.Alerter.Raise(ctx, announcementAlert(ann), fmt.Sprintf("The announcement %q did not play.", ann.Name),
-			"Check its file or folder in Schedule > Announcements.")
-	})
+	a.requestAnnouncements(ctx, due)
 }
 
 // announcementAlert is the alert kind of one announcement, so two broken
@@ -102,7 +105,7 @@ func announcementAlert(ann store.Announcement) string {
 // StartAnnouncement starts an announcement for a person who wants to hear it
 // now. It answers when the announcement starts: the file lasts as long as it
 // lasts, and the caller must not wait for it. A source that cannot play is
-// reported at once.
+// reported at once. When other announcements play, it plays after them.
 func (a *App) StartAnnouncement(ctx context.Context, ann store.Announcement, due time.Time) error {
 	if err := a.announcementsWanted(ctx); err != nil {
 		return err
@@ -110,11 +113,77 @@ func (a *App) StartAnnouncement(ctx context.Context, ann store.Announcement, due
 	if _, _, err := a.announcementFile(ctx, ann); err != nil {
 		return err
 	}
-	free := context.WithoutCancel(ctx)
-	go a.playAnnouncements(free, []dueAnnouncement{{ann: ann, due: due}}, func(_ store.Announcement, err error) {
+	a.requestAnnouncements(context.WithoutCancel(ctx), []dueAnnouncement{{ann: ann, due: due, fail: func(err error) {
 		a.log.Warn("the test play failed", "name", ann.Name, "error", err)
-	})
+	}}})
 	return nil
+}
+
+// addAnnouncements puts requests on the waiting list. A scheduled time that
+// is already on the list, or played, is not added again. It reports whether
+// a new group must start, because no group plays.
+func (a *App) addAnnouncements(list []dueAnnouncement) bool {
+	a.announceMu.Lock()
+	defer a.announceMu.Unlock()
+	if a.announceTaken == nil {
+		a.announceTaken = map[int64]time.Time{}
+	}
+	for _, d := range list {
+		if !d.due.IsZero() {
+			if t, ok := a.announceTaken[d.ann.ID]; ok && !t.Before(d.due) {
+				continue
+			}
+			a.announceTaken[d.ann.ID] = d.due
+		}
+		a.announceWaiting = append(a.announceWaiting, d)
+	}
+	if a.announceRunning || len(a.announceWaiting) == 0 {
+		return false
+	}
+	a.announceRunning = true
+	return true
+}
+
+// forgetAnnouncement lets a scheduled time that did not play be asked for
+// again.
+func (a *App) forgetAnnouncement(id int64, due time.Time) {
+	a.announceMu.Lock()
+	defer a.announceMu.Unlock()
+	if t, ok := a.announceTaken[id]; ok && t.Equal(due) {
+		delete(a.announceTaken, id)
+	}
+}
+
+// takeAnnouncements empties the waiting list. When the list is empty and
+// last is true, the group ends, so the next request starts a new one.
+func (a *App) takeAnnouncements(last bool) []dueAnnouncement {
+	a.announceMu.Lock()
+	defer a.announceMu.Unlock()
+	list := a.announceWaiting
+	a.announceWaiting = nil
+	if last && len(list) == 0 {
+		a.announceRunning = false
+	}
+	return list
+}
+
+// requestAnnouncements asks for announcements. Only one group plays at a
+// time: two of them would each try to give the music back to the other.
+func (a *App) requestAnnouncements(ctx context.Context, list []dueAnnouncement) {
+	if a.addAnnouncements(list) {
+		go a.playAnnouncementGroups(ctx)
+	}
+}
+
+// playAnnouncementGroups plays groups until no request waits.
+func (a *App) playAnnouncementGroups(ctx context.Context) {
+	for {
+		list := a.takeAnnouncements(true)
+		if len(list) == 0 {
+			return
+		}
+		a.playAnnouncements(ctx, list)
+	}
 }
 
 // queuedAnnouncement is an announcement in the queue, by its queue id.
@@ -123,42 +192,57 @@ type queuedAnnouncement struct {
 	id  int
 }
 
-// playAnnouncements plays announcements back to back and gives the music
-// back after the last one. They go into the queue one after the other, so
-// MPD goes from one to the next with no music between them. fail hears
-// about each announcement that does not play.
-func (a *App) playAnnouncements(ctx context.Context, batch []dueAnnouncement, fail func(store.Announcement, error)) {
-	failAll := func(list []dueAnnouncement, err error) {
-		for _, d := range list {
-			fail(d.ann, err)
-		}
-	}
-	// One group at a time. Two of them would each try to give the music
-	// back to the other one.
-	if !a.announceMu.TryLock() {
-		failAll(batch, errors.New("another announcement is playing"))
-		return
-	}
-	defer a.announceMu.Unlock()
+// readyAnnouncement is an announcement with its chosen file.
+type readyAnnouncement struct {
+	ann  store.Announcement
+	file string
+	fail func(error)
+}
 
-	var files []string
-	var ready []dueAnnouncement
-	for _, d := range batch {
+// prepareAnnouncements chooses the files and writes the plays down.
+func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) []readyAnnouncement {
+	var ready []readyAnnouncement
+	for _, d := range list {
 		file, next, err := a.announcementFile(ctx, d.ann)
 		if err != nil {
-			fail(d.ann, err)
+			d.fail(err)
 			continue
 		}
 		// The play is written down before it happens. A record that fails
 		// after the play would let the same time play again every twenty
 		// seconds.
 		if err := a.markAnnouncement(ctx, d.ann, d.due, next); err != nil {
-			fail(d.ann, err)
+			d.fail(err)
 			continue
 		}
-		files = append(files, file)
-		ready = append(ready, d)
+		ready = append(ready, readyAnnouncement{ann: d.ann, file: file, fail: d.fail})
 	}
+	return ready
+}
+
+// queueAnnouncements puts announcements into the queue after the current
+// entry and the after entries that follow it. Each one gets a lower
+// priority than every entry before it, because in random mode MPD plays a
+// higher priority first.
+func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnouncement, after int) []queuedAnnouncement {
+	for _, r := range ready {
+		id, err := a.Player.InsertNext(r.file, after, max(1, 255-len(queued)))
+		if err != nil {
+			r.fail(fmt.Errorf("cannot queue %s: %w", r.file, err))
+			continue
+		}
+		after++
+		queued = append(queued, queuedAnnouncement{ann: r.ann, id: id})
+	}
+	return queued
+}
+
+// playAnnouncements plays one group of announcements back to back and gives
+// the music back after the last one. MPD goes from one to the next with no
+// music between them. Announcements asked for while the group plays join
+// it.
+func (a *App) playAnnouncements(ctx context.Context, list []dueAnnouncement) {
+	ready := a.prepareAnnouncements(ctx, list)
 	if len(ready) == 0 {
 		return
 	}
@@ -170,34 +254,31 @@ func (a *App) playAnnouncements(ctx context.Context, batch []dueAnnouncement, fa
 
 	before, err := a.Player.Status()
 	if err != nil {
-		failAll(ready, err)
+		for _, r := range ready {
+			r.fail(err)
+		}
 		return
 	}
-	var queued []queuedAnnouncement
-	for i, d := range ready {
-		id, err := a.Player.InsertNext(files[i], len(queued))
-		if err != nil {
-			fail(d.ann, fmt.Errorf("cannot queue %s: %w", files[i], err))
-			continue
-		}
-		queued = append(queued, queuedAnnouncement{ann: d.ann, id: id})
-	}
+	queued := a.queueAnnouncements(nil, ready, 0)
 	if len(queued) == 0 {
 		return
 	}
-	// From here the music must come back, whatever happens.
-	defer a.restoreAfterAnnouncement(ctx, before, queued)
+	// From here the music must come back, whatever happens. The group can
+	// grow while it plays, so the restore reads the list at the end.
+	defer func() { a.restoreAfterAnnouncement(ctx, before, queued) }()
 
 	a.holdMusicForAnnouncement(ctx, before)
 	a.setAnnouncementLevel(before, queued[0].ann)
 	if err := a.Player.PlayID(queued[0].id); err != nil {
-		for _, q := range queued {
-			fail(q.ann, fmt.Errorf("cannot play the announcement: %w", err))
+		for _, r := range ready {
+			r.fail(fmt.Errorf("cannot play the announcement: %w", err))
 		}
 		return
 	}
 	a.Events.Publish(events.Player, "")
-	for _, q := range a.waitForAnnouncements(ctx, before, queued) {
+	var started int
+	queued, started = a.waitForAnnouncements(ctx, before, queued)
+	for _, q := range queued[:started] {
 		a.Alerter.Clear(ctx, announcementAlert(q.ann))
 	}
 	a.Events.Publish(events.Schedule, "")
@@ -251,44 +332,54 @@ func (a *App) markAnnouncement(ctx context.Context, ann store.Announcement, due 
 // waitForAnnouncements returns when the current entry is none of the
 // announcements, when playback stops, or when one announcement plays longer
 // than the longest hold. When MPD goes on to the next announcement, it sets
-// the level of that one. It returns the announcements that started.
-func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, queued []queuedAnnouncement) []queuedAnnouncement {
-	started := queued[:1]
+// the level of that one. Announcements asked for meanwhile go to the end of
+// the group. It returns the group and the number that started.
+func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, queued []queuedAnnouncement) ([]queuedAnnouncement, int) {
+	started := 1
 	deadline := time.Now().Add(announceMax)
 	for {
 		select {
 		case <-ctx.Done():
-			return started
+			return queued, started
 		case <-time.After(250 * time.Millisecond):
 		}
 		st, err := a.Player.Status()
 		if err != nil || st.Song == nil || st.State == "stop" {
-			return started
+			return queued, started
 		}
 		i := slices.IndexFunc(queued, func(q queuedAnnouncement) bool { return q.id == st.Song.ID })
+		if more := a.takeAnnouncements(false); len(more) > 0 {
+			// The new ones go after the rest of the group. When a music
+			// track is current, they go directly after it.
+			after := 0
+			if i >= 0 {
+				after = len(queued) - 1 - i
+			}
+			queued = a.queueAnnouncements(queued, a.prepareAnnouncements(ctx, more), after)
+		}
 		switch {
-		case i < 0 && len(started) == len(queued):
-			return started
+		case i < 0 && started == len(queued):
+			return queued, started
 		case i < 0:
 			// MPD went to a music track, not to the next announcement.
 			// Start that announcement.
-			i = len(started)
+			i = started
 			a.setAnnouncementLevel(before, queued[i].ann)
 			if err := a.Player.PlayID(queued[i].id); err != nil {
 				a.log.Warn("cannot play the next announcement", "name", queued[i].ann.Name, "error", err)
-				return started
+				return queued, started
 			}
-		case i >= len(started):
+		case i >= started:
 			a.setAnnouncementLevel(before, queued[i].ann)
 		}
-		if i >= len(started) {
-			started = queued[:i+1]
+		if i >= started {
+			started = i + 1
 			deadline = time.Now().Add(announceMax)
 			a.Events.Publish(events.Player, "")
 		}
 		if time.Now().After(deadline) {
 			a.log.Warn("the announcement plays too long, the music comes back", "id", st.Song.ID)
-			return started
+			return queued, started
 		}
 	}
 }

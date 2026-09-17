@@ -59,10 +59,16 @@ type App struct {
 	// Restart stops the service cleanly; the command sets it.
 	Restart func()
 
-	// announceMu lets one announcement play at a time, and announcing is
-	// true while it plays, so the play history skips it.
-	announceMu sync.Mutex
-	announcing atomic.Bool
+	// announceMu guards the announcement requests. One group plays at a
+	// time, and announceRunning is true meanwhile. announceWaiting holds
+	// the requests the group has not taken yet. announceTaken is the
+	// newest scheduled time asked for, per announcement. announcing is
+	// true while an announcement plays, so the play history skips it.
+	announceMu      sync.Mutex
+	announceRunning bool
+	announceWaiting []dueAnnouncement
+	announceTaken   map[int64]time.Time
+	announcing      atomic.Bool
 
 	mu               sync.Mutex
 	settings         store.Settings

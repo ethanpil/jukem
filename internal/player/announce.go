@@ -9,9 +9,10 @@ import (
 
 // InsertNext adds one file after the current entry and returns its queue
 // id. offset counts the entries already put there, so announcements that
-// play back to back stay in their order. An announcement uses it: the file
-// plays instead of the music, and the music continues afterwards.
-func (p *Player) InsertNext(file string, offset int) (int, error) {
+// play back to back stay in their order. prio is the MPD priority, which
+// sets the order in random mode. An announcement uses it: the file plays
+// instead of the music, and the music continues afterwards.
+func (p *Player) InsertNext(file string, offset, prio int) (int, error) {
 	var id int
 	err := p.pool.Do(func(c *mpd.Client) error {
 		attrs, err := c.Status()
@@ -35,9 +36,7 @@ func (p *Player) InsertNext(file string, offset int) (int, error) {
 		if id, err = strconv.Atoi(a["Id"]); err != nil {
 			return err
 		}
-		// In random mode MPD plays a higher priority first, so the entries
-		// keep their order there too.
-		return c.Command("prioid %d %d", 255-min(offset, 254), id).OK()
+		return c.Command("prioid %d %d", prio, id).OK()
 	})
 	return id, err
 }
