@@ -129,7 +129,8 @@ About 20,000 lines of Go, JavaScript and CSS, without the vendored files.
 - **Announcement:** one file that plays at its own time, whatever the music
   does. The music fades out, the announcement plays, the music fades in at
   the same point. The reconciler is held meanwhile. A late announcement is
-  skipped after a grace of two minutes.
+  skipped after a grace of two minutes. Announcements that are due in the
+  same check play back to back, and the music comes back after the last one.
 - **Source:** a folder, a playlist or a stream URL. A stream needs no
   library.
 - **Do not play:** a track that stays out of scheduled playback. It is also
