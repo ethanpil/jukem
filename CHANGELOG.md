@@ -7,6 +7,11 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- The announcements card shows the announcement that played last, and it
+  names the file of each announcement (bea22b4).
+
 ## [0.1.11] - 2026-09-17
 
 ### Added
