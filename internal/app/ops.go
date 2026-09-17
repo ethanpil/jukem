@@ -27,6 +27,13 @@ func (a *App) watchMPD(ctx context.Context) {
 	for sub := range mpdctl.Watch(ctx, socket, a.log, "player", "mixer", "options", "playlist", "update", "database", "output") {
 		switch sub {
 		case "player", "mixer", "options":
+			if sub == "options" {
+				// MPD keeps its random mode in its state file. An older
+				// jukem used that mode, so it becomes a shuffled queue.
+				if err := a.Player.AdoptRandomMode(); err != nil {
+					a.log.Warn("cannot take over the random mode of MPD", "error", err)
+				}
+			}
 			// A fade sends twenty volume steps; one event at its end is
 			// enough for the clients.
 			if sub != "mixer" || !a.Scheduler.Fading() {
@@ -50,7 +57,11 @@ func (a *App) watchMPD(ctx context.Context) {
 				// track start.
 				if key != lastSong && st.State == "play" {
 					lastSong = key
-					a.Player.SongChanged(st.Song.ID)
+					// The last track of a repeating shuffled queue gives
+					// the next pass a new order.
+					if err := a.Player.ReshuffleAtEnd(st); err != nil {
+						a.log.Warn("cannot shuffle the queue again", "error", err)
+					}
 					a.onSongChange(st)
 				}
 			}

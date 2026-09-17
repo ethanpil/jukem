@@ -8,6 +8,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/fhs/gompd/v2/mpd"
 
+	"jukem/internal/events"
 	"jukem/internal/mpdctl"
 	"jukem/internal/player"
 	"jukem/internal/watchdog"
@@ -137,7 +138,13 @@ func (s *Server) registerPlayer(api huma.API) {
 		Summary: "Set play options", DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *optionsInput) (*struct{}, error) {
 		if in.Body.Shuffle != nil {
-			return nil, mpdError(s.opts.Player.SetShuffle(*in.Body.Shuffle))
+			if err := s.opts.Player.SetShuffle(*in.Body.Shuffle); err != nil {
+				return nil, mpdError(err)
+			}
+			// MPD sends no event, because its own options did not change.
+			if s.opts.Events != nil {
+				s.opts.Events.Publish(events.Player, "")
+			}
 		}
 		return nil, nil
 	})
@@ -249,7 +256,7 @@ type QueueAction struct {
 type QueueResult struct {
 	Added     int  `json:"added" doc:"Tracks added"`
 	Truncated bool `json:"truncated" doc:"True when the source held more than the queue ceiling"`
-	Shuffle   bool `json:"shuffle" doc:"True when shuffle is on, so Play Next order is by priority"`
+	Shuffle   bool `json:"shuffle" doc:"True when the queue plays in a shuffled order"`
 }
 
 type queueActionOutput struct {

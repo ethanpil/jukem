@@ -234,9 +234,8 @@ func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) 
 }
 
 // queueAnnouncements puts announcements into the queue after the current
-// entry and the after entries that follow it. Each one gets a lower
-// priority than every entry before it, because in random mode MPD plays a
-// higher priority first.
+// entry and the after entries that follow it. The queue is the play order,
+// so MPD plays them in that order.
 func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnouncement, after int) []queuedAnnouncement {
 	for _, r := range ready {
 		id, err := a.Player.InsertNext(r.file, after)
@@ -246,12 +245,6 @@ func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnou
 		}
 		after++
 		queued = append(queued, queuedAnnouncement{ann: r.ann, id: id})
-		// The entry is in the queue now, so it stays in the group and
-		// leaves the queue at the end. Without its priority, the wait
-		// starts it when MPD goes to a music track.
-		if err := a.Player.SetPriority(id, max(1, 256-len(queued))); err != nil {
-			a.log.Warn("cannot set the priority of the announcement", "name", r.ann.Name, "error", err)
-		}
 	}
 	return queued
 }

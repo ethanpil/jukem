@@ -180,10 +180,10 @@ export async function nowPlayingView(main) {
     recentBox.append(h('div.divider'));
   }
 
-  // Queue. The list starts at the current track and follows it. With
-  // shuffle on, MPD picks any track next, so the list shows the whole page
-  // that holds the current track. When a person pages to Earlier or Later,
-  // the list stays there. Show current goes back to the current track.
+  // Queue. The list starts at the current track and follows it. The queue
+  // is the play order, also with shuffle on. When a person pages to
+  // Earlier or Later, the list stays there. Show current goes back to the
+  // current track.
   let offset = 0;
   let total = 0;
   let sortable = null;
@@ -197,7 +197,7 @@ export async function nowPlayingView(main) {
     if (followCurrent) {
       const pos = state.status?.player?.song?.pos;
       if (!Number.isInteger(pos)) offset = 0;
-      else offset = state.status.player.shuffle ? Math.floor(pos / PAGE) * PAGE : pos;
+      else offset = pos;
     }
     let off = offset;
     try {
@@ -234,7 +234,6 @@ export async function nowPlayingView(main) {
         h('span.row-pos', t.pos + 1),
         h('div.row-main', h('div.row-title', t.title), h('div.row-sub', [t.artist, t.album].filter(Boolean).join(' · ') || t.file)),
         isCurrent ? h('span.chip.chip-accent.only-desktop', 'now playing') : null,
-        t.prio ? h('span.chip.chip-warn', 'next') : null,
         h('span.row-fig', fmtDuration(t.duration)),
         dotsMenu(`Actions for ${t.title}`, [
           h('li', h('h6.dropdown-header', t.title)),
@@ -248,7 +247,7 @@ export async function nowPlayingView(main) {
     }
     queueBox.append(list);
     if (state.status?.player?.shuffle) {
-      queueBox.append(h('div.panel-note', icon('shuffle'), 'Shuffle is on: this is the queue order, and MPD picks the next track at random.'));
+      queueBox.append(h('div.panel-note', icon('shuffle'), 'Shuffle is on: the tracks are in a random order, and they play from the top. The order changes again at the end of the queue.'));
     }
     const pageTo = (to) => { followCurrent = false; offset = Math.max(0, to); loadQueue(); };
     const currentPos = state.status?.player?.song?.pos;

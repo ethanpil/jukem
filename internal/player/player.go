@@ -4,7 +4,9 @@ package player
 
 import (
 	"errors"
+	"math/rand/v2"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,22 +30,24 @@ type Track struct {
 	Artist   string  `json:"artist,omitempty"`
 	Album    string  `json:"album,omitempty"`
 	Duration float64 `json:"duration,omitempty" doc:"Length in seconds"`
-	Prio     int     `json:"prio,omitempty" doc:"MPD priority; 255 plays next when shuffle is on"`
 }
 
 // Status is the transport state MPD reports.
 type Status struct {
-	State        string  `json:"state" enum:"play,pause,stop"`
-	Song         *Track  `json:"song,omitempty" doc:"Current queue entry"`
-	Elapsed      float64 `json:"elapsed" doc:"Seconds into the current track"`
-	Volume       int     `json:"volume" minimum:"-1" maximum:"100" doc:"-1 when MPD has no mixer"`
-	Shuffle      bool    `json:"shuffle"`
-	Repeat       bool    `json:"repeat"`
-	QueueLength  int     `json:"queue_length"`
-	QueueVersion int     `json:"queue_version" doc:"Changes whenever the queue changes"`
-	HasNext      bool    `json:"-"`
-	Error        string  `json:"error,omitempty" doc:"MPD's last error, if any"`
-	Updating     bool    `json:"updating" doc:"True while MPD scans the library"`
+	State   string  `json:"state" enum:"play,pause,stop"`
+	Song    *Track  `json:"song,omitempty" doc:"Current queue entry"`
+	Elapsed float64 `json:"elapsed" doc:"Seconds into the current track"`
+	Volume  int     `json:"volume" minimum:"-1" maximum:"100" doc:"-1 when MPD has no mixer"`
+	Shuffle bool    `json:"shuffle" doc:"True when the queue plays in a shuffled order"`
+	Repeat  bool    `json:"repeat"`
+	// Random is MPD's random mode. jukem keeps it off: a shuffle puts the
+	// queue itself in a random order, so the queue shows the play order.
+	Random       bool   `json:"-"`
+	QueueLength  int    `json:"queue_length"`
+	QueueVersion int    `json:"queue_version" doc:"Changes whenever the queue changes"`
+	HasNext      bool   `json:"-"`
+	Error        string `json:"error,omitempty" doc:"MPD's last error, if any"`
+	Updating     bool   `json:"updating" doc:"True while MPD scans the library"`
 }
 
 // IntentKind says what jukem last asked MPD to do.
@@ -71,12 +75,19 @@ type Intent struct {
 type Player struct {
 	pool *mpdctl.Pool
 
-	mu          sync.Mutex
-	generation  int64
-	intent      Intent
-	prioritized map[int]bool // queue ids given priority by Play Next
-	limits      func() (min, max int)
-	persist     func(generation int64)
+	mu         sync.Mutex
+	generation int64
+	intent     Intent
+	limits     func() (min, max int)
+	persist    func(generation int64)
+
+	// shuffle is on when the queue plays in a shuffled order. order is the
+	// position of each file in the list that Load received, so a shuffle
+	// that goes off can put the queue back. It is empty after a restart,
+	// and then the order is by file name.
+	shuffle        bool
+	persistShuffle func(on bool)
+	order          map[string]int
 }
 
 // New creates a player. limits returns the configured volume floor and
@@ -84,7 +95,35 @@ type Player struct {
 // and persist stores each new one, so an override made against the queue
 // stays valid after a restart.
 func New(pool *mpdctl.Pool, limits func() (min, max int), generation int64, persist func(int64)) *Player {
-	return &Player{pool: pool, prioritized: map[int]bool{}, limits: limits, generation: generation, persist: persist}
+	return &Player{pool: pool, limits: limits, generation: generation, persist: persist}
+}
+
+// UseShuffleState sets the shuffle state from before the restart, and the
+// function that stores each change.
+func (p *Player) UseShuffleState(on bool, persist func(bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shuffle, p.persistShuffle = on, persist
+}
+
+// Shuffle reports whether the queue plays in a shuffled order.
+func (p *Player) Shuffle() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.shuffle
+}
+
+// setShuffle records the shuffle state and stores a change.
+func (p *Player) setShuffle(on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shuffle == on {
+		return
+	}
+	p.shuffle = on
+	if p.persistShuffle != nil {
+		p.persistShuffle(on)
+	}
 }
 
 // Generation returns the queue generation, which increments each time the
@@ -131,6 +170,7 @@ func (p *Player) Status() (Status, error) {
 			return err
 		}
 		st = parseStatus(attrs)
+		st.Shuffle = p.Shuffle()
 		if attrs["song"] != "" {
 			song, err := c.CurrentSong()
 			if err != nil {
@@ -152,7 +192,7 @@ func parseStatus(a mpd.Attrs) Status {
 		st.Volume = v
 	}
 	st.Elapsed, _ = strconv.ParseFloat(a["elapsed"], 64)
-	st.Shuffle = a["random"] == "1"
+	st.Random = a["random"] == "1"
 	st.Repeat = a["repeat"] == "1"
 	st.QueueLength, _ = strconv.Atoi(a["playlistlength"])
 	st.QueueVersion, _ = strconv.Atoi(a["playlist"])
@@ -167,7 +207,6 @@ func TrackFrom(a mpd.Attrs) Track {
 	t := Track{File: a["file"], Title: a["Title"], Artist: a["Artist"], Album: a["Album"]}
 	t.ID, _ = strconv.Atoi(a["Id"])
 	t.Pos, _ = strconv.Atoi(a["Pos"])
-	t.Prio, _ = strconv.Atoi(a["Prio"])
 	if d, err := strconv.ParseFloat(a["duration"], 64); err == nil {
 		t.Duration = d
 	} else if d, err := strconv.Atoi(a["Time"]); err == nil {
@@ -251,9 +290,109 @@ func (p *Player) SetVolumeRaw(v int) error {
 	return p.pool.Do(func(c *mpd.Client) error { return c.SetVolume(v) })
 }
 
-// SetShuffle turns MPD's random mode on or off.
+// SetShuffle turns the shuffle on or off. The tracks after the current
+// one change order, and the current track keeps playing. On shuffles them.
+// Off puts them back in the order they were loaded, or in file name order
+// after a restart.
 func (p *Player) SetShuffle(on bool) error {
-	return p.pool.Do(func(c *mpd.Client) error { return c.Random(on) })
+	err := p.pool.Do(func(c *mpd.Client) error {
+		attrs, err := c.Status()
+		if err != nil {
+			return err
+		}
+		if attrs["random"] == "1" {
+			if err := c.Random(false); err != nil {
+				return err
+			}
+		}
+		start := 0
+		if pos, err := strconv.Atoi(attrs["song"]); err == nil {
+			start = pos + 1
+		}
+		end, _ := strconv.Atoi(attrs["playlistlength"])
+		if end-start < 2 {
+			return nil
+		}
+		if on {
+			return c.Command("shuffle %d:%d", start, end).OK()
+		}
+		attrsList, err := c.PlaylistInfo(start, end)
+		if err != nil {
+			return err
+		}
+		tracks := make([]Track, len(attrsList))
+		for i, a := range attrsList {
+			tracks[i] = TrackFrom(a)
+		}
+		p.mu.Lock()
+		ids := loadedOrder(tracks, p.order)
+		p.mu.Unlock()
+		cl := c.BeginCommandList()
+		for i, id := range ids {
+			cl.MoveID(id, start+i)
+		}
+		return cl.End()
+	})
+	if err != nil {
+		return err
+	}
+	p.setShuffle(on)
+	return nil
+}
+
+// loadedOrder returns the queue ids of tracks in the order of the list that
+// Load received. A track that is not in that list keeps its place after
+// the track before it. With no list, the order is by file name.
+func loadedOrder(tracks []Track, order map[string]int) []int {
+	type keyed struct {
+		id  int
+		key string
+		idx int
+	}
+	list := make([]keyed, len(tracks))
+	last := -1
+	for i, t := range tracks {
+		idx, ok := order[t.File]
+		if ok {
+			last = idx
+		} else {
+			idx = last
+		}
+		list[i] = keyed{id: t.ID, key: strings.ToLower(t.File), idx: idx}
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if len(order) == 0 {
+			return list[i].key < list[j].key
+		}
+		return list[i].idx < list[j].idx
+	})
+	ids := make([]int, len(list))
+	for i, k := range list {
+		ids[i] = k.id
+	}
+	return ids
+}
+
+// AdoptRandomMode turns MPD's random mode into a shuffled queue. An older
+// jukem used random mode, and MPD keeps the mode in its state file.
+func (p *Player) AdoptRandomMode() error {
+	st, err := p.Status()
+	if err != nil || !st.Random {
+		return err
+	}
+	return p.SetShuffle(true)
+}
+
+// ReshuffleAtEnd gives a repeating shuffled queue a new order for its next
+// pass. It runs when the last track starts, and it shuffles the tracks
+// before that track.
+func (p *Player) ReshuffleAtEnd(st Status) error {
+	if !p.Shuffle() || !st.Repeat || st.Song == nil || st.Song.Pos != st.QueueLength-1 || st.Song.Pos < 2 {
+		return nil
+	}
+	return p.pool.Do(func(c *mpd.Client) error {
+		return c.Command("shuffle %d:%d", 0, st.Song.Pos).OK()
+	})
 }
 
 // SetCrossfade sets the crossfade in seconds.
@@ -304,12 +443,12 @@ func (p *Player) newGeneration() {
 	if p.persist != nil {
 		p.persist(p.generation)
 	}
-	p.prioritized = map[int]bool{}
 	p.mu.Unlock()
 }
 
-// Load replaces the queue with files, in order, sets the options, and
-// starts playing. It returns the number of tracks loaded, at most
+// Load replaces the queue with files, sets the options, and starts
+// playing. With shuffle the queue is in a random order, otherwise in the
+// order of files. It returns the number of tracks loaded, at most
 // MaxQueue. A negative volume leaves the volume alone. Scheduled programs
 // repeat until their window ends; a Play Now selection plays once, so it
 // can finish.
@@ -317,14 +456,25 @@ func (p *Player) Load(files []string, shuffle bool, volume int, repeat bool) (in
 	if len(files) > MaxQueue {
 		files = files[:MaxQueue]
 	}
+	order := make(map[string]int, len(files))
+	for i, f := range files {
+		if _, ok := order[f]; !ok {
+			order[f] = i
+		}
+	}
+	queue := files
+	if shuffle {
+		queue = slices.Clone(files)
+		rand.Shuffle(len(queue), func(i, j int) { queue[i], queue[j] = queue[j], queue[i] })
+	}
 	err := p.pool.Do(func(c *mpd.Client) error {
 		if err := c.Clear(); err != nil {
 			return err
 		}
-		if err := addAll(c, files); err != nil {
+		if err := addAll(c, queue); err != nil {
 			return err
 		}
-		if err := c.Random(shuffle); err != nil {
+		if err := c.Random(false); err != nil {
 			return err
 		}
 		if err := c.Repeat(repeat); err != nil {
@@ -342,6 +492,10 @@ func (p *Player) Load(files []string, shuffle bool, volume int, repeat bool) (in
 	}
 	p.newGeneration()
 	p.record(IntentPlay)
+	p.mu.Lock()
+	p.order = order
+	p.mu.Unlock()
+	p.setShuffle(shuffle)
 	return len(files), nil
 }
 
@@ -360,9 +514,9 @@ func addAll(c *mpd.Client, files []string) error {
 	return nil
 }
 
-// PlayNext inserts files directly after the current track, in order. With
-// shuffle on they also get the highest priority, so they play before the
-// rest of the queue. Nothing starts playing.
+// PlayNext inserts files directly after the current track, in order. The
+// queue is the play order, also with shuffle on, so they play next.
+// Nothing starts playing.
 func (p *Player) PlayNext(files []string) (int, error) {
 	if len(files) == 0 {
 		return 0, nil
@@ -392,18 +546,6 @@ func (p *Player) PlayNext(files []string) (int, error) {
 			}
 			id, _ := strconv.Atoi(a["Id"])
 			ids = append(ids, id)
-		}
-		if st.Shuffle {
-			for _, id := range ids {
-				if err := c.SetPriorityID(255, id); err != nil {
-					return err
-				}
-			}
-			p.mu.Lock()
-			for _, id := range ids {
-				p.prioritized[id] = true
-			}
-			p.mu.Unlock()
 		}
 		return nil
 	})
@@ -447,19 +589,6 @@ func (p *Player) RemoveFile(file string) error {
 		}
 		return nil
 	})
-}
-
-// SongChanged resets the priority of a Play Next track once it plays, so
-// it does not jump the queue again.
-func (p *Player) SongChanged(currentID int) {
-	p.mu.Lock()
-	if !p.prioritized[currentID] {
-		p.mu.Unlock()
-		return
-	}
-	delete(p.prioritized, currentID)
-	p.mu.Unlock()
-	p.pool.Do(func(c *mpd.Client) error { return c.SetPriorityID(0, currentID) })
 }
 
 // ListFiles returns every audio file below dir, in case-insensitive path

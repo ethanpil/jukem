@@ -124,6 +124,15 @@ func Build(ctx context.Context, cfg config.Config, version string, buildTime tim
 			log.Warn("cannot persist the queue generation", "error", err)
 		}
 	})
+	// The shuffle belongs to jukem, not to MPD, because a shuffled queue
+	// is in a random order and MPD's random mode stays off.
+	var shuffled bool
+	db.GetState(ctx, "queue_shuffle", &shuffled)
+	a.Player.UseShuffleState(shuffled, func(on bool) {
+		if err := db.SetState(context.Background(), "queue_shuffle", on); err != nil {
+			log.Warn("cannot persist the shuffle state", "error", err)
+		}
+	})
 	a.Library = library.NewBrowser(a.Pool)
 	a.Files = library.NewFiles(func() string { return a.Settings().MusicRoot }, a.uploadLimits, a.Player, a.Events, log, config.Runtime())
 	a.Playlists = library.NewPlaylists(paths.PlaylistDir, func() string { return a.Settings().MusicRoot }, db)

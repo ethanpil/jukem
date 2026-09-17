@@ -8,7 +8,7 @@ import (
 
 func TestParseStatus(t *testing.T) {
 	st := parseStatus(mpd.Attrs{"state": "play", "volume": "42", "elapsed": "12.5", "random": "1", "playlistlength": "7", "playlist": "99", "updating_db": "3", "nextsong": "3"})
-	if st.State != "play" || st.Volume != 42 || st.Elapsed != 12.5 || !st.Shuffle || st.QueueLength != 7 || st.QueueVersion != 99 || !st.Updating || !st.HasNext {
+	if st.State != "play" || st.Volume != 42 || st.Elapsed != 12.5 || !st.Random || st.QueueLength != 7 || st.QueueVersion != 99 || !st.Updating || !st.HasNext {
 		t.Fatalf("got %+v", st)
 	}
 	if st := parseStatus(mpd.Attrs{"state": "stop"}); st.Volume != -1 || st.Updating || st.HasNext {
@@ -55,5 +55,57 @@ func TestFinished(t *testing.T) {
 	p.newGeneration()
 	if p.Finished(Status{State: "stop", QueueLength: 5}) {
 		t.Fatal("generation changed after the intent")
+	}
+}
+
+func TestLoadedOrder(t *testing.T) {
+	tracks := []Track{
+		{ID: 7, File: "b.mp3"},
+		{ID: 3, File: "a.mp3"},
+		{ID: 9, File: "new.mp3"},
+		{ID: 5, File: "c.mp3"},
+	}
+	// With the loaded order the tracks go back to it. A file that the load
+	// did not bring keeps its place after the track before it.
+	order := map[string]int{"a.mp3": 0, "b.mp3": 1, "c.mp3": 2}
+	// new.mp3 follows a.mp3, the track before it in the queue.
+	got := loadedOrder(tracks, order)
+	want := []int{3, 9, 7, 5}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("with the loaded order: %v, want %v", got, want)
+		}
+	}
+	// After a restart there is no loaded order, so the order is by name.
+	got = loadedOrder(tracks, nil)
+	want = []int{3, 7, 5, 9}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("by name: %v, want %v", got, want)
+		}
+	}
+}
+
+func TestReshuffleAtEndOnlyForTheLastTrack(t *testing.T) {
+	p := New(nil, func() (int, int) { return 0, 100 }, 0, nil)
+	// The pool is nil, so a call that reaches MPD panics. These calls must
+	// all stop before that.
+	p.UseShuffleState(false, nil)
+	if err := p.ReshuffleAtEnd(Status{Repeat: true, QueueLength: 5, Song: &Track{Pos: 4}}); err != nil {
+		t.Fatal(err)
+	}
+	p.UseShuffleState(true, nil)
+	for _, st := range []Status{
+		{Repeat: false, QueueLength: 5, Song: &Track{Pos: 4}}, // no repeat
+		{Repeat: true, QueueLength: 5, Song: &Track{Pos: 2}},  // not the last
+		{Repeat: true, QueueLength: 5},                        // nothing plays
+		{Repeat: true, QueueLength: 2, Song: &Track{Pos: 1}},  // too short
+	} {
+		if err := p.ReshuffleAtEnd(st); err != nil {
+			t.Fatalf("%+v: %v", st, err)
+		}
 	}
 }

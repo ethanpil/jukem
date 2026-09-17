@@ -251,8 +251,12 @@ Do not reopen these without a reason from the user.
   count stays frozen until a scan ends. The bar shows movement and the time.
 - **"Recently played" comes from the play history**, not from the queue.
   With shuffle on, the queue order is not the play order.
-- **The queue list starts at the current track** and follows it. With shuffle
-  on it shows the page that holds the current track.
+- **Shuffle is the order of the queue**, not MPD's random mode (2026-09-17).
+  jukem loads a shuffled program in a random order, and MPD's random mode
+  stays off. So the queue shows the play order. jukem holds the shuffle state
+  (`queue_shuffle` in the state table), because MPD does not. The last track
+  of a repeating queue shuffles the tracks before it, for a new pass.
+- **The queue list starts at the current track** and follows it.
 - **Browser preview** plays a track in the browser only. It is in the row
   button and in the row menu.
 - **The allowed extension list gates uploads only.** It does not affect

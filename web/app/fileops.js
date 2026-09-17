@@ -16,7 +16,6 @@ const actionText = { play_now: 'Playing', play_next: 'Playing next', add: 'Added
 export function queueToast(action, r) {
   let msg = `${actionText[action]}: ${r.added} track${r.added === 1 ? '' : 's'}`;
   if (r.truncated) msg += ' (first 20,000 only)';
-  if (r.shuffle && action === 'play_next') msg += ' · shuffle is on, so they play next in random order';
   toast(msg, 'success');
 }
 

@@ -37,11 +37,3 @@ func (p *Player) InsertNext(file string, offset int) (int, error) {
 	})
 	return id, err
 }
-
-// SetPriority sets the MPD priority of a queue entry. In random mode MPD
-// plays a higher priority first.
-func (p *Player) SetPriority(id, prio int) error {
-	return p.pool.Do(func(c *mpd.Client) error {
-		return c.Command("prioid %d %d", prio, id).OK()
-	})
-}
