@@ -203,6 +203,19 @@ type readyAnnouncement struct {
 func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) []readyAnnouncement {
 	var ready []readyAnnouncement
 	for _, d := range list {
+		// A request can wait while other announcements play. Another play
+		// of the same announcement can move its cycle meanwhile, and a
+		// person can change or remove it.
+		ann, ok, err := a.Store.GetAnnouncement(ctx, d.ann.ID)
+		if err != nil {
+			d.fail(err)
+			continue
+		}
+		if !ok {
+			a.log.Info("the announcement was removed before it played", "name", d.ann.Name)
+			continue
+		}
+		d.ann = ann
 		file, next, err := a.announcementFile(ctx, d.ann)
 		if err != nil {
 			d.fail(err)
@@ -226,13 +239,19 @@ func (a *App) prepareAnnouncements(ctx context.Context, list []dueAnnouncement) 
 // higher priority first.
 func (a *App) queueAnnouncements(queued []queuedAnnouncement, ready []readyAnnouncement, after int) []queuedAnnouncement {
 	for _, r := range ready {
-		id, err := a.Player.InsertNext(r.file, after, max(1, 255-len(queued)))
+		id, err := a.Player.InsertNext(r.file, after)
 		if err != nil {
 			r.fail(fmt.Errorf("cannot queue %s: %w", r.file, err))
 			continue
 		}
 		after++
 		queued = append(queued, queuedAnnouncement{ann: r.ann, id: id})
+		// The entry is in the queue now, so it stays in the group and
+		// leaves the queue at the end. Without its priority, the wait
+		// starts it when MPD goes to a music track.
+		if err := a.Player.SetPriority(id, max(1, 256-len(queued))); err != nil {
+			a.log.Warn("cannot set the priority of the announcement", "name", r.ann.Name, "error", err)
+		}
 	}
 	return queued
 }
@@ -276,10 +295,12 @@ func (a *App) playAnnouncements(ctx context.Context, list []dueAnnouncement) {
 		return
 	}
 	a.Events.Publish(events.Player, "")
-	var started int
-	queued, started = a.waitForAnnouncements(ctx, before, queued)
-	for _, q := range queued[:started] {
-		a.Alerter.Clear(ctx, announcementAlert(q.ann))
+	var played map[int]bool
+	queued, played = a.waitForAnnouncements(ctx, before, queued)
+	for _, q := range queued {
+		if played[q.id] {
+			a.Alerter.Clear(ctx, announcementAlert(q.ann))
+		}
 	}
 	a.Events.Publish(events.Schedule, "")
 }
@@ -333,21 +354,26 @@ func (a *App) markAnnouncement(ctx context.Context, ann store.Announcement, due 
 // announcements, when playback stops, or when one announcement plays longer
 // than the longest hold. When MPD goes on to the next announcement, it sets
 // the level of that one. Announcements asked for meanwhile go to the end of
-// the group. It returns the group and the number that started.
-func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, queued []queuedAnnouncement) ([]queuedAnnouncement, int) {
+// the group. It returns the group and the queue ids that were seen to
+// play. MPD skips a file it cannot read, so a skipped entry is not in it.
+func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, queued []queuedAnnouncement) ([]queuedAnnouncement, map[int]bool) {
 	started := 1
+	played := map[int]bool{}
 	deadline := time.Now().Add(announceMax)
 	for {
 		select {
 		case <-ctx.Done():
-			return queued, started
+			return queued, played
 		case <-time.After(250 * time.Millisecond):
 		}
 		st, err := a.Player.Status()
 		if err != nil || st.Song == nil || st.State == "stop" {
-			return queued, started
+			return queued, played
 		}
 		i := slices.IndexFunc(queued, func(q queuedAnnouncement) bool { return q.id == st.Song.ID })
+		if i >= 0 {
+			played[st.Song.ID] = true
+		}
 		if more := a.takeAnnouncements(false); len(more) > 0 {
 			// The new ones go after the rest of the group. When a music
 			// track is current, they go directly after it.
@@ -359,7 +385,7 @@ func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, qu
 		}
 		switch {
 		case i < 0 && started == len(queued):
-			return queued, started
+			return queued, played
 		case i < 0:
 			// MPD went to a music track, not to the next announcement.
 			// Start that announcement.
@@ -367,7 +393,7 @@ func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, qu
 			a.setAnnouncementLevel(before, queued[i].ann)
 			if err := a.Player.PlayID(queued[i].id); err != nil {
 				a.log.Warn("cannot play the next announcement", "name", queued[i].ann.Name, "error", err)
-				return queued, started
+				return queued, played
 			}
 		case i >= started:
 			a.setAnnouncementLevel(before, queued[i].ann)
@@ -379,7 +405,7 @@ func (a *App) waitForAnnouncements(ctx context.Context, before player.Status, qu
 		}
 		if time.Now().After(deadline) {
 			a.log.Warn("the announcement plays too long, the music comes back", "id", st.Song.ID)
-			return queued, started
+			return queued, played
 		}
 	}
 }
