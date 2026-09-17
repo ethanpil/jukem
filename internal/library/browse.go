@@ -12,6 +12,10 @@ import (
 	"jukem/internal/player"
 )
 
+// TempDir is the folder in the music root that holds uploads until they
+// are complete. The Library does not show it.
+const TempDir = ".jukem-tmp"
+
 // PageSize is the number of entries per browse page.
 const PageSize = 200
 
@@ -46,7 +50,9 @@ func NewBrowser(pool *mpdctl.Pool) *Browser {
 }
 
 func entryFrom(a mpd.Attrs) (Entry, bool) {
-	if d := a["directory"]; d != "" {
+	if d := a["directory"]; d == TempDir {
+		return Entry{}, false
+	} else if d != "" {
 		return Entry{Type: "directory", Path: d, Name: path.Base(d)}, true
 	}
 	if a["file"] == "" {

@@ -87,7 +87,7 @@ func (f *Files) Run(ctx context.Context) {
 
 // cleanTemp removes .part files older than an hour from the staging dir.
 func (f *Files) cleanTemp() {
-	dir := filepath.Join(f.root(), ".jukem-tmp")
+	dir := filepath.Join(f.root(), TempDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -225,7 +225,7 @@ func (f *Files) Upload(rel, conflict string, body io.Reader, size int64) (Upload
 		ForgetStat()
 	}()
 
-	tmpDir := filepath.Join(root, ".jukem-tmp")
+	tmpDir := filepath.Join(root, TempDir)
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
 		return UploadResult{}, f.permissionError(root, root)
 	}
