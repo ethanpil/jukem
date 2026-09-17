@@ -96,3 +96,45 @@ func TestAnnouncementDueZone(t *testing.T) {
 		t.Fatal("not due in UTC")
 	}
 }
+
+func TestNextAnnouncements(t *testing.T) {
+	loc := time.UTC
+	every := store.Announcement{ID: 1, Name: "Offer", Enabled: true, Days: store.AllDays, Mode: "every",
+		StartTime: ptrS("09:00"), EndTime: ptrS("10:00"), EveryMinutes: ptrI(20)}
+	closing := store.Announcement{ID: 2, Name: "Closing", Enabled: true, Days: store.Monday, Mode: "at", AtTime: ptrS("09:40")}
+	off := store.Announcement{ID: 3, Name: "Off", Enabled: false, Days: store.AllDays, Mode: "at", AtTime: ptrS("09:05")}
+	list := []store.Announcement{every, closing, off}
+
+	for _, tc := range []struct {
+		now   time.Time
+		want  time.Time
+		names string
+	}{
+		{at(loc, 14, 8, 0), at(loc, 14, 9, 0), "Offer"},
+		{at(loc, 14, 9, 0), at(loc, 14, 9, 20), "Offer"}, // the slot of now is not next
+		{at(loc, 14, 9, 21), at(loc, 14, 9, 40), "Offer,Closing"},
+		{at(loc, 14, 10, 0), at(loc, 15, 9, 0), "Offer"}, // tomorrow
+	} {
+		got, group, ok := NextAnnouncements(list, tc.now, loc)
+		names := ""
+		for i, a := range group {
+			if i > 0 {
+				names += ","
+			}
+			names += a.Name
+		}
+		if !ok || !got.Equal(tc.want) || names != tc.names {
+			t.Errorf("at %v: %v %q %v, want %v %q", tc.now, got, names, ok, tc.want, tc.names)
+		}
+	}
+
+	// Closing plays on Mondays only, so from Tuesday the next one is six
+	// days later.
+	got, _, ok := NextAnnouncements([]store.Announcement{closing}, at(loc, 15, 12, 0), loc)
+	if !ok || !got.Equal(at(loc, 21, 9, 40)) {
+		t.Fatalf("next Monday: %v %v", got, ok)
+	}
+	if _, _, ok := NextAnnouncements([]store.Announcement{off}, at(loc, 14, 8, 0), loc); ok {
+		t.Fatal("an announcement that is off has no next time")
+	}
+}

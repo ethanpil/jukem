@@ -35,6 +35,17 @@ function formattersFor(zone) {
   return made;
 }
 
+// formatWhen gives the time of an instant in the zone, with the weekday
+// when it is not today there.
+export function formatWhen(iso, zone) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const f = formattersFor(zone);
+  const sameDay = f.day.format(d) === f.day.format(new Date());
+  return (sameDay ? '' : f.weekday.format(d) + ' ') + f.time.format(d);
+}
+
 // automationCard returns {el, onEvent, destroy}. timeZone is the zone of the
 // appliance; a host that has it already passes it and saves a request.
 export function automationCard({ title = 'Scheduler', playingLabel = 'Scheduled', timeZone = null } = {}) {
@@ -47,14 +58,7 @@ export function automationCard({ title = 'Scheduler', playingLabel = 'Scheduled'
   let destroyed = false;
   let shown = '';         // the card is drawn again only when it changes
 
-  function fmt(iso) {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    const f = formattersFor(zone);
-    const sameDay = f.day.format(d) === f.day.format(new Date());
-    return (sameDay ? '' : f.weekday.format(d) + ' ') + f.time.format(d);
-  }
+  const fmt = (iso) => formatWhen(iso, zone);
 
   const line = (label, value) => h('div.auto-line', h('span.auto-label', label), h('b', value));
 

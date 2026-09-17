@@ -2,12 +2,14 @@ import * as A from '../api.js';
 import { h, clear, icon, toast, fmtDuration, confirmDialog, spinner, errorBox, dotsMenu, menuItem, menuDivider } from '../dom.js';
 import { state, refreshStatus } from '../main.js';
 import { automationCard } from '../automation.js';
+import { nextAnnouncementCard } from '../nextannouncement.js';
 
 const PAGE = 200;
 
 // nowPlayingView shows the automation card, then the player card with the
-// track, the transport, the position and the volume. Below them is the
-// queue card, with the last tracks that played above the queue.
+// track, the transport, the position and the volume. Below them are the
+// next announcement and the queue card, with the last tracks that played
+// above the queue.
 export async function nowPlayingView(main) {
   clear(main);
   const trackBox = h('div.player-track');
@@ -21,9 +23,11 @@ export async function nowPlayingView(main) {
   // The automation card is above the player, because it says who chooses
   // the music that the player shows.
   const automation = automationCard();
+  const announcements = nextAnnouncementCard();
   main.append(h('section.page.page-narrow.stack',
     automation.el,
     h('div.panel.panel-pad', trackBox, transport, seekRow, volumeRow, optionsRow),
+    announcements.el,
     h('div.panel.clip',
       h('div.panel-head', h('h2.panel-title', 'Queue'), queueFig),
       recentBox, queueBox)));
@@ -301,6 +305,7 @@ export async function nowPlayingView(main) {
   return {
     onEvent(type) {
       automation.onEvent(type);
+      announcements.onEvent(type);
       if (type === 'queue') loadQueue();
       if (type === 'player') {
         const id = state.status?.player?.song?.id;
@@ -313,6 +318,7 @@ export async function nowPlayingView(main) {
       clearInterval(tick);
       state.statusListeners.delete(listener);
       automation.destroy();
+      announcements.destroy();
       if (sortable) sortable.destroy();
     },
   };

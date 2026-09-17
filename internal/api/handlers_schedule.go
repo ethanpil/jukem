@@ -135,6 +135,35 @@ func (s *Server) registerSchedule(api huma.API) {
 	type idInput struct {
 		ID int64 `path:"id"`
 	}
+	type nextAnnouncement struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	type nextOutput struct {
+		Body struct {
+			At            *time.Time         `json:"at" doc:"The next play time, or null when none is in the coming week"`
+			Announcements []nextAnnouncement `json:"announcements" doc:"The announcements that play at that time, in their play order"`
+		}
+	}
+	huma.Register(api, huma.Operation{
+		OperationID: "next-announcements", Method: http.MethodGet, Path: "/announcements/next", Tags: []string{"schedule"},
+		Summary: "The next announcement time",
+	}, func(ctx context.Context, _ *struct{}) (*nextOutput, error) {
+		list, err := s.store.ListAnnouncements(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := &nextOutput{}
+		out.Body.Announcements = []nextAnnouncement{}
+		if at, group, ok := scheduler.NextAnnouncements(list, s.opts.Scheduler.Now(), s.loc()); ok {
+			out.Body.At = &at
+			for _, a := range group {
+				out.Body.Announcements = append(out.Body.Announcements, nextAnnouncement{ID: a.ID, Name: a.Name})
+			}
+		}
+		return out, nil
+	})
+
 	type rulesOutput struct {
 		Body struct {
 			Schedules []store.Schedule     `json:"schedules"`
