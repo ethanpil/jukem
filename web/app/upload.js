@@ -81,7 +81,8 @@ function render() {
   const conflict = h('select.form-select.form-select-sm', { disabled: state.running, onchange: (e) => { state.conflict = e.target.value; renderProgress(); } },
     h('option', { value: 'skip', selected: state.conflict === 'skip' }, 'Skip files that already exist'),
     h('option', { value: 'replace', selected: state.conflict === 'replace' }, 'Replace files that already exist'));
-  b.append(target, state.running ? null : dropZone, h('div.mb-3', conflict));
+  // Element.append writes null as the text "null", so leave it out.
+  b.append(...[target, state.running ? null : dropZone, h('div.mb-3', conflict)].filter(Boolean));
   if (!window.isSecureContext) b.append(h('p.small.text-body-secondary', 'Keep the screen on during a large batch. A sleeping phone pauses uploads.'));
   b.append(ui.summary, ui.bar, ui.rows, ui.actions);
   renderProgress();
@@ -142,10 +143,10 @@ function renderProgress() {
   } else if (c.done.length || c.failed.length || c.skipped.length) {
     s.append(h('div', `${c.done.length} uploaded${c.skipped.length ? `, ${c.skipped.length} skipped` : ''}${c.failed.length ? `, ${c.failed.length} failed` : ''}`));
   } else {
-    s.append(h('div', `${c.pending.length} files · ${fmtBytes(pendingBytes())}`),
+    s.append(...[h('div', `${c.pending.length} files · ${fmtBytes(pendingBytes())}`),
       c.unsupported.length ? h('div.small.text-warning', `${c.unsupported.length} unsupported, will not be sent`) : null,
       willSkip ? h('div.small.text-body-secondary', `${willSkip} already exist and will be skipped`) : null,
-      state.free > 0 && pendingBytes() > state.free ? h('div.small.text-danger', `Not enough space: ${fmtBytes(state.free)} available`) : null);
+      state.free > 0 && pendingBytes() > state.free ? h('div.small.text-danger', `Not enough space: ${fmtBytes(state.free)} available`) : null].filter(Boolean));
   }
   const rows = clear(ui.rows);
   for (const i of [...c.active, ...c.failed]) {
