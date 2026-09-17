@@ -30,7 +30,7 @@ JukeM is developed as a GoLang application, with help from LLMs.
 Do these steps as root. Replace `VERSION` with the number of the release.
 
 ```sh
-VERSION=0.1.11
+VERSION=0.1.12
 ARCH=$(apk --print-arch)
 wget "https://github.com/ethanpil/jukem/releases/download/v$VERSION/jukem-$VERSION-$ARCH.apk"
 apk add --allow-untrusted chrony "./jukem-$VERSION-$ARCH.apk"

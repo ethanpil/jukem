@@ -7,6 +7,8 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-09-17
+
 ### Added
 
 - The announcements card shows the announcement that played last, and it
@@ -172,7 +174,8 @@ The first appliance that works from end to end.
 - A REST API with an OpenAPI document, and an event stream for the UI.
 - An Alpine apk for x86_64 and aarch64, and a Docker image.
 
-[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/ethanpil/jukem/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/ethanpil/jukem/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/ethanpil/jukem/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/ethanpil/jukem/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/ethanpil/jukem/compare/v0.1.8...v0.1.9
