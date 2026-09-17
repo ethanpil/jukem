@@ -7,6 +7,13 @@ and the numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Fixed
+
+- A new folder did not show in the Library until a rescan. jukem now
+  scans the folder after it makes it (93be018).
+- The upload panel showed "null" before the upload started
+  (d9c5b5c).
+
 ## [0.1.9] - 2026-09-16
 
 ### Added
