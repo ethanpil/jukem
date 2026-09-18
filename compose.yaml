@@ -1,6 +1,6 @@
 services:
   jukem:
-    image: ghcr.io/OWNER/jukem:latest
+    image: ghcr.io/ethanpil/jukem:latest
     init: true
     restart: unless-stopped
     ports:
