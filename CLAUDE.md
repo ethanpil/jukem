@@ -20,9 +20,6 @@ Design rules of the product:
 - Target machines: a Raspberry Pi or a small x86 box on Alpine Linux, with a
   library of up to about 20,000 tracks.
 
-Read `PLAN.md` for the original design and its reasons. Read `docs/guide.md`
-for the operator manual and `README.md` for the short introduction.
-
 ## 2. How to work in this repository
 
 - **Language rule.** Comments, documentation, README, changelog and commit
@@ -224,7 +221,7 @@ node --check web/app/<file>.js      # after every JS edit
 ```
 
 - The live test appliance is **10.0.0.136** (Alpine LXC, real MPD, about
-  2,000 real tracks, no sound card yet). SSH with
+  2,000 real tracks). SSH with
   `ssh -i "c:/Code/claude-ssh-id/claude_id_ed25519" -o IdentitiesOnly=yes
   root@10.0.0.136`.
 - **Never delete or move anything in `/srv/jukem/music`.** It is the user's
