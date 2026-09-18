@@ -85,9 +85,50 @@ The old binary sees the newer schema version and refuses to start.
 
 ## Docker
 
-TBD
+jukem runs as user 1000 in the container, so the directories must belong to that user.
 
-### Music Library
+- **`/srv/jukem/music`** — your music files.
+- **`/srv/jukem/data`** — the database, settings, play history and playlists. Back this one up.
+
+```bash
+sudo mkdir -p /srv/jukem/music /srv/jukem/data && sudo chown -R 1000:1000 /srv/jukem
+```
+
+You will also need your audio group number:
+
+```bash
+getent group audio | cut -d: -f3
+```
+
+Now, write `compose.yaml` and use the audio group number in `group_add`:
+
+```yaml
+services:
+  jukem:
+    image: ghcr.io/ethanpil/jukem:latest
+    init: true
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    group_add:
+      - "29"                         # your audio group number
+    device_cgroup_rules:
+      - "c 116:* rmw"                # sound devices, including a USB DAC plugged in later
+    volumes:
+      - /dev/snd:/dev/snd
+      - /srv/jukem/music:/srv/jukem/music
+      - /srv/jukem/data:/var/lib/jukem
+```
+
+Now start it:
+
+```bash
+docker compose up -d
+```
+
+**No sound device?** jukem still runs, and the wizard lets you finish without the sound test.
+
+## Music Library
 
 Default location for the music library is `/srv/jukem/music`
 
@@ -103,7 +144,7 @@ With incorrect permissions, web ui uploads and file operations in the
 library folders will fail. jukem shows the folders that are not writable
 and the command to fix them in `Settings > Maintenance > Check library permissions`.
 
-### Paths
+## Paths
 
 | Path | Purpose |
 |---|---|
