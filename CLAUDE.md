@@ -2,7 +2,7 @@
 
 Notes for an agent that works on jukem. Read this before a change. It gives
 the goals, the structure, the words the project uses, the traps, and the
-decisions behind the code.
+decisions behind the code. Update with important information as needed.
 
 ## 1. What jukem is
 
