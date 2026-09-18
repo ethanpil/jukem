@@ -19,7 +19,7 @@ streams, as well as timed announcements that pause the music.
 
 ## Basic Architecture
 
-The `jukem` package installs a binary that manages and monitors `mpd` on
+The `jukem` package installs a binary that manages and monitors [mpd](https://www.musicpd.org) on
 the server. JukeM monitors mpd to ensure everything is healthy. You control
 the JukeM instance via its web interface.
 
@@ -47,20 +47,139 @@ Then open `http://<host>/` in a browser. The setup wizard asks for a
 password, the time zone, the music folder and the sound output. It plays a
 track at the end. Setup is complete when you hear that track.
 
-To go to a newer version, get the new package and do `apk add` again. The
-service starts again by itself. You can leave out releases: the database
-moves up from any older version in one step.
+jukem's configuration is stored in  `/etc/jukem/config.yaml`:
 
-Settings > System tells you when a newer release exists, and gives the
-commands. jukem asks GitHub once a day. It does not install anything by
-itself.
+```yaml
+listen: ":80"
+data_dir: /var/lib/jukem
+log_file: /var/log/jukem/jukem.log
+trusted_proxies: ["127.0.0.1/8", "::1"]
+```
+These can be overridden at runtime for Docker or any other reason:
+
+| Setting | ENV Variable | Description |
+| listen | JUKEM_LISTEN | Port to listen on Web UI |
+| data_dir | JUKEM_DATA_DIR | Storage of data files. (Container maps `/var/lib/` here) |
+| log_file | JUKEM_LOG_FILE | Storage of log file | An empty `log_file` logs to stdout |
+| trusted_proxies | JUKEM_TRUSTED_PROXIES | Comma separated list. |
+
+For Docker its recommended to leave `log_file` empty so Docker can monitor the stdout logs.
+
+If container has an address on the Docker network, so add that network to `trusted_proxies`.
+
+## Upgrades
+
+jukem checks for new releases on GitHub once per day. In the webui, 
+`Settings > System` shows the version of the newest release.
+
+To upgrade, install the new package with `apk add` just like first install.
+The jukem service starts again by itself.
+
+**You dont need incremental upgrades.** An upgrade from 0.1.3 to 0.1.9 is the 
+same procedure as an upgrade from 0.1.8 to 0.1.9. jukem migrates schema during
+an upgrade and before the first change it makes a copy of the database to 
+`/var/lib/jukem/snapshots/`, so a rollback is possible. 
+
+Do not go back to an older release while the database has a newer schema.
+The old binary sees the newer schema version and refuses to start.
+
+## Docker
+
+TBD
+
+### Music Library
+
+Default location for the music library is `/srv/jukem/music`
+
+The jukem service runs as the `jukem` user. Any audio files that you copy 
+onto the machine as root, with scp, rsync or from a USB stick, belong to 
+root. Give it to the service user:
+
+```sh
+chown -R jukem:jukem /srv/jukem/music
+```
+
+With incorrect permissions, web ui uploads and file operations in the 
+library folders will fail. jukem shows the folders that are not writable
+and the command to fix them in `Settings > Maintenance > Check library permissions`.
+
+### Paths
+
+| Path | Purpose |
+|---|---|
+| `/usr/bin/jukem` | The binary, with the web UI embedded |
+| `/etc/init.d/jukem`, `/etc/conf.d/jukem` | OpenRC service script and options |
+| `/etc/jukem/config.yaml` | Bootstrap settings: listen address, data directory, log file, trusted proxies |
+| `/var/lib/jukem/` | Database, snapshots, MPD state, playlists |
+| `/var/log/jukem/` | Log file, capped in size |
+| `/srv/jukem/music/` | Default music root |
+
+The database holds every other setting. Change them in the web UI.
+
+## API
+
+The REST API is under `/api/v1`. The OpenAPI document is at
+`/api/v1/openapi.json` and the interactive docs at `/api/v1/docs`.
+
+Create an API key in Settings > Security and send it as
+`Authorization: Bearer <key>`. The web UI uses a session cookie instead. The
+event stream at `/api/v1/events` says what changed; the client refetches the
+resource.
+
+## Forgotten password
+
+On the console, as root:
+
+```sh
+jukem reset-password
+```
+
+This sets a new password and signs out every device.
+
+## Access from outside the LAN
+
+jukem serves plain HTTP only. For access away from LAN, use Tailscale or
+WireGuard. Do not forward the port on the router.
+
+For HTTPS, put a reverse proxy such as Caddy, nginx or Traefik in front of
+jukem. Set up the proxy as follows:
+
+- Send `X-Forwarded-For` and `X-Forwarded-Proto` on every request.
+- Serve jukem at the root of a host name, not under a path such as
+  `/jukem/`. The UI loads its files from `/app/` and `/api/v1/`.
+- Allow request bodies as large as the upload limit in Settings > Library.
+  nginx allows 1 MB by default, so set `client_max_body_size` there.
+- Add the address of the proxy to `trusted_proxies` in the configuration
+  file. The default trusts only a proxy on the same machine.
+
+jukem reads the forwarding headers only from a trusted proxy. With them,
+the login limit counts each client, and the session cookie is Secure over
+HTTPS.
+
+Use one address for jukem in each browser. A browser that signed in over
+HTTPS keeps a Secure cookie. That browser cannot sign in over plain HTTP on
+the same host name until the cookie expires or you clear the site data.
+
+
+## Development
+
+```sh
+go test ./...
+mkdir -p data && JUKEM_LISTEN=127.0.0.1:8080 JUKEM_DATA_DIR=./data JUKEM_LOG_FILE= go run ./cmd/jukem serve
+scripts/package.sh amd64 v1.0.0      # unsigned apk in dist/
+```
+
+The web UI is plain ES modules under `web/app`, embedded in the binary.
+Restart the server to see a change. `tools/apksign` signs the package the
+way abuild does, with RSA-SHA256, so apk accepts it without
+`--allow-untrusted`.
 
 ## More
-
-- [Guide](docs/guide.md): paths, Docker, a reverse proxy, backups, the
-  configuration file and development
 - [Changelog](CHANGELOG.md)
-- [Design notes](PLAN.md)
+
+## Music licensing (FYI)
+
+A business that plays recorded music usually needs a public performance licence.
 
 ## Licence
 
